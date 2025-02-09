@@ -1,0 +1,21 @@
+[package]
+name = "cutup"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jason R. Stevens, CFA <jason@thinkjrs.dev>"]
+license = "MIT"
+description = "A flexible and efficient allocation library for Rust, capable of distributing assets, resources, and other divisible entities."
+repository = "https://github.com/thinkjrs/cutup"
+homepage = "https://github.com/thinkjrs/cutup"
+documentation = "https://docs.rs/cutup"
+readme = "README.md"
+keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
+categories = ["finance", "mathematics", "science"]
+license-file = "LICENSE"
+exclude = [".github", ".gitignore", "tests/", "examples/", ".vscode/", ".idea/"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+nalgebra = "0.33.2"
