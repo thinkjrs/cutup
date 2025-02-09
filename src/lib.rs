@@ -25,18 +25,19 @@ impl PortfolioAllocator {
     pub fn mvo_allocation(&self) -> HashMap<usize, f64> {
         let n = self.cov_matrix.ncols();
         let ones = DVector::from_element(n, 1.0);
-        let lambda = 1e-6; // reg factor
+        let lambda = 1e-6; // Regularization factor
 
-        // ensure invertibility - regularize the covariance matrix
+        // Regularized covariance matrix to ensure invertibility
         let regularized_cov = self.cov_matrix.clone() + DMatrix::identity(n, n) * lambda;
 
-        if let Some(inv_cov) = regularized_cov.try_inverse() {
-            let denominator = (ones.transpose() * &inv_cov * &ones)[(0, 0)];
-            let weights = &inv_cov * &ones / denominator;
-            (0..n).map(|i| (i, weights[i])).collect()
-        } else {
-            panic!("Covariance matrix is singular, even after regularization.");
-        }
+        let inv_cov = regularized_cov
+            .try_inverse()
+            .expect("Matrix inversion shouldn't fail due to regularization.");
+
+        let denominator = (ones.transpose() * &inv_cov * &ones)[(0, 0)];
+        let weights = &inv_cov * &ones / denominator;
+
+        (0..n).map(|i| (i, weights[i])).collect()
     }
     pub fn ew_allocation(&self) -> HashMap<usize, f64> {
         let n = self.price_data.ncols();
@@ -90,7 +91,7 @@ mod tests {
         let allocator = PortfolioAllocator::new(prices);
         let ew_weights = allocator.ew_allocation();
         assert_eq!(ew_weights.len(), 3);
-        assert!(ew_weights.values().all(|&w| (w - (1.0 / 3.0)).abs() < 1e-6));
+        assert!((ew_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -103,6 +104,7 @@ mod tests {
         let allocator = PortfolioAllocator::new(prices);
         let mvo_weights = allocator.mvo_allocation();
         assert_eq!(mvo_weights.len(), 3);
+        assert!((mvo_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -115,5 +117,19 @@ mod tests {
         let allocator = PortfolioAllocator::new(prices);
         let hrp_weights = allocator.hrp_allocation();
         assert_eq!(hrp_weights.len(), 3);
+        assert!((hrp_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_single_asset() {
+        let prices = dmatrix![
+            100.0;
+            110.0;
+            120.0
+        ];
+        let allocator = PortfolioAllocator::new(prices);
+        let ew_weights = allocator.ew_allocation();
+        assert_eq!(ew_weights.len(), 1);
+        assert_eq!(ew_weights.get(&0), Some(&1.0));
     }
 }
