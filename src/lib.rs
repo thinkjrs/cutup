@@ -76,6 +76,11 @@ impl PortfolioAllocator {
     }
 }
 
+pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> HashMap<usize, f64> {
+    let allocator = PortfolioAllocator::new(prices);
+    allocator.mvo_allocation()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +136,28 @@ mod tests {
         let ew_weights = allocator.ew_allocation();
         assert_eq!(ew_weights.len(), 1);
         assert_eq!(ew_weights.get(&0), Some(&1.0));
+    }
+    #[test]
+    fn test_run_portfolio_allocation() {
+        let prices = DMatrix::from_row_slice(
+            4,
+            4,
+            &[
+                125.0, 1500.0, 210.0, 600.0, 123.0, 1520.0, 215.0, 620.0, 130.0, 1510.0, 220.0,
+                610.0, 128.0, 1530.0, 225.0, 630.0,
+            ],
+        );
+
+        let weights = run_portfolio_allocation(prices);
+
+        // Ensure weights sum to 1.0
+        let total_weight: f64 = weights.values().sum();
+        assert!(
+            (total_weight - 1.0).abs() < 1e-6,
+            "Weights should sum to 1.0"
+        );
+
+        // Ensure the correct number of assets
+        assert_eq!(weights.len(), 4, "Should return weights for 4 assets");
     }
 }
