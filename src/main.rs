@@ -1,8 +1,7 @@
-use cutup::PortfolioAllocator;
+use cutup::run_portfolio_allocation;
 use nalgebra::DMatrix;
 
 fn main() {
-    // Example price data (rows: time periods, columns: assets)
     let prices = DMatrix::from_row_slice(
         4,
         4,
@@ -12,13 +11,6 @@ fn main() {
         ],
     );
 
-    let allocator = PortfolioAllocator::new(prices);
-
-    let mvo_weights = allocator.mvo_allocation();
-    let ew_weights = allocator.ew_allocation();
-    let hrp_weights = allocator.hrp_allocation();
-
-    println!("MVO Weights: {:?}", mvo_weights);
-    println!("EW Weights: {:?}", ew_weights);
-    println!("HRP Weights: {:?}", hrp_weights);
+    let weights = run_portfolio_allocation(prices);
+    println!("Portfolio Weights: {:?}", weights);
 }
