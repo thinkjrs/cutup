@@ -25,13 +25,13 @@ impl PortfolioAllocator {
     pub fn mvo_allocation(&self) -> HashMap<usize, f64> {
         let n = self.cov_matrix.ncols();
         let ones = DVector::from_element(n, 1.0);
-        let lambda = 1e-6; // Regularization factor
+        let lambda = 1e-6; // reg factor
 
-        // Regularized covariance matrix to ensure invertibility
+        // ensure invertibility - regularize the covariance matrix
         let regularized_cov = self.cov_matrix.clone() + DMatrix::identity(n, n) * lambda;
 
         if let Some(inv_cov) = regularized_cov.try_inverse() {
-            let denominator = (ones.transpose() * &inv_cov * &ones)[(0, 0)]; // Extract scalar
+            let denominator = (ones.transpose() * &inv_cov * &ones)[(0, 0)];
             let weights = &inv_cov * &ones / denominator;
             (0..n).map(|i| (i, weights[i])).collect()
         } else {
