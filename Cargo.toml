@@ -13,6 +13,7 @@ keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
 license-file = "LICENSE"
 exclude = [".github", ".gitignore", "tests/", "examples/", ".vscode/", ".idea/"]
+rust-version = "1.65.0"
 
 [badges]
 maintenance = { status = "actively-developed" }
