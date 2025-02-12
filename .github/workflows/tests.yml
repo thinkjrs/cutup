@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/*
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: []
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract MSRV from Cargo.toml
+        id: msrv
+        run: |
+          MSRV=$(grep '^rust-version' Cargo.toml | cut -d '"' -f2)
+          echo "Detected MSRV: $MSRV"
+          echo "msrv=$MSRV" >> "$GITHUB_ENV"
+
+      - name: Define Rust matrix dynamically
+        run: |
+          echo "MATRIX=$(jq -c --arg msrv "$MSRV" '{rust: [$msrv, "stable", "beta", "nightly"], include: [{rust: "stable", cache-key: "stable"}, {rust: "beta", cache-key: "beta"}, {rust: "nightly", cache-key: "nightly"}, {rust: $msrv, cache-key: "msrv"}]}' <<< "{}")" >> "$GITHUB_ENV"
+
+      - name: Set up Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.cache-key }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.cache-key }}-${{ runner.os }}-
+
+      - name: Run tests
+        run: cargo test --all-features --all-targets
