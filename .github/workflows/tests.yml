@@ -13,21 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: []
+        rust: [1.65.0, stable, beta, nightly]
+        include:
+          - rust: stable
+            cache-key: stable
+          - rust: beta
+            cache-key: beta
+          - rust: nightly
+            cache-key: nightly
+          - rust: 1.65.0
+            cache-key: msrv
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Extract MSRV from Cargo.toml
-        id: msrv
-        run: |
-          MSRV=$(grep '^rust-version' Cargo.toml | cut -d '"' -f2)
-          echo "Detected MSRV: $MSRV"
-          echo "msrv=$MSRV" >> "$GITHUB_ENV"
-
-      - name: Define Rust matrix dynamically
-        run: |
-          echo "MATRIX=$(jq -c --arg msrv "$MSRV" '{rust: [$msrv, "stable", "beta", "nightly"], include: [{rust: "stable", cache-key: "stable"}, {rust: "beta", cache-key: "beta"}, {rust: "nightly", cache-key: "nightly"}, {rust: $msrv, cache-key: "msrv"}]}' <<< "{}")" >> "$GITHUB_ENV"
 
       - name: Set up Rust ${{ matrix.rust }}
         uses: dtolnay/rust-toolchain@master
