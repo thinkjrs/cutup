@@ -33,6 +33,15 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
+      - name: Fix Cargo.lock for MSRV
+        if: matrix.rust == '1.65.0'
+        run: |
+          if grep -q 'version = "4"' Cargo.lock; then
+            echo "Cargo.lock is incompatible with Rust 1.65.0. Regenerating..."
+            rm Cargo.lock
+            cargo generate-lockfile
+          fi
+
       - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
