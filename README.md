@@ -2,6 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/cutup)](https://crates.io/crates/cutup)
 [![Build Status](https://github.com/thinkjrs/cutup/actions/workflows/ci.yml/badge.svg)](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/thinkjrs/cutup/branch/main/graph/badge.svg)](https://codecov.io/gh/thinkjrs/cutup)
 
 Cutup is a Rust library for portfolio allocation strategies, providing implementations for:
 
