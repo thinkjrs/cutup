@@ -25,7 +25,7 @@ checksum = "b6b1fc10dbac614ebc03540c9dbd60e83887fda27794998c6528f1782047d540"
 
 [[package]]
 name = "cutup"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nalgebra",
 ]
