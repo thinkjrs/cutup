@@ -11,9 +11,8 @@ documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
-license-file = "LICENSE"
 exclude = [".github", ".gitignore", "tests/", "examples/", ".vscode/", ".idea/"]
-rust-version = "1.65.0"
+rust-version = "1.78.0"
 
 [badges]
 maintenance = { status = "actively-developed" }
