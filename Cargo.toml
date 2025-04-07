@@ -19,3 +19,6 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 nalgebra = "0.33.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(tarpaulin_include)"] }
