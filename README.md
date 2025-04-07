@@ -3,7 +3,8 @@
 [![Crates.io](https://img.shields.io/crates/v/cutup)](https://crates.io/crates/cutup)
 [![Build Status](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml/badge.svg)](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/thinkjrs/cutup/branch/main/graph/badge.svg)](https://codecov.io/gh/thinkjrs/cutup)
-
+[![Docs.rs](https://docs.rs/cutup/badge.svg)](https://docs.rs/cutup)
+[![License](https://img.shields.io/crates/l/cutup)](https://crates.io/crates/cutup)
 Cutup is a Rust library for portfolio allocation strategies, providing implementations for:
 
 - **Mean-Variance Optimization (MVO)**
