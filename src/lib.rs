@@ -18,6 +18,21 @@ impl PortfolioAllocator {
     /// # Returns
     ///
     /// * A new instance of `PortfolioAllocator`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let prices = dmatrix![
+    ///     100.0, 200.0, 300.0;
+    ///     110.0, 210.0, 310.0;
+    ///     120.0, 220.0, 320.0
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::new(prices);
+    /// ```
     pub fn new(price_data: DMatrix<f64>) -> Self {
         let cov_matrix = PortfolioAllocator::compute_covariance_matrix(&price_data);
         PortfolioAllocator {
@@ -47,6 +62,25 @@ impl PortfolioAllocator {
     /// # Returns
     ///
     /// * A `HashMap<usize, f64>` where keys are asset indices and values are allocation weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let prices = dmatrix![
+    ///     100.0, 200.0, 300.0;
+    ///     110.0, 210.0, 310.0;
+    ///     120.0, 220.0, 320.0
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::new(prices);
+    /// let weights = allocator.mvo_allocation();
+    ///
+    /// let total: f64 = weights.values().sum();
+    /// assert!((total - 1.0).abs() < 1e-6);
+    /// ```
     pub fn mvo_allocation(&self) -> HashMap<usize, f64> {
         let n = self.cov_matrix.ncols();
         let ones = DVector::from_element(n, 1.0);
@@ -70,6 +104,24 @@ impl PortfolioAllocator {
     /// # Returns
     ///
     /// * A `HashMap<usize, f64>` where each asset has equal weight.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let prices = dmatrix![
+    ///     100.0, 200.0, 300.0;
+    ///     110.0, 210.0, 310.0;
+    ///     120.0, 220.0, 320.0
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::new(prices);
+    /// let weights = allocator.ew_allocation();
+    ///
+    /// assert_eq!(weights.len(), 3);
+    /// ```
     pub fn ew_allocation(&self) -> HashMap<usize, f64> {
         let n = self.price_data.ncols();
         (0..n).map(|i| (i, 1.0 / n as f64)).collect()
@@ -80,6 +132,25 @@ impl PortfolioAllocator {
     /// # Returns
     ///
     /// * A `HashMap<usize, f64>` representing HRP-optimized portfolio weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let prices = dmatrix![
+    ///     100.0, 200.0, 300.0;
+    ///     110.0, 210.0, 310.0;
+    ///     120.0, 220.0, 320.0
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::new(prices);
+    /// let weights = allocator.hrp_allocation();
+    ///
+    /// let sum: f64 = weights.values().sum();
+    /// assert!((sum - 1.0).abs() < 1e-6);
+    /// ```
     pub fn hrp_allocation(&self) -> HashMap<usize, f64> {
         let n = self.cov_matrix.ncols();
         let mut weights = vec![1.0; n];
@@ -121,6 +192,22 @@ impl PortfolioAllocator {
 /// # Returns
 ///
 /// * A `HashMap<usize, f64>` representing optimized portfolio weights.
+/// # Example
+///
+/// ```
+/// use cutup::run_portfolio_allocation;
+/// use nalgebra::dmatrix;
+///
+/// let prices = dmatrix![
+///     125.0, 1500.0, 210.0, 600.0;
+///     123.0, 1520.0, 215.0, 620.0;
+///     130.0, 1510.0, 220.0, 610.0;
+///     128.0, 1530.0, 225.0, 630.0
+/// ];
+///
+/// let weights = run_portfolio_allocation(prices);
+/// assert_eq!(weights.len(), 4);
+/// ```
 pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> HashMap<usize, f64> {
     let allocator = PortfolioAllocator::new(prices);
     allocator.mvo_allocation()
