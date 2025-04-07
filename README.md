@@ -5,7 +5,12 @@
 [![codecov](https://codecov.io/gh/thinkjrs/cutup/branch/main/graph/badge.svg)](https://codecov.io/gh/thinkjrs/cutup)
 [![Docs.rs](https://docs.rs/cutup/badge.svg)](https://docs.rs/cutup)
 [![License](https://img.shields.io/crates/l/cutup)](https://crates.io/crates/cutup)
-Cutup is a Rust library for portfolio allocation strategies, providing implementations for:
+
+Cutup is a Rust library for portfolio allocation strategies, providing implementations for various allocation methods. 
+
+It's designed to be efficient and easy to use.
+
+Here are some of the allocation methods included in this library:
 
 - **Mean-Variance Optimization (MVO)**
 - **Equal Weight Allocation (EW)**
@@ -26,7 +31,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.1.0"
+cutup = "0.1.3"
 ```
 
 ## Usage
