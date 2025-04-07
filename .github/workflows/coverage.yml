@@ -25,9 +25,10 @@ jobs:
       - name: Run Coverage
         run: cargo tarpaulin --out Lcov --exclude-files src/main.rs
 
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@v3
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: thinkjrs/cutup
           files: lcov.info
-          fail_ci_if_error: true
           verbose: true
