@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [1.65.0, stable, beta, nightly]
+        rust: [1.78.0, stable, beta, nightly]
         include:
           - rust: stable
             cache-key: stable
@@ -21,7 +21,7 @@ jobs:
             cache-key: beta
           - rust: nightly
             cache-key: nightly
-          - rust: 1.65.0
+          - rust: 1.78.0
             cache-key: msrv
 
     steps:
@@ -34,10 +34,10 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Fix Cargo.lock for MSRV
-        if: matrix.rust == '1.65.0'
+        if: matrix.rust == '1.78.0'
         run: |
           if grep -q 'version = "4"' Cargo.lock; then
-            echo "Cargo.lock is incompatible with Rust 1.65.0. Regenerating..."
+            echo "Cargo.lock is incompatible with Rust 1.78.0. Regenerating..."
             rm Cargo.lock
             cargo generate-lockfile
           fi
