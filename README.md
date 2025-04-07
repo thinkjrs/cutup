@@ -1,5 +1,7 @@
 # Cutup: A Rust Portfolio Allocation Library
 
+[![Crates.io](https://img.shields.io/crates/v/cutup)](https://crates.io/crates/cutup)
+
 Cutup is a Rust library for portfolio allocation strategies, providing implementations for:
 
 - **Mean-Variance Optimization (MVO)**
