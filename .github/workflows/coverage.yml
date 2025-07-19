@@ -1,4 +1,4 @@
-name: coverage
+name: Coverage
 
 on:
   push:
@@ -9,26 +9,42 @@ on:
 jobs:
   coverage:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Set up Rust nightly
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
-          override: true
+          toolchain: nightly
+          components: llvm-tools-preview
 
-      - name: Install Tarpaulin
-        run: cargo install cargo-tarpaulin
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-coverage-nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run Coverage
-        run: cargo tarpaulin --out Lcov --exclude-files src/main.rs
+      - name: Install cargo-llvm-cov
+        run: |
+          if ! command -v cargo-llvm-cov &> /dev/null
+          then
+            cargo install cargo-llvm-cov --locked
+          else
+            echo "cargo-llvm-cov already installed from cache."
+          fi
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: thinkjrs/cutup
+          slug: Tincre/tincre-logger
           files: lcov.info
           verbose: true
