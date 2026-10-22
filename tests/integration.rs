@@ -1,4 +1,4 @@
-use cutup::{run_portfolio_allocation, PortfolioAllocator};
+use cutup::{run_portfolio_allocation, MeanVarianceConfig, PortfolioAllocator};
 use nalgebra::dmatrix;
 
 #[test]
@@ -15,9 +15,15 @@ fn test_portfolio_allocations() {
     assert_eq!(ew.len(), 3);
     assert!((ew.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
-    let mvo = allocator.mvo_allocation().unwrap();
-    assert_eq!(mvo.len(), 3);
-    assert!((mvo.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+    let min_variance = allocator.min_variance_allocation().unwrap();
+    assert_eq!(min_variance.len(), 3);
+    assert!((min_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+
+    let mean_variance = allocator
+        .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(2.0))
+        .unwrap();
+    assert_eq!(mean_variance.len(), 3);
+    assert!((mean_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
     let hrp = allocator.hrp_allocation().unwrap();
     assert_eq!(hrp.len(), 3);
