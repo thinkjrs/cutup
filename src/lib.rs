@@ -427,23 +427,6 @@ impl PortfolioAllocator {
         })
     }
 
-    /// Creates a new `PortfolioAllocator` from a matrix of asset prices.
-    ///
-    /// Identical to [`PortfolioAllocator::from_prices`], but panics instead of returning an
-    /// error. Before 0.2.0 this computed the covariance of price levels rather than of returns.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `price_data` fails any of the checks listed under
-    /// [`PortfolioAllocator::from_prices`].
-    #[deprecated(
-        since = "0.2.0",
-        note = "use `PortfolioAllocator::from_prices` instead"
-    )]
-    pub fn new(price_data: DMatrix<f64>) -> Self {
-        PortfolioAllocator::from_prices(price_data).expect("invalid price data")
-    }
-
     /// Checks that `data` has at least one column, at least `min_rows` rows, and only finite
     /// values.
     fn validate(data: &DMatrix<f64>, min_rows: usize) -> Result<(), CutupError> {
@@ -1149,22 +1132,6 @@ mod tests {
         let from_prices = PortfolioAllocator::from_prices(prices).unwrap();
         let from_returns = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(from_prices.cov_matrix, from_returns.cov_matrix);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_deprecated_new_matches_from_prices() {
-        let prices = full_rank_prices();
-        let new = PortfolioAllocator::new(prices.clone());
-        let from_prices = PortfolioAllocator::from_prices(prices).unwrap();
-        assert_eq!(new.cov_matrix, from_prices.cov_matrix);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    #[should_panic(expected = "invalid price data")]
-    fn test_deprecated_new_panics_on_invalid_input() {
-        PortfolioAllocator::new(dmatrix![100.0; 110.0]);
     }
 
     #[test]
