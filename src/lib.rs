@@ -1,4 +1,9 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
+
+mod cluster;
+
+pub use cluster::Linkage;
 
 use nalgebra::{DMatrix, DVector};
 use std::collections::HashMap;
@@ -310,6 +315,30 @@ impl MeanVarianceConfig {
     /// Applies `covariance` adjustments to the covariance matrix.
     pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
         self.covariance = covariance;
+        self
+    }
+}
+
+/// Configuration for [`PortfolioAllocator::hrp_allocation_with_config`] and
+/// [`PortfolioAllocator::hrp_cluster_order`].
+///
+/// ```
+/// use cutup::{HrpConfig, Linkage};
+///
+/// let config = HrpConfig::default().with_linkage(Linkage::Average);
+/// assert_eq!(config.linkage, Linkage::Average);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct HrpConfig {
+    /// How the distance between clusters is measured. Defaults to [`Linkage::Single`].
+    pub linkage: Linkage,
+}
+
+impl HrpConfig {
+    /// Sets the linkage used to build the clustering hierarchy.
+    pub fn with_linkage(mut self, linkage: Linkage) -> Self {
+        self.linkage = linkage;
         self
     }
 }
@@ -944,87 +973,74 @@ impl PortfolioAllocator {
         self.weight_by_variance(|variance| 1.0 / variance)
     }
 
-    /// Orders assets so that correlated assets sit next to each other: the leaf order of a
-    /// single-linkage clustering on the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)`.
-    ///
-    /// Follows SciPy's `linkage(method="single")` and `to_tree().pre_order()` step for step,
-    /// including the tie-breaking rule, so the order matches PyPortfolioOpt's `HRPOpt`:
-    ///
-    /// 1. Prim's algorithm builds the minimum spanning tree, starting from asset 0 and taking
-    ///    the lowest-index asset among equally distant ones.
-    /// 2. The tree's edges are stably sorted by distance and merged in that order. Merge `k`
-    ///    creates cluster `n + k`, whose left child is whichever of the two merged clusters has
-    ///    the smaller id.
-    /// 3. A pre-order traversal from the root lists the assets left to right.
+    /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
+    /// assets.
     ///
     /// Returns [`CutupError::NonFiniteCovariance`] if a correlation can't be computed, for
     /// example when variances are so small that their product underflows to zero.
-    fn quasi_diagonal_order(&self) -> Result<Vec<usize>, CutupError> {
+    fn correlation_distance(&self) -> Result<DMatrix<f64>, CutupError> {
         let cov = &self.cov_matrix;
         let n = cov.ncols();
-        let distance = DMatrix::from_fn(n, n, |i, j| {
-            let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
-            // Mark a non-finite correlation as NaN: clamping would hide an infinite one.
-            if rho.is_finite() {
-                ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt()
-            } else {
-                f64::NAN
-            }
-        });
-        // A NaN distance would be skipped by the minimum below and corrupt the tree.
-        if distance.iter().any(|d| d.is_nan()) {
-            return Err(CutupError::NonFiniteCovariance);
-        }
-
-        let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(n - 1);
-        let mut distance_to_tree = vec![f64::INFINITY; n];
-        let mut in_tree = vec![false; n];
-        let mut x = 0;
-        for _ in 1..n {
-            in_tree[x] = true;
-            let (mut y, mut nearest) = (0, f64::INFINITY);
-            for (i, to_tree) in distance_to_tree.iter_mut().enumerate() {
-                if in_tree[i] {
-                    continue;
+        let mut distance = DMatrix::zeros(n, n);
+        for i in 0..n {
+            for j in 0..n {
+                let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
+                // Clamping would hide an infinite correlation, so reject it first.
+                if !rho.is_finite() {
+                    return Err(CutupError::NonFiniteCovariance);
                 }
-                *to_tree = to_tree.min(distance[(x, i)]);
-                if *to_tree < nearest {
-                    (y, nearest) = (i, *to_tree);
-                }
+                distance[(i, j)] = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
             }
-            edges.push((x, y, nearest));
-            x = y;
         }
-        edges.sort_by(|a, b| a.2.total_cmp(&b.2));
+        Ok(distance)
+    }
 
-        let mut parent: Vec<usize> = (0..2 * n - 1).collect();
-        let find = |parent: &mut Vec<usize>, mut node: usize| {
-            while parent[node] != node {
-                parent[node] = parent[parent[node]];
-                node = parent[node];
-            }
-            node
-        };
-        let mut children = Vec::with_capacity(n - 1);
-        for (k, &(a, b, _)) in edges.iter().enumerate() {
-            let (root_a, root_b) = (find(&mut parent, a), find(&mut parent, b));
-            parent[root_a] = n + k;
-            parent[root_b] = n + k;
-            children.push((root_a.min(root_b), root_a.max(root_b)));
+    /// Returns the order HRP puts the assets in: the leaves of the clustering hierarchy, left
+    /// to right, so that correlated assets sit next to each other.
+    ///
+    /// Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)` with the linkage in
+    /// `config`. The clustering reproduces SciPy's `linkage` and `to_tree().pre_order()` step
+    /// for step, including the tie-breaking rule, so the order matches SciPy and
+    /// PyPortfolioOpt's `HRPOpt` up to floating-point rounding.
+    ///
+    /// # Returns
+    ///
+    /// * Every asset's column index exactly once, in cluster order.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
+    ///   variances are too small.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{HrpConfig, PortfolioAllocator};
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Assets 0 and 2 move together, as do 1 and 3.
+    /// let returns = dmatrix![
+    ///      0.010,  0.020,  0.011,  0.019;
+    ///     -0.010,  0.010, -0.012,  0.012;
+    ///      0.020, -0.020,  0.018, -0.021;
+    ///     -0.015, -0.010, -0.014, -0.009
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let order = allocator.hrp_cluster_order(&HrpConfig::default())?;
+    ///
+    /// let position = |asset| order.iter().position(|&a| a == asset).unwrap();
+    /// assert_eq!(position(0).abs_diff(position(2)), 1);
+    /// assert_eq!(position(1).abs_diff(position(3)), 1);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn hrp_cluster_order(&self, config: &HrpConfig) -> Result<Vec<usize>, CutupError> {
+        if let Some(asset) = self.find_zero_variance() {
+            return Err(CutupError::ZeroVariance { asset });
         }
-
-        let mut order = Vec::with_capacity(n);
-        let mut stack = vec![2 * n - 2];
-        while let Some(node) = stack.pop() {
-            if node < n {
-                order.push(node);
-            } else {
-                let (left, right) = children[node - n];
-                stack.push(right);
-                stack.push(left);
-            }
-        }
-        Ok(order)
+        let distance = self.correlation_distance()?;
+        Ok(cluster::leaf_order(&distance, config.linkage))
     }
 
     /// Returns the variance of the inverse-variance portfolio over `cluster`.
@@ -1043,24 +1059,9 @@ impl PortfolioAllocator {
         variance / (total * total)
     }
 
-    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016).
-    ///
-    /// 1. **Cluster.** Assets are clustered by single linkage on the correlation distance
-    ///    `sqrt((1 − ρ) / 2)`, and ordered so that correlated assets sit next to each other.
-    /// 2. **Recursive bisection.** The ordered list is split in half, repeatedly. At each
-    ///    split, the two halves share their parent's weight in inverse proportion to their
-    ///    risk: each half's variance is that of its own inverse-variance portfolio, and the
-    ///    first half gets `α = 1 − V₁ / (V₁ + V₂)`.
-    ///
-    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` step for step, including the
-    /// tie-breaking rule, so results match `HRPOpt(returns).optimize()` up to floating-point
-    /// rounding. (The correlations are computed here rather than by pandas, so two distances
-    /// that tie in one may differ by a rounding error in the other and break the tie the other
-    /// way.)
-    ///
-    /// HRP never inverts the covariance matrix, so it works when Σ is singular. Weights are
-    /// never negative. A half with zero variance, such as a perfectly hedged pair, takes its
-    /// parent's whole weight and leaves the other half at zero, as in `HRPOpt`.
+    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016), with
+    /// single linkage. See [`PortfolioAllocator::hrp_allocation_with_config`] for the details
+    /// and to choose another linkage.
     ///
     /// # Returns
     ///
@@ -1093,11 +1094,67 @@ impl PortfolioAllocator {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn hrp_allocation(&self) -> Result<Weights, CutupError> {
-        if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
-        }
+        self.hrp_allocation_with_config(&HrpConfig::default())
+    }
 
-        let order = self.quasi_diagonal_order()?;
+    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016).
+    ///
+    /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)`
+    ///    with the linkage in `config`, and ordered so that correlated assets sit next to each
+    ///    other (see [`PortfolioAllocator::hrp_cluster_order`]).
+    /// 2. **Recursive bisection.** The ordered list is split in half, repeatedly. At each
+    ///    split, the two halves share their parent's weight in inverse proportion to their
+    ///    risk: each half's variance is that of its own inverse-variance portfolio, and the
+    ///    first half gets `α = 1 − V₁ / (V₁ + V₂)`.
+    ///
+    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` step for step, including the
+    /// tie-breaking rule, so results match `HRPOpt(returns).optimize(linkage_method)` up to
+    /// floating-point rounding. (The correlations are computed here rather than by pandas, so two distances
+    /// that tie in one may differ by a rounding error in the other and break the tie the other
+    /// way.)
+    ///
+    /// HRP never inverts the covariance matrix, so it works when Σ is singular. Weights are
+    /// never negative. A half with zero variance, such as a perfectly hedged pair, takes its
+    /// parent's whole weight and leaves the other half at zero, as in `HRPOpt`.
+    ///
+    /// Like the original algorithm and `HRPOpt`, the result can depend on the order of the
+    /// input columns. The hierarchy puts the lower-indexed subtree on the left, and the
+    /// bisection splits the ordered list at its midpoint rather than at the tree's branches,
+    /// so reordering the columns can move a split. Correlated assets still end up next to each
+    /// other; only where the halves are cut changes.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
+    ///   variances are too small.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{HrpConfig, Linkage, PortfolioAllocator};
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010,  0.020,  0.011,  0.019;
+    ///     -0.010,  0.010, -0.012,  0.012;
+    ///      0.020, -0.020,  0.018, -0.021;
+    ///     -0.015, -0.010, -0.014, -0.009
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let config = HrpConfig::default().with_linkage(Linkage::Ward);
+    /// let weights = allocator.hrp_allocation_with_config(&config)?;
+    ///
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn hrp_allocation_with_config(&self, config: &HrpConfig) -> Result<Weights, CutupError> {
+        let order = self.hrp_cluster_order(config)?;
         let mut weights = vec![1.0; order.len()];
         // Clusters are ranges of positions in `order`, bisected one level at a time.
         let mut ranges = vec![(0, order.len())];
@@ -1975,7 +2032,7 @@ mod tests {
     #[test]
     fn test_hrp_order_groups_correlated_assets() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let order = allocator.quasi_diagonal_order().unwrap();
+        let order = allocator.hrp_cluster_order(&HrpConfig::default()).unwrap();
 
         let mut sorted = order.clone();
         sorted.sort_unstable();
@@ -1988,9 +2045,49 @@ mod tests {
     }
 
     #[test]
-    fn test_hrp_ignores_column_order() {
-        // Index-order bisection fails this: the clustering, not the input order, decides how
-        // assets are grouped.
+    fn test_hrp_every_linkage_groups_correlated_assets() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        for linkage in [
+            Linkage::Single,
+            Linkage::Complete,
+            Linkage::Average,
+            Linkage::Ward,
+        ] {
+            let config = HrpConfig::default().with_linkage(linkage);
+            let order = allocator.hrp_cluster_order(&config).unwrap();
+
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, vec![0, 1, 2, 3, 4], "{linkage:?}");
+
+            let position = |asset: usize| order.iter().position(|&a| a == asset).unwrap();
+            let mut first_block: Vec<usize> = [0, 2, 4].iter().map(|&a| position(a)).collect();
+            first_block.sort_unstable();
+            assert_eq!(first_block[2] - first_block[0], 2, "{linkage:?}: {order:?}");
+
+            let weights = allocator.hrp_allocation_with_config(&config).unwrap();
+            assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            assert!(weights.iter().all(|&w| w >= 0.0));
+        }
+    }
+
+    #[test]
+    fn test_hrp_defaults_to_single_linkage() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        assert_eq!(HrpConfig::default().linkage, Linkage::Single);
+        assert_eq!(
+            allocator.hrp_allocation().unwrap(),
+            allocator
+                .hrp_allocation_with_config(&HrpConfig::default().with_linkage(Linkage::Single))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_hrp_groups_follow_clustering_not_columns() {
+        // On this block-structured input the clustering, not the input order, decides how
+        // assets are grouped, so this shuffle leaves the weights unchanged. (In general HRP
+        // can depend on column order: see hrp_allocation_with_config.)
         let returns = two_block_returns();
         let permutation = [3, 0, 4, 1, 2];
         let permuted = DMatrix::from_fn(returns.nrows(), 5, |t, j| returns[(t, permutation[j])]);
@@ -2012,7 +2109,10 @@ mod tests {
     #[test]
     fn test_hrp_single_asset() {
         let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
-        assert_eq!(allocator.quasi_diagonal_order().unwrap(), vec![0]);
+        assert_eq!(
+            allocator.hrp_cluster_order(&HrpConfig::default()).unwrap(),
+            vec![0]
+        );
         assert_eq!(allocator.hrp_allocation().unwrap().as_slice(), &[1.0]);
     }
 
