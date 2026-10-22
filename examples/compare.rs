@@ -5,7 +5,8 @@
 //! ```
 
 use cutup::{
-    CovarianceConfig, CutupError, HrpConfig, Linkage, MeanVarianceConfig, PortfolioAllocator,
+    CovarianceConfig, CutupError, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig,
+    PortfolioAllocator,
 };
 use nalgebra::DMatrix;
 
@@ -48,6 +49,10 @@ fn main() -> Result<(), CutupError> {
         (
             "Mean-variance, γ = 100",
             allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
+        ),
+        (
+            "Max Sharpe, r_f = 0",
+            allocator.max_sharpe_allocation(&MaxSharpeConfig::default())?,
         ),
         ("HRP, single linkage", allocator.hrp_allocation()?),
         (
