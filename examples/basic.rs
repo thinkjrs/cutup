@@ -1,7 +1,7 @@
-use cutup::run_portfolio_allocation;
+use cutup::{run_portfolio_allocation, CutupError};
 use nalgebra::DMatrix;
 
-fn main() {
+fn main() -> Result<(), CutupError> {
     let prices = DMatrix::from_row_slice(
         4,
         4,
@@ -11,6 +11,8 @@ fn main() {
         ],
     );
 
-    let weights = run_portfolio_allocation(prices);
-    println!("Portfolio Weights: {:?}", weights);
+    let weights = run_portfolio_allocation(prices)?;
+    println!("Portfolio Weights: {:?}", weights.as_slice());
+
+    Ok(())
 }
