@@ -1,7 +1,8 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    CovarianceConfig, HrpConfig, Linkage, MeanVarianceConfig, PortfolioAllocator, Weights,
+    CovarianceConfig, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig, PortfolioAllocator,
+    Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -231,5 +232,29 @@ proptest! {
         let gradient = &mu - &cov * &w * gamma;
         let spread = gradient.max() - gradient.min();
         prop_assert!(spread < 1e-9 * (1.0 + mu.amax()), "spread {spread}");
+    }
+
+    #[test]
+    fn max_sharpe_has_the_highest_sharpe_ratio(returns in returns(), margin in 1e-4f64..0.01) {
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let mean = returns.mean() * 1.5;
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+
+        // The maximum exists for any risk-free rate below the minimum variance return.
+        let min_variance = allocator.min_variance_allocation().unwrap();
+        let risk_free_rate = mu.dot(&DVector::from_column_slice(min_variance.as_slice())) - margin;
+        let sharpe = |weights: &Weights| {
+            let w = DVector::from_column_slice(weights.as_slice());
+            (mu.dot(&w) - risk_free_rate) / variance(&cov, weights).sqrt()
+        };
+
+        let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
+        let best = sharpe(&allocator.max_sharpe_allocation(&config).unwrap());
+        for (name, weights) in all_methods(&allocator, mean) {
+            let other = sharpe(&weights);
+            prop_assert!(other <= best + 1e-9 * (1.0 + best.abs()), "{name}: {other} > {best}");
+        }
     }
 }
