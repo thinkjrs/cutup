@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 jobs:
@@ -30,17 +30,17 @@ jobs:
             target
           key: cargo-coverage-nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install cargo-llvm-cov
-        run: |
-          if ! command -v cargo-llvm-cov &> /dev/null
-          then
-            cargo install cargo-llvm-cov --locked
-          else
-            echo "cargo-llvm-cov already installed from cache."
-          fi
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
 
-      - name: Generate coverage report
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+      # One run produces both reports: coverage (lcov.info) and per-test results
+      # (target/nextest/ci/junit.xml, from the ci profile in .config/nextest.toml).
+      - name: Run tests with coverage
+        run: cargo llvm-cov nextest --all-features --lcov --output-path lcov.info
+        env:
+          NEXTEST_PROFILE: ci
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
@@ -49,3 +49,12 @@ jobs:
           slug: thinkjrs/cutup
           files: lcov.info
           verbose: true
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: thinkjrs/cutup
+          report_type: test_results
+          files: target/nextest/ci/junit.xml

@@ -1,0 +1,7 @@
+# Profile used in CI by coverage.yml: run every test even after a failure, and
+# write a JUnit report for Codecov Test Analytics to target/nextest/ci/junit.xml.
+[profile.ci]
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
