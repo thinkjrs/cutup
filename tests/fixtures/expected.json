@@ -356,6 +356,64 @@
       "weights": [0.038363551356519775, 0.36148649818780865, 0.04076469554771761, 0.15631925316711184, 0.1352699688853459, 0.26779603285549625]
     },
     {
+      "dataset": "collinear2",
+      "method": "equal_weight",
+      "tolerance": 0.0,
+      "weights": [0.5, 0.5]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_variance",
+      "tolerance": 1e-09,
+      "weights": [2.0000000000009814, -1.0000000000009812],
+      "condition_number": 1.57e+17
+    },
+    {
+      "dataset": "collinear2",
+      "method": "hrp",
+      "tolerance": 1e-12,
+      "weights": [0.8, 0.19999999999999996]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "inverse_volatility",
+      "tolerance": 1e-12,
+      "weights": [0.6666666666666667, 0.3333333333333333]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "inverse_variance",
+      "tolerance": 1e-12,
+      "weights": [0.8, 0.19999999999999998]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "hrp",
+      "params": {
+        "linkage": "complete"
+      },
+      "tolerance": 1e-12,
+      "weights": [0.8, 0.19999999999999996]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "hrp",
+      "params": {
+        "linkage": "average"
+      },
+      "tolerance": 1e-12,
+      "weights": [0.8, 0.19999999999999996]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "hrp",
+      "params": {
+        "linkage": "ward"
+      },
+      "tolerance": 1e-12,
+      "weights": [0.8, 0.19999999999999996]
+    },
+    {
       "dataset": "two_blocks5",
       "method": "min_variance",
       "params": {
@@ -657,6 +715,37 @@
       "tolerance": 1e-09,
       "weights": [0.09385601810677263, 0.17650601033437086, -0.041381165283495884, 0.1959447797674192, 0.3505332515240328, 0.22454110555090037],
       "condition_number": 12.16
+    },
+    {
+      "dataset": "collinear2",
+      "method": "max_sharpe",
+      "params": {
+        "risk_free_rate": 0.0
+      },
+      "tolerance": 1e-09,
+      "error": "RiskFreeRateTooHigh",
+      "condition_number": 1.57e+17
+    },
+    {
+      "dataset": "collinear2",
+      "method": "max_sharpe",
+      "params": {
+        "risk_free_rate": -0.01
+      },
+      "tolerance": 1e-09,
+      "error": "Unbounded",
+      "condition_number": 1.57e+17
+    },
+    {
+      "dataset": "collinear2",
+      "method": "max_sharpe",
+      "params": {
+        "risk_free_rate": 0.0,
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [-0.03947368421052586, 1.0394736842105259],
+      "condition_number": 5.667
     }
   ]
 }

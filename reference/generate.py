@@ -122,17 +122,27 @@ def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray 
 
 
 def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
+    """The tangency portfolio, or the error cutup should return.
+
+    Expected errors are decided from first principles: the minimum variance portfolio (from
+    min_variance above) and its variance and return, and the null space of Σ from NumPy's
+    SVD. Nothing here runs cutup's algorithm.
+    """
+    n = cov.shape[0]
     excess = mu - risk_free_rate
-    if well_conditioned(cov):
-        z = np.linalg.solve(cov, excess)
-    else:
-        z, *_ = np.linalg.lstsq(cov, excess, rcond=None)
-        # No exact solution: some zero-variance portfolio earns excess return.
-        if np.linalg.norm(cov @ z - excess) > 1e-9 * np.linalg.norm(excess):
-            return "Unbounded"
-    # 1ᵀz > 0 exactly when r_f is below the minimum variance portfolio's return.
-    if z.sum() <= 1e-12 * np.abs(z).sum():
+    w_mvp = min_variance(cov)
+    r_mvp = float(w_mvp @ mu)
+    scale = np.trace(cov) / n
+
+    # A fully invested portfolio with zero variance is the minimum variance portfolio.
+    if w_mvp @ cov @ w_mvp <= 1e-12 * scale:
+        return "Unbounded" if r_mvp > risk_free_rate else "RiskFreeRateTooHigh"
+    # A variance-free, budget-neutral change that adds expected return.
+    if np.linalg.norm(free_directions(cov).T @ excess) > 1e-9 * np.linalg.norm(excess):
+        return "Unbounded"
+    if risk_free_rate >= r_mvp - 1e-10 * (abs(r_mvp) + np.abs(mu).max()):
         return "RiskFreeRateTooHigh"
+    z = np.linalg.solve(cov, excess) if well_conditioned(cov) else np.linalg.pinv(cov) @ excess
     return z / z.sum()
 
 
@@ -239,6 +249,11 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "prices10x60", "method": "max_sharpe", "params": {"risk_free_rate": 0.01}, "tolerance": solver})
     out.append({"dataset": "rank_deficient6", "method": "max_sharpe", "tolerance": solver})
     out.append({"dataset": "rank_deficient6", "method": "max_sharpe", "params": {"risk_free_rate": -0.01, "shrinkage": 0.3}, "tolerance": solver})
+    # The collinear pair's zero-variance portfolio returns −0.001: below it, the Sharpe ratio
+    # is unbounded; above it, the rate is too high.
+    out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0}, "tolerance": solver})
+    out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
+    out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0, "shrinkage": 0.3}, "tolerance": solver})
     return out
 
 

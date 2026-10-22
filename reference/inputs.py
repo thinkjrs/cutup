@@ -109,6 +109,17 @@ def rank_deficient6(rng: np.random.Generator) -> dict:
     }
 
 
+def collinear2() -> dict:
+    # Asset 1 is exactly 2 × asset 0 + 0.001, so (2, −1) is a fully invested portfolio with
+    # zero variance returning −0.001 every period: the singular edge cases for max Sharpe.
+    base = [0.01, -0.02, 0.015, -0.005, 0.02, -0.01]
+    return {
+        "kind": "returns",
+        "description": "Two perfectly collinear assets with a zero-variance hedge.",
+        "data": [[r, 2 * r + 0.001] for r in base],
+    }
+
+
 def main() -> None:
     rng = np.random.default_rng(20261022)
     datasets = {
@@ -118,6 +129,7 @@ def main() -> None:
         "prices10x60": prices10x60(rng),
         "near_singular4": near_singular4(rng),
         "rank_deficient6": rank_deficient6(rng),
+        "collinear2": collinear2(),
     }
     write_json(OUTPUT, datasets)
     print(f"wrote {len(datasets)} datasets to {OUTPUT}")
