@@ -7,6 +7,9 @@ on:
       - develop
       - feature/*
   pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -56,3 +59,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --all-targets
+
+      - name: Run doctests
+        run: cargo test --all-features --doc
