@@ -1,2 +1,6 @@
 /target
 /docs/PLAN.md
+
+# Python reference environment
+reference/.venv/
+__pycache__/

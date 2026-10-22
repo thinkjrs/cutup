@@ -1,0 +1,254 @@
+"""Computes reference weights for cutup's integration tests.
+
+    uv run --project reference python reference/generate.py           # write
+    uv run --project reference python reference/generate.py --check   # compare
+
+Reads tests/fixtures/datasets.json and writes tests/fixtures/expected.json, which
+tests/reference.rs checks cutup against. Each method's reference is independent of
+cutup's implementation:
+
+* Equal weight: 1 / n.
+* Minimum variance and mean-variance: NumPy closed forms when the covariance is well
+  conditioned, otherwise the minimum-norm solution of the KKT system from
+  numpy.linalg.lstsq. Expected errors are decided from the null space of the
+  covariance, not by running the same solver as cutup.
+* HRP: PyPortfolioOpt's HRPOpt.
+
+With --check, nothing is written: the cases are recomputed and compared with the
+committed file, failing if any weight moved by more than a tenth of its tolerance or
+any case changed shape. CI runs this so the fixtures can't drift from the pinned
+reference implementations. The comparison is numeric rather than byte-for-byte
+because NumPy's linear algebra can differ in the last bits between platforms.
+"""
+
+import importlib.metadata
+import json
+import platform
+import sys
+
+import numpy as np
+import pandas as pd
+from pypfopt import HRPOpt
+
+from fixtures import FIXTURES, write_json
+
+DATASETS = FIXTURES / "datasets.json"
+OUTPUT = FIXTURES / "expected.json"
+
+# Covariances better conditioned than this use the closed forms.
+WELL_CONDITIONED = 1e12
+
+
+def load_returns(dataset: dict) -> np.ndarray:
+    data = pd.DataFrame(dataset["data"], dtype=float)
+    if dataset["kind"] == "prices":
+        data = data.pct_change().dropna()
+    return data.to_numpy()
+
+
+def adjust(cov: np.ndarray, shrinkage: float | None, regularization: float | None) -> np.ndarray:
+    n = cov.shape[0]
+    if shrinkage is not None:
+        cov = shrinkage * (np.trace(cov) / n) * np.eye(n) + (1.0 - shrinkage) * cov
+    if regularization is not None:
+        cov = cov + regularization * np.eye(n)
+    return cov
+
+
+def well_conditioned(cov: np.ndarray) -> bool:
+    return np.linalg.cond(cov) < WELL_CONDITIONED
+
+
+def kkt_min_norm(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Minimum-norm solution of [K E; Eᵀ 0][w; λ] = [c; b]."""
+    n, m = e.shape
+    kkt = np.block([[k, e], [e.T, np.zeros((m, m))]])
+    solution, *_ = np.linalg.lstsq(kkt, np.concatenate([c, b]), rcond=None)
+    return solution[:n]
+
+
+def free_directions(cov: np.ndarray) -> np.ndarray:
+    """Orthonormal basis of {d : Σd = 0, 1ᵀd = 0}: changes to a fully invested
+    portfolio that add no variance."""
+    n = cov.shape[0]
+    stacked = np.vstack([cov / np.abs(cov).max(), np.ones((1, n))])
+    _, singular, vt = np.linalg.svd(stacked)
+    rank = int((singular > singular.max() * max(stacked.shape) * np.finfo(float).eps).sum())
+    return vt[rank:].T
+
+
+def min_variance(cov: np.ndarray) -> np.ndarray:
+    n = cov.shape[0]
+    ones = np.ones(n)
+    if well_conditioned(cov):
+        inv_ones = np.linalg.solve(cov, ones)
+        return inv_ones / inv_ones.sum()
+    return kkt_min_norm(cov, np.zeros(n), ones[:, None], np.array([1.0]))
+
+
+def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray | str:
+    n = cov.shape[0]
+    ones = np.ones(n)
+    if well_conditioned(cov):
+        inv_ones = np.linalg.solve(cov, ones)
+        inv_mu = np.linalg.solve(cov, mu)
+        a, b = ones @ inv_ones, ones @ inv_mu
+        eta = (b - gamma) / a
+        return (inv_mu - eta * inv_ones) / gamma
+    # Unbounded when some variance-free change to the portfolio raises expected return.
+    if np.linalg.norm(free_directions(cov).T @ mu) > 1e-9 * np.linalg.norm(mu):
+        return "Unbounded"
+    return kkt_min_norm(gamma * cov, mu, ones[:, None], np.array([1.0]))
+
+
+def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray | str:
+    n = cov.shape[0]
+    ones = np.ones(n)
+    # With every expected return equal, only that return can be targeted.
+    if np.allclose(mu, mu.mean(), rtol=0.0, atol=1e-15) and not np.isclose(target, mu.mean()):
+        return "DegenerateExpectedReturns"
+    if well_conditioned(cov):
+        inv_ones = np.linalg.solve(cov, ones)
+        inv_mu = np.linalg.solve(cov, mu)
+        a, b, c = ones @ inv_ones, ones @ inv_mu, mu @ inv_mu
+        d = a * c - b * b
+        return ((c - b * target) * inv_ones + (a * target - b) * inv_mu) / d
+    return kkt_min_norm(cov, np.zeros(n), np.column_stack([ones, mu]), np.array([1.0, target]))
+
+
+def hrp(returns: np.ndarray) -> np.ndarray:
+    weights = HRPOpt(pd.DataFrame(returns)).optimize()
+    return np.array([weights[i] for i in range(returns.shape[1])])
+
+
+def adjusted_covariance(case: dict, returns: np.ndarray) -> np.ndarray:
+    params = case.get("params", {})
+    cov = np.cov(returns, rowvar=False)
+    return adjust(cov, params.get("shrinkage"), params.get("regularization"))
+
+
+def run(case: dict, returns: np.ndarray) -> np.ndarray | str:
+    params = case.get("params", {})
+    mu = np.array(params["expected_returns"]) if "expected_returns" in params else returns.mean(axis=0)
+    adjusted = adjusted_covariance(case, returns)
+    match case["method"]:
+        case "equal_weight":
+            return np.full(returns.shape[1], 1.0 / returns.shape[1])
+        case "min_variance":
+            return min_variance(adjusted)
+        case "mean_variance" if "risk_aversion" in params:
+            return risk_aversion(adjusted, mu, params["risk_aversion"])
+        case "mean_variance":
+            return target_return(adjusted, mu, params["target_return"])
+        case "hrp":
+            return hrp(returns)
+    raise ValueError(f"unknown method {case['method']}")
+
+
+def cases(datasets: dict) -> list[dict]:
+    """The (dataset, method, params) combinations to check, with tolerances."""
+    exact, solver, clustering = 0.0, 1e-9, 1e-12
+    out = []
+    for name in datasets:
+        out.append({"dataset": name, "method": "equal_weight", "tolerance": exact})
+        out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
+        out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
+
+    for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
+        out.append({"dataset": name, "method": "min_variance", "params": {"shrinkage": 0.3}, "tolerance": solver})
+    for name in ["prices10x60", "near_singular4"]:
+        out.append({"dataset": name, "method": "min_variance", "params": {"regularization": 1e-5}, "tolerance": solver})
+    out.append({
+        "dataset": "near_singular4",
+        "method": "min_variance",
+        "params": {"shrinkage": 0.2, "regularization": 1e-6},
+        "tolerance": solver,
+    })
+
+    for name, gamma in [("orthogonal3", 50.0), ("two_asset", 50.0), ("two_blocks5", 100.0),
+                        ("prices10x60", 100.0), ("near_singular4", 100.0), ("rank_deficient6", 100.0)]:
+        out.append({"dataset": name, "method": "mean_variance", "params": {"risk_aversion": gamma}, "tolerance": solver})
+    out.append({
+        "dataset": "rank_deficient6",
+        "method": "mean_variance",
+        "params": {"risk_aversion": 100.0, "shrinkage": 0.3},
+        "tolerance": solver,
+    })
+    out.append({
+        "dataset": "prices10x60",
+        "method": "mean_variance",
+        "params": {
+            "risk_aversion": 100.0,
+            "expected_returns": [0.0010, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        },
+        "tolerance": solver,
+    })
+
+    for name in ["two_asset", "two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
+        returns = load_returns(datasets[name])
+        target = round(1.25 * float(returns.mean()), 6)
+        out.append({"dataset": name, "method": "mean_variance", "params": {"target_return": target}, "tolerance": solver})
+    out.append({"dataset": "orthogonal3", "method": "mean_variance", "params": {"target_return": 0.01}, "tolerance": solver})
+    return out
+
+
+def drift(committed: dict, fresh: dict) -> list[str]:
+    """Differences between the committed fixtures and a fresh run that exceed noise."""
+    problems = []
+    if len(committed["cases"]) != len(fresh["cases"]):
+        return [f"{len(committed['cases'])} committed cases, {len(fresh['cases'])} regenerated"]
+    for old, new in zip(committed["cases"], fresh["cases"]):
+        label = f"{new['dataset']} / {new['method']} {new.get('params', {})}"
+        keys = ("dataset", "method", "params", "error")
+        if any(old.get(key) != new.get(key) for key in keys) or ("weights" in old) != ("weights" in new):
+            problems.append(f"{label}: case changed")
+            continue
+        if "weights" not in new:
+            continue
+        old_w, new_w = np.array(old["weights"]), np.array(new["weights"])
+        allowed = max(old["tolerance"], new["tolerance"]) / 10
+        moved = np.max(np.abs(old_w - new_w) / np.maximum(np.abs(old_w), 1.0))
+        if old_w.shape != new_w.shape or moved > allowed:
+            problems.append(f"{label}: weights moved by {moved:.2e} (allowed {allowed:.0e})")
+    return problems
+
+
+def main() -> None:
+    check = "--check" in sys.argv[1:]
+    datasets = json.loads(DATASETS.read_text())
+    results = []
+    for case in cases(datasets):
+        returns = load_returns(datasets[case["dataset"]])
+        outcome = run(case, returns)
+        if isinstance(outcome, str):
+            case["error"] = outcome
+        else:
+            case["weights"] = [float(w) for w in outcome]
+        if case["method"] in ("min_variance", "mean_variance"):
+            # Any solver loses about cond(Σ) · ε of accuracy, so ill-conditioned
+            # cases get a proportionally looser tolerance.
+            condition = float(np.linalg.cond(adjusted_covariance(case, returns)))
+            case["condition_number"] = float(f"{condition:.3e}")
+            if condition < WELL_CONDITIONED:
+                case["tolerance"] = max(case["tolerance"], float(f"{condition * 1e-14:.1e}"))
+        results.append(case)
+
+    versions = {"python": platform.python_version()}
+    for package in ["numpy", "pandas", "scipy", "pyportfolioopt"]:
+        versions[package] = importlib.metadata.version(package)
+    fresh = {"generated_with": versions, "cases": results}
+
+    if check:
+        problems = drift(json.loads(OUTPUT.read_text()), fresh)
+        for problem in problems:
+            print(problem)
+        print(f"{len(problems)} of {len(results)} cases drifted from {OUTPUT}")
+        sys.exit(1 if problems else 0)
+
+    write_json(OUTPUT, fresh)
+    errors = sum("error" in case for case in results)
+    print(f"wrote {len(results)} cases ({errors} expected errors) to {OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()
