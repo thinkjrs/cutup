@@ -315,8 +315,8 @@ impl MeanVarianceConfig {
 }
 
 /// `PortfolioAllocator` handles various portfolio allocation strategies.
-/// Supports minimum variance, mean-variance optimization, Equal Weight (EW), and Hierarchical
-/// Risk Parity (HRP).
+/// Supports minimum variance, mean-variance optimization, Equal Weight (EW), inverse
+/// volatility, inverse variance, and Hierarchical Risk Parity (HRP).
 ///
 /// All covariance-based methods work on the covariance of asset returns, never of price levels.
 /// Build an allocator from prices with [`PortfolioAllocator::from_prices`], or from returns you
@@ -854,6 +854,94 @@ impl PortfolioAllocator {
     pub fn ew_allocation(&self) -> Weights {
         let n = self.returns.ncols();
         Weights(vec![1.0 / n as f64; n])
+    }
+
+    /// Weights each asset in proportion to `f(σᵢ²)`, normalized to sum to 1.
+    fn weight_by_variance(&self, f: impl Fn(f64) -> f64) -> Result<Weights, CutupError> {
+        if let Some(asset) = self.find_zero_variance() {
+            return Err(CutupError::ZeroVariance { asset });
+        }
+        let raw: Vec<f64> = self.cov_matrix.diagonal().iter().map(|&v| f(v)).collect();
+        let total: f64 = raw.iter().sum();
+        Ok(Weights(raw.iter().map(|w| w / total).collect()))
+    }
+
+    /// Computes inverse volatility weights: `wᵢ ∝ 1 / σᵢ`.
+    ///
+    /// Each asset's weight is inversely proportional to the standard deviation of its returns,
+    /// so riskier assets get less. Correlations are ignored. Compared with
+    /// [`PortfolioAllocator::inverse_variance_allocation`], the tilt away from risky assets is
+    /// milder. When assets are uncorrelated, this gives each asset the same risk contribution.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, positive and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Volatilities in the ratio 1 : 2.
+    /// let returns = dmatrix![
+    ///      0.01,  0.02;
+    ///     -0.01, -0.02;
+    ///      0.01, -0.02;
+    ///     -0.01,  0.02
+    /// ];
+    ///
+    /// let weights = PortfolioAllocator::from_returns(returns)?.inverse_volatility_allocation()?;
+    ///
+    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
+    /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn inverse_volatility_allocation(&self) -> Result<Weights, CutupError> {
+        self.weight_by_variance(|variance| 1.0 / variance.sqrt())
+    }
+
+    /// Computes inverse variance weights: `wᵢ ∝ 1 / σᵢ²`.
+    ///
+    /// Each asset's weight is inversely proportional to the variance of its returns.
+    /// Correlations are ignored. When assets are uncorrelated this is the minimum variance
+    /// portfolio, and it is what [`PortfolioAllocator::hrp_allocation`] uses within each
+    /// cluster.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, positive and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Volatilities in the ratio 1 : 2, so variances in the ratio 1 : 4.
+    /// let returns = dmatrix![
+    ///      0.01,  0.02;
+    ///     -0.01, -0.02;
+    ///      0.01, -0.02;
+    ///     -0.01,  0.02
+    /// ];
+    ///
+    /// let weights = PortfolioAllocator::from_returns(returns)?.inverse_variance_allocation()?;
+    ///
+    /// assert!((weights[0] - 0.8).abs() < 1e-12);
+    /// assert!((weights[1] - 0.2).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn inverse_variance_allocation(&self) -> Result<Weights, CutupError> {
+        self.weight_by_variance(|variance| 1.0 / variance)
     }
 
     /// Orders assets so that correlated assets sit next to each other: the leaf order of a
@@ -1986,6 +2074,114 @@ mod tests {
             &allocator.hrp_allocation().unwrap(),
             &Weights(vec![0.5, 0.5]),
             1e-12,
+        );
+    }
+
+    #[test]
+    fn test_inverse_volatility_and_variance_closed_form() {
+        // Orthogonal columns with volatilities s1, s2, s3.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+
+        let normalize = |raw: [f64; 3]| {
+            let total: f64 = raw.iter().sum();
+            Weights(raw.iter().map(|x| x / total).collect())
+        };
+        assert_weights_close(
+            &allocator.inverse_volatility_allocation().unwrap(),
+            &normalize([1.0 / s1, 1.0 / s2, 1.0 / s3]),
+            1e-12,
+        );
+        assert_weights_close(
+            &allocator.inverse_variance_allocation().unwrap(),
+            &normalize([1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_inverse_variance_matches_min_variance_and_hrp_when_uncorrelated() {
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let inverse_variance = allocator.inverse_variance_allocation().unwrap();
+        assert_weights_close(
+            &inverse_variance,
+            &allocator.min_variance_allocation().unwrap(),
+            1e-12,
+        );
+        assert_weights_close(
+            &inverse_variance,
+            &allocator.hrp_allocation().unwrap(),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_inverse_volatility_equalizes_risk_when_uncorrelated() {
+        // With a diagonal Σ, asset i contributes wᵢ²σᵢ² of the variance, so wᵢ ∝ 1/σᵢ makes
+        // every contribution equal.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let weights = allocator.inverse_volatility_allocation().unwrap();
+        let contributions: Vec<f64> = (0..3)
+            .map(|i| weights[i] * weights[i] * allocator.cov_matrix[(i, i)])
+            .collect();
+        for c in &contributions {
+            assert!((c - contributions[0]).abs() < 1e-18, "{contributions:?}");
+        }
+    }
+
+    #[test]
+    fn test_inverse_weights_ignore_return_scale_and_stay_positive() {
+        let returns = PortfolioAllocator::compute_returns(&full_rank_prices());
+        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let scaled = PortfolioAllocator::from_returns(returns * 50.0).unwrap();
+
+        for (a, b) in [
+            (
+                base.inverse_volatility_allocation().unwrap(),
+                scaled.inverse_volatility_allocation().unwrap(),
+            ),
+            (
+                base.inverse_variance_allocation().unwrap(),
+                scaled.inverse_variance_allocation().unwrap(),
+            ),
+        ] {
+            assert_weights_close(&a, &b, 1e-12);
+            assert!((a.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            assert!(a.iter().all(|&w| w > 0.0));
+        }
+    }
+
+    #[test]
+    fn test_inverse_weights_reject_zero_variance() {
+        let allocator =
+            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+        assert_eq!(
+            allocator.inverse_volatility_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+        assert_eq!(
+            allocator.inverse_variance_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
 
