@@ -67,6 +67,15 @@ pub enum CutupError {
     /// fully invested portfolio gains expected return without adding variance. Add shrinkage or
     /// regularization, or use more observations.
     Unbounded,
+    /// The risk-free rate is at or above the minimum variance portfolio's expected return, so no
+    /// fully invested portfolio attains the maximum Sharpe ratio: it is only approached as
+    /// positions grow without limit.
+    RiskFreeRateTooHigh {
+        /// The risk-free rate supplied.
+        risk_free_rate: f64,
+        /// The minimum variance portfolio's expected return, which the rate must be below.
+        min_variance_return: f64,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -108,6 +117,14 @@ impl fmt::Display for CutupError {
             CutupError::Unbounded => write!(
                 f,
                 "objective is unbounded: expected return can grow without adding variance"
+            ),
+            CutupError::RiskFreeRateTooHigh {
+                risk_free_rate,
+                min_variance_return,
+            } => write!(
+                f,
+                "risk-free rate {risk_free_rate} must be below the minimum variance portfolio's \
+                 expected return {min_variance_return}"
             ),
         }
     }
@@ -319,6 +336,52 @@ impl MeanVarianceConfig {
     }
 }
 
+/// Configuration for [`PortfolioAllocator::max_sharpe_allocation`].
+///
+/// The default uses a risk-free rate of 0, the sample mean of the returns as expected
+/// returns, and the unadjusted sample covariance:
+///
+/// ```
+/// use cutup::{CovarianceConfig, MaxSharpeConfig};
+///
+/// // 4% a year, for daily returns.
+/// let config = MaxSharpeConfig::default()
+///     .with_risk_free_rate(0.04 / 252.0)
+///     .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct MaxSharpeConfig {
+    /// The risk-free rate per period, in the same units as the returns (a daily rate for
+    /// daily returns).
+    pub risk_free_rate: f64,
+    /// Expected return per asset, in the same units and period as the returns. When `None`, the
+    /// sample mean of the returns is used.
+    pub expected_returns: Option<DVector<f64>>,
+    /// Adjustments applied to the covariance matrix.
+    pub covariance: CovarianceConfig,
+}
+
+impl MaxSharpeConfig {
+    /// Sets the risk-free rate per period.
+    pub fn with_risk_free_rate(mut self, risk_free_rate: f64) -> Self {
+        self.risk_free_rate = risk_free_rate;
+        self
+    }
+
+    /// Uses `expected_returns` instead of the sample mean of the returns.
+    pub fn with_expected_returns(mut self, expected_returns: DVector<f64>) -> Self {
+        self.expected_returns = Some(expected_returns);
+        self
+    }
+
+    /// Applies `covariance` adjustments to the covariance matrix.
+    pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
+        self.covariance = covariance;
+        self
+    }
+}
+
 /// Configuration for [`PortfolioAllocator::hrp_allocation_with_config`] and
 /// [`PortfolioAllocator::hrp_cluster_order`].
 ///
@@ -344,8 +407,8 @@ impl HrpConfig {
 }
 
 /// `PortfolioAllocator` handles various portfolio allocation strategies.
-/// Supports minimum variance, mean-variance optimization, Equal Weight (EW), inverse
-/// volatility, inverse variance, and Hierarchical Risk Parity (HRP).
+/// Supports minimum variance, mean-variance optimization, maximum Sharpe ratio, Equal Weight
+/// (EW), inverse volatility, inverse variance, and Hierarchical Risk Parity (HRP).
 ///
 /// All covariance-based methods work on the covariance of asset returns, never of price levels.
 /// Build an allocator from prices with [`PortfolioAllocator::from_prices`], or from returns you
@@ -815,24 +878,7 @@ impl PortfolioAllocator {
         }
 
         let n = self.cov_matrix.ncols();
-        let mu = match &config.expected_returns {
-            Some(mu) if mu.len() != n => {
-                return Err(CutupError::DimensionMismatch {
-                    expected: n,
-                    actual: mu.len(),
-                });
-            }
-            Some(mu) => {
-                if let Some(&value) = mu.iter().find(|m| !m.is_finite()) {
-                    return Err(CutupError::InvalidConfig {
-                        field: "expected_returns",
-                        value,
-                    });
-                }
-                mu.clone()
-            }
-            None => self.returns.row_mean().transpose(),
-        };
+        let mu = self.expected_returns(config.expected_returns.as_ref())?;
 
         let cov = self.adjusted_covariance(&config.covariance)?;
         let ones = DVector::from_element(n, 1.0);
@@ -854,6 +900,118 @@ impl PortfolioAllocator {
             .ok_or(CutupError::DegenerateExpectedReturns)?,
         };
         Ok(Weights(weights.iter().copied().collect()))
+    }
+
+    /// Returns `given` after checking it, or the sample mean of the returns when it's `None`.
+    fn expected_returns(&self, given: Option<&DVector<f64>>) -> Result<DVector<f64>, CutupError> {
+        let n = self.cov_matrix.ncols();
+        match given {
+            Some(mu) if mu.len() != n => Err(CutupError::DimensionMismatch {
+                expected: n,
+                actual: mu.len(),
+            }),
+            Some(mu) => match mu.iter().find(|m| !m.is_finite()) {
+                Some(&value) => Err(CutupError::InvalidConfig {
+                    field: "expected_returns",
+                    value,
+                }),
+                None => Ok(mu.clone()),
+            },
+            None => Ok(self.returns.row_mean().transpose()),
+        }
+    }
+
+    /// Computes the maximum Sharpe ratio (tangency) portfolio: maximize
+    /// `(μᵀw − r_f) / sqrt(wᵀΣw)` subject to `1ᵀw = 1`.
+    ///
+    /// The solution is `w = Σ⁻¹(μ − r_f·1) / 1ᵀΣ⁻¹(μ − r_f·1)`. It is computed through the same
+    /// KKT solver as [`PortfolioAllocator::min_variance_allocation`], so a singular Σ gives the
+    /// minimum-norm solution, or an error when no maximum exists. There is no long-only
+    /// constraint, so weights can be negative (short positions).
+    ///
+    /// The maximum exists only when the risk-free rate is below the expected return of the
+    /// minimum variance portfolio. At or above it, the formula would give the portfolio with
+    /// the *lowest* Sharpe ratio, so an error is returned instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The risk-free rate, optional expected returns (default: the sample mean of
+    ///   the returns), and covariance adjustments.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not
+    ///   finite, or the covariance config is invalid.
+    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
+    /// * [`CutupError::RiskFreeRateTooHigh`] if the risk-free rate is at or above the minimum
+    ///   variance portfolio's expected return.
+    /// * [`CutupError::Unbounded`] when Σ is singular and some portfolio earns excess return
+    ///   without adding variance.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MaxSharpeConfig, PortfolioAllocator};
+    /// use nalgebra::{dmatrix, dvector};
+    ///
+    /// // Uncorrelated assets: the tangency weights are proportional to (μᵢ − r_f) / σᵢ².
+    /// let returns = dmatrix![
+    ///      0.01,  0.02;
+    ///     -0.01, -0.02;
+    ///      0.01, -0.02;
+    ///     -0.01,  0.02
+    /// ];
+    /// let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.002, 0.004]);
+    ///
+    /// let weights = PortfolioAllocator::from_returns(returns)?.max_sharpe_allocation(&config)?;
+    ///
+    /// // σ² is in the ratio 1 : 4 and μ in the ratio 1 : 2, so the weights are 2 : 1.
+    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
+    /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn max_sharpe_allocation(&self, config: &MaxSharpeConfig) -> Result<Weights, CutupError> {
+        let risk_free_rate = config.risk_free_rate;
+        if !risk_free_rate.is_finite() {
+            return Err(CutupError::InvalidConfig {
+                field: "risk_free_rate",
+                value: risk_free_rate,
+            });
+        }
+        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let cov = self.adjusted_covariance(&config.covariance)?;
+        let n = cov.ncols();
+        let excess = mu.add_scalar(-risk_free_rate);
+
+        // Σz = μ − r_f·1, as the unconstrained problem min ½zᵀΣz − (μ − r_f·1)ᵀz. With no
+        // exact solution, some zero-variance portfolio earns excess return.
+        let z = PortfolioAllocator::solve_kkt(
+            &cov,
+            &excess,
+            &DMatrix::zeros(n, 0),
+            &DVector::zeros(0),
+        )?
+        .ok_or(CutupError::Unbounded)?;
+
+        // Scaling z to sum to 1 needs 1ᵀz > 0, which holds exactly when r_f is below the
+        // minimum variance portfolio's return. Near zero, the weights would be all leverage.
+        let total = z.sum();
+        if total <= 1e-12 * z.abs().sum() {
+            let min_variance = self.min_variance_allocation_with_config(&config.covariance)?;
+            let min_variance_return = min_variance.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+            return Err(CutupError::RiskFreeRateTooHigh {
+                risk_free_rate,
+                min_variance_return,
+            });
+        }
+        Ok(Weights((z / total).iter().copied().collect()))
     }
 
     /// Computes Equal Weight (EW) portfolio allocation.
@@ -1385,6 +1543,14 @@ mod tests {
             }
             .to_string(),
             "expected one value per asset (3) but got 2"
+        );
+        assert_eq!(
+            CutupError::RiskFreeRateTooHigh {
+                risk_free_rate: 0.02,
+                min_variance_return: 0.01
+            }
+            .to_string(),
+            "risk-free rate 0.02 must be below the minimum variance portfolio's expected return 0.01"
         );
         assert_eq!(
             CutupError::Unbounded.to_string(),
@@ -2283,6 +2449,138 @@ mod tests {
         );
         assert_eq!(
             allocator.inverse_variance_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+    }
+
+    fn sharpe(allocator: &PortfolioAllocator, weights: &Weights, risk_free_rate: f64) -> f64 {
+        let w = DVector::from_column_slice(weights.as_slice());
+        (sample_mean(allocator).dot(&w) - risk_free_rate)
+            / portfolio_variance(allocator, weights).sqrt()
+    }
+
+    fn min_variance_return(allocator: &PortfolioAllocator) -> f64 {
+        let w = DVector::from_column_slice(allocator.min_variance_allocation().unwrap().as_slice());
+        sample_mean(allocator).dot(&w)
+    }
+
+    #[test]
+    fn test_max_sharpe_closed_form() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let risk_free_rate = min_variance_return(&allocator) - 0.002;
+        let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
+        let weights = allocator.max_sharpe_allocation(&config).unwrap();
+
+        let excess = sample_mean(&allocator).add_scalar(-risk_free_rate);
+        let z = allocator.cov_matrix.clone().try_inverse().unwrap() * excess;
+        let expected = Weights((&z / z.sum()).iter().copied().collect());
+        assert_weights_close(&weights, &expected, 1e-10);
+    }
+
+    #[test]
+    fn test_max_sharpe_beats_every_other_method() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let risk_free_rate = min_variance_return(&allocator) - 0.002;
+        let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
+        let best = sharpe(
+            &allocator,
+            &allocator.max_sharpe_allocation(&config).unwrap(),
+            risk_free_rate,
+        );
+
+        let others = [
+            allocator.ew_allocation(),
+            allocator.inverse_volatility_allocation().unwrap(),
+            allocator.inverse_variance_allocation().unwrap(),
+            allocator.min_variance_allocation().unwrap(),
+            allocator.hrp_allocation().unwrap(),
+            allocator
+                .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+                .unwrap(),
+        ];
+        for weights in &others {
+            assert!(sharpe(&allocator, weights, risk_free_rate) <= best + 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_max_sharpe_lies_on_the_efficient_frontier() {
+        // The tangency portfolio is the minimum variance portfolio for its own return.
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let risk_free_rate = min_variance_return(&allocator) - 0.002;
+        let tangency = allocator
+            .max_sharpe_allocation(&MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate))
+            .unwrap();
+        let target = sample_mean(&allocator).dot(&DVector::from_column_slice(tangency.as_slice()));
+        let frontier = allocator
+            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .unwrap();
+        assert_weights_close(&tangency, &frontier, 1e-9);
+    }
+
+    #[test]
+    fn test_max_sharpe_rejects_risk_free_rate_at_or_above_min_variance_return() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let threshold = min_variance_return(&allocator);
+        for risk_free_rate in [threshold, threshold + 0.001] {
+            let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
+            match allocator.max_sharpe_allocation(&config) {
+                Err(CutupError::RiskFreeRateTooHigh {
+                    risk_free_rate: got,
+                    min_variance_return,
+                }) => {
+                    assert_eq!(got, risk_free_rate);
+                    assert!((min_variance_return - threshold).abs() < 1e-12);
+                }
+                other => panic!("risk-free rate {risk_free_rate} gave {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_sharpe_singular_covariance() {
+        // The sample mean isn't in Σ's range, so some zero-variance portfolio earns excess
+        // return and the Sharpe ratio has no maximum. Shrinkage restores one.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        assert_eq!(
+            allocator
+                .max_sharpe_allocation(&MaxSharpeConfig::default())
+                .err(),
+            Some(CutupError::Unbounded)
+        );
+
+        let shrunk = MaxSharpeConfig::default()
+            .with_risk_free_rate(-0.01)
+            .with_covariance(CovarianceConfig::default().with_shrinkage(0.5));
+        let weights = allocator.max_sharpe_allocation(&shrunk).unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_max_sharpe_rejects_invalid_config() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        match allocator
+            .max_sharpe_allocation(&MaxSharpeConfig::default().with_risk_free_rate(f64::NAN))
+        {
+            Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_free_rate"),
+            other => panic!("NaN risk-free rate gave {other:?}"),
+        }
+        let config =
+            MaxSharpeConfig::default().with_expected_returns(DVector::from_vec(vec![0.01]));
+        assert_eq!(
+            allocator.max_sharpe_allocation(&config).err(),
+            Some(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 1
+            })
+        );
+
+        let constant =
+            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+        assert_eq!(
+            constant
+                .max_sharpe_allocation(&MaxSharpeConfig::default())
+                .err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
