@@ -67,9 +67,9 @@ pub enum CutupError {
     /// fully invested portfolio gains expected return without adding variance. Add shrinkage or
     /// regularization, or use more observations.
     Unbounded,
-    /// The risk-free rate is at or above the minimum variance portfolio's expected return, so no
-    /// fully invested portfolio attains the maximum Sharpe ratio: it is only approached as
-    /// positions grow without limit.
+    /// The risk-free rate is at or above (or within rounding of) the minimum variance
+    /// portfolio's expected return, so no fully invested portfolio attains the maximum Sharpe
+    /// ratio: it is only approached as positions grow without limit.
     RiskFreeRateTooHigh {
         /// The risk-free rate supplied.
         risk_free_rate: f64,
@@ -924,14 +924,26 @@ impl PortfolioAllocator {
     /// Computes the maximum Sharpe ratio (tangency) portfolio: maximize
     /// `(μᵀw − r_f) / sqrt(wᵀΣw)` subject to `1ᵀw = 1`.
     ///
-    /// The solution is `w = Σ⁻¹(μ − r_f·1) / 1ᵀΣ⁻¹(μ − r_f·1)`. It is computed through the same
-    /// KKT solver as [`PortfolioAllocator::min_variance_allocation`], so a singular Σ gives the
-    /// minimum-norm solution, or an error when no maximum exists. There is no long-only
+    /// The solution is `w = Σ⁻¹(μ − r_f·1) / 1ᵀΣ⁻¹(μ − r_f·1)`. There is no long-only
     /// constraint, so weights can be negative (short positions).
     ///
     /// The maximum exists only when the risk-free rate is below the expected return of the
-    /// minimum variance portfolio. At or above it, the formula would give the portfolio with
-    /// the *lowest* Sharpe ratio, so an error is returned instead.
+    /// minimum variance portfolio, `r_mvp = 1ᵀΣ⁻¹μ / 1ᵀΣ⁻¹1`. At or above it, the formula
+    /// would give the portfolio with the *lowest* Sharpe ratio, so an error is returned
+    /// instead. A rate within `1e-10 · (|r_mvp| + max |μᵢ|)` of `r_mvp` counts as at it: the
+    /// weights there are pure leverage on rounding noise.
+    ///
+    /// When Σ is singular, its null space (portfolio changes that add no variance) decides
+    /// the outcome:
+    ///
+    /// * If some fully invested change adds no variance but does add expected return, or a
+    ///   fully invested zero-variance portfolio beats the risk-free rate, the Sharpe ratio is
+    ///   unbounded: [`CutupError::Unbounded`].
+    /// * If a fully invested zero-variance portfolio exists but doesn't beat the risk-free
+    ///   rate, it is the minimum variance portfolio and the rate isn't below its return:
+    ///   [`CutupError::RiskFreeRateTooHigh`].
+    /// * Otherwise the weights above are computed with the pseudo-inverse, and are the
+    ///   minimum-norm optimum, as with [`PortfolioAllocator::min_variance_allocation`].
     ///
     /// # Arguments
     ///
@@ -949,11 +961,10 @@ impl PortfolioAllocator {
     /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
     /// * [`CutupError::RiskFreeRateTooHigh`] if the risk-free rate is at or above the minimum
     ///   variance portfolio's expected return.
-    /// * [`CutupError::Unbounded`] when Σ is singular and some portfolio earns excess return
-    ///   without adding variance.
+    /// * [`CutupError::Unbounded`] when Σ is singular and the Sharpe ratio has no upper bound.
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    /// * [`CutupError::SingularCovariance`] if the covariance can't be decomposed.
     ///
     /// # Example
     ///
@@ -987,31 +998,79 @@ impl PortfolioAllocator {
         }
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
         let cov = self.adjusted_covariance(&config.covariance)?;
-        let n = cov.ncols();
-        let excess = mu.add_scalar(-risk_free_rate);
-
-        // Σz = μ − r_f·1, as the unconstrained problem min ½zᵀΣz − (μ − r_f·1)ᵀz. With no
-        // exact solution, some zero-variance portfolio earns excess return.
-        let z = PortfolioAllocator::solve_kkt(
-            &cov,
-            &excess,
-            &DMatrix::zeros(n, 0),
-            &DVector::zeros(0),
-        )?
-        .ok_or(CutupError::Unbounded)?;
-
-        // Scaling z to sum to 1 needs 1ᵀz > 0, which holds exactly when r_f is below the
-        // minimum variance portfolio's return. Near zero, the weights would be all leverage.
-        let total = z.sum();
-        if total <= 1e-12 * z.abs().sum() {
-            let min_variance = self.min_variance_allocation_with_config(&config.covariance)?;
-            let min_variance_return = min_variance.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
-            return Err(CutupError::RiskFreeRateTooHigh {
-                risk_free_rate,
-                min_variance_return,
-            });
+        if cov.iter().any(|x| !x.is_finite()) {
+            return Err(CutupError::NonFiniteCovariance);
         }
-        Ok(Weights((z / total).iter().copied().collect()))
+        let n = cov.ncols();
+        let ones = DVector::from_element(n, 1.0);
+        let excess = mu.add_scalar(-risk_free_rate);
+        let too_high = |min_variance_return: f64| CutupError::RiskFreeRateTooHigh {
+            risk_free_rate,
+            min_variance_return,
+        };
+
+        // Decompose Σ (scaled to unit average variance; the weights don't depend on the
+        // scale) into its range and its null space, with numpy.linalg.pinv's cutoff.
+        let scale = cov.trace() / n as f64;
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(CutupError::SingularCovariance);
+        }
+        // nalgebra's SVD never converges on NaN, which the check above rules out; the
+        // iteration cap is a backstop.
+        let svd = (cov / scale)
+            .try_svd(false, true, f64::EPSILON, 10_000)
+            .ok_or(CutupError::SingularCovariance)?;
+        let v_t = svd.v_t.as_ref().ok_or(CutupError::SingularCovariance)?;
+        let cutoff = svd.singular_values.max() * n as f64 * f64::EPSILON;
+        let (mut range, mut null) = (Vec::new(), Vec::new());
+        for k in 0..n {
+            let direction = v_t.row(k).transpose();
+            if svd.singular_values[k] > cutoff {
+                range.push((svd.singular_values[k], direction));
+            } else {
+                null.push(direction);
+            }
+        }
+
+        if !null.is_empty() {
+            // Coordinates of 1 and of the excess returns in the null space.
+            let a = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&ones)));
+            let b = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&excess)));
+            let noise = 1e-9 * excess.norm().max(f64::MIN_POSITIVE);
+            if a.norm() > 1e-9 * (n as f64).sqrt() {
+                // A fully invested zero-variance portfolio exists, w0 ∝ Σ aₖvₖ, earning
+                // excess return b·a / a·a. Any part of b not along a is a budget-neutral,
+                // variance-free change that adds return.
+                let along = b.dot(&a) / a.dot(&a);
+                if (&b - &a * along).norm() > noise || along > noise {
+                    return Err(CutupError::Unbounded);
+                }
+                return Err(too_high(risk_free_rate + along));
+            }
+            if b.norm() > noise {
+                return Err(CutupError::Unbounded);
+            }
+        }
+
+        // Σ⁺x restricted to the range, where every remaining solution lives.
+        let pinv = |x: &DVector<f64>| {
+            range.iter().fold(DVector::zeros(n), |acc, (sigma, v)| {
+                acc + v * (v.dot(x) / sigma)
+            })
+        };
+        let inv_ones = pinv(&ones);
+        let min_variance_return = inv_ones.dot(&mu) / inv_ones.sum();
+        let tolerance = 1e-10 * (min_variance_return.abs() + mu.amax());
+        if risk_free_rate >= min_variance_return - tolerance {
+            return Err(too_high(min_variance_return));
+        }
+
+        let z = pinv(&excess);
+        let weights = &z / z.sum();
+        if weights.iter().any(|w| !w.is_finite()) {
+            return Err(CutupError::SingularCovariance);
+        }
+        Ok(Weights(weights.iter().copied().collect()))
     }
 
     /// Computes Equal Weight (EW) portfolio allocation.
@@ -2554,6 +2613,60 @@ mod tests {
             .with_covariance(CovarianceConfig::default().with_shrinkage(0.5));
         let weights = allocator.max_sharpe_allocation(&shrunk).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    /// Asset 1 is exactly 2 × asset 0 + 0.001, so (2, −1) is a fully invested portfolio with
+    /// zero variance that returns −0.001 every period.
+    fn collinear_returns() -> DMatrix<f64> {
+        let base = [0.01, -0.02, 0.015, -0.005, 0.02, -0.01];
+        DMatrix::from_fn(6, 2, |t, j| {
+            if j == 0 {
+                base[t]
+            } else {
+                2.0 * base[t] + 0.001
+            }
+        })
+    }
+
+    #[test]
+    fn test_max_sharpe_collinear_assets() {
+        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+
+        // The zero-variance portfolio is the minimum variance portfolio.
+        assert_weights_close(
+            &allocator.min_variance_allocation().unwrap(),
+            &Weights(vec![2.0, -1.0]),
+            1e-9,
+        );
+
+        // It returns −0.001, below a risk-free rate of 0: no maximum, and the threshold reported
+        // is its return.
+        match allocator.max_sharpe_allocation(&MaxSharpeConfig::default()) {
+            Err(CutupError::RiskFreeRateTooHigh {
+                min_variance_return,
+                ..
+            }) => assert!((min_variance_return + 0.001).abs() < 1e-12),
+            other => panic!("expected RiskFreeRateTooHigh, got {other:?}"),
+        }
+
+        // Below its return, the zero-variance portfolio has excess return and no risk, so the
+        // Sharpe ratio is unbounded.
+        let config = MaxSharpeConfig::default().with_risk_free_rate(-0.01);
+        assert_eq!(
+            allocator.max_sharpe_allocation(&config).err(),
+            Some(CutupError::Unbounded)
+        );
+    }
+
+    #[test]
+    fn test_max_sharpe_just_below_the_threshold() {
+        // A rate clearly below the threshold (by far more than the rounding tolerance) has a
+        // maximum, however leveraged.
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let threshold = min_variance_return(&allocator);
+        let config = MaxSharpeConfig::default().with_risk_free_rate(threshold - 1e-6);
+        let weights = allocator.max_sharpe_allocation(&config).unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
     }
 
     #[test]
