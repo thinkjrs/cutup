@@ -50,6 +50,20 @@ fn variance(cov: &DMatrix<f64>, weights: &Weights) -> f64 {
     w.dot(&(cov * &w))
 }
 
+/// HRP with every linkage, by name.
+fn hrp_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
+    LINKAGES
+        .iter()
+        .map(|&linkage| {
+            let config = HrpConfig::default().with_linkage(linkage);
+            (
+                format!("hrp ({linkage:?})"),
+                allocator.hrp_allocation_with_config(&config).unwrap(),
+            )
+        })
+        .collect()
+}
+
 /// Every method that returns fully invested weights, by name.
 fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
@@ -79,21 +93,15 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
                 .unwrap(),
         ),
     ];
-    for linkage in LINKAGES {
-        let config = HrpConfig::default().with_linkage(linkage);
-        out.push((
-            format!("hrp ({linkage:?})"),
-            allocator.hrp_allocation_with_config(&config).unwrap(),
-        ));
-    }
+    out.extend(hrp_methods(allocator));
     out
 }
 
-/// Methods that depend only on Σ and must not depend on return scale. With `with_hrp` false,
-/// HRP is left out: like the original algorithm, it can depend on column order.
-fn risk_only_methods(allocator: &PortfolioAllocator, with_hrp: bool) -> Vec<(String, Weights)> {
+/// Methods that depend only on Σ, and on neither column order nor return scale. HRP is
+/// tested separately: like the original algorithm, it can depend on column order.
+fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
     let shrunk = CovarianceConfig::default().with_shrinkage(0.3);
-    let mut out = vec![
+    vec![
         (
             "inverse volatility".to_string(),
             allocator.inverse_volatility_allocation().unwrap(),
@@ -112,15 +120,19 @@ fn risk_only_methods(allocator: &PortfolioAllocator, with_hrp: bool) -> Vec<(Str
                 .min_variance_allocation_with_config(&shrunk)
                 .unwrap(),
         ),
-    ];
-    for linkage in LINKAGES.iter().filter(|_| with_hrp) {
-        let config = HrpConfig::default().with_linkage(*linkage);
-        out.push((
-            format!("hrp ({linkage:?})"),
-            allocator.hrp_allocation_with_config(&config).unwrap(),
-        ));
+    ]
+}
+
+fn assert_same(
+    base: &[(String, Weights)],
+    other: &[(String, Weights)],
+) -> Result<(), TestCaseError> {
+    for ((name, a), (_, b)) in base.iter().zip(other) {
+        for (x, y) in a.iter().zip(b) {
+            prop_assert!((x - y).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
+        }
     }
-    out
+    Ok(())
 }
 
 proptest! {
@@ -145,10 +157,7 @@ proptest! {
             allocator.inverse_volatility_allocation().unwrap(),
             allocator.inverse_variance_allocation().unwrap(),
         ];
-        for linkage in LINKAGES {
-            let config = HrpConfig::default().with_linkage(linkage);
-            long_only.push(allocator.hrp_allocation_with_config(&config).unwrap());
-        }
+        long_only.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
         for weights in long_only {
             prop_assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         }
@@ -172,8 +181,8 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
-        let base = risk_only_methods(&PortfolioAllocator::from_returns(returns).unwrap(), false);
-        let flipped = risk_only_methods(&PortfolioAllocator::from_returns(reversed).unwrap(), false);
+        let base = risk_only_methods(&PortfolioAllocator::from_returns(returns).unwrap());
+        let flipped = risk_only_methods(&PortfolioAllocator::from_returns(reversed).unwrap());
         for ((name, a), (_, b)) in base.iter().zip(&flipped) {
             for j in 0..n {
                 prop_assert!((a[j] - b[n - 1 - j]).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
@@ -184,13 +193,20 @@ proptest! {
     #[test]
     fn return_scale_does_not_matter(returns in returns(), scale in 0.1f64..10.0) {
         prop_assume!(well_posed(&returns));
-        let base = risk_only_methods(&PortfolioAllocator::from_returns(returns.clone()).unwrap(), true);
-        let scaled = risk_only_methods(&PortfolioAllocator::from_returns(returns * scale).unwrap(), true);
-        for ((name, a), (_, b)) in base.iter().zip(&scaled) {
-            for (x, y) in a.iter().zip(b) {
-                prop_assert!((x - y).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
-            }
-        }
+        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let scaled = PortfolioAllocator::from_returns(returns * scale).unwrap();
+        assert_same(&risk_only_methods(&base), &risk_only_methods(&scaled))?;
+    }
+
+    #[test]
+    fn hrp_ignores_return_scale(returns in returns(), exponent in -4i32..=4) {
+        // A power of two scales every value exactly, so the correlations are bit-identical
+        // and a near-tie between distances can't flip a merge. Any other factor could round
+        // a tie differently and legitimately move a split.
+        prop_assume!(well_posed(&returns));
+        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let scaled = PortfolioAllocator::from_returns(returns * 2f64.powi(exponent)).unwrap();
+        assert_same(&hrp_methods(&base), &hrp_methods(&scaled))?;
     }
 
     #[test]
