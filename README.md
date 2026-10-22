@@ -45,7 +45,9 @@ Minimum variance and mean-variance weights can be negative (short positions); th
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
 ```rust
-use cutup::{run_portfolio_allocation, CutupError, MeanVarianceConfig, PortfolioAllocator};
+use cutup::{
+    run_portfolio_allocation, CovarianceConfig, CutupError, MeanVarianceConfig, PortfolioAllocator,
+};
 use nalgebra::DMatrix;
 
 fn main() -> Result<(), CutupError> {
@@ -63,8 +65,10 @@ fn main() -> Result<(), CutupError> {
     let allocator = PortfolioAllocator::from_prices(prices.clone())?;
 
     let min_variance_weights = allocator.min_variance_allocation()?;
-    let mean_variance_weights =
-        allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(2.0))?;
+    // With few observations per asset, shrink the covariance toward its average variance.
+    let config = MeanVarianceConfig::risk_aversion(2.0)
+        .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
+    let mean_variance_weights = allocator.mean_variance_allocation(&config)?;
     let ew_weights = allocator.ew_allocation();
     let hrp_weights = allocator.hrp_allocation()?;
 
