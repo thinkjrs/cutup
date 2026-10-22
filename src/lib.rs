@@ -58,6 +58,10 @@ pub enum CutupError {
     },
     /// Every asset has the same expected return, so no portfolio can target a different one.
     DegenerateExpectedReturns,
+    /// The mean-variance objective has no maximum: the covariance matrix is singular, and some
+    /// fully invested portfolio gains expected return without adding variance. Add shrinkage or
+    /// regularization, or use more observations.
+    Unbounded,
 }
 
 impl fmt::Display for CutupError {
@@ -94,7 +98,11 @@ impl fmt::Display for CutupError {
             ),
             CutupError::DegenerateExpectedReturns => write!(
                 f,
-                "every asset has the same expected return, so no target return can be reached"
+                "every asset has the same expected return, so no other target return can be reached"
+            ),
+            CutupError::Unbounded => write!(
+                f,
+                "objective is unbounded: expected return can grow without adding variance"
             ),
         }
     }
@@ -494,6 +502,9 @@ impl PortfolioAllocator {
     }
 
     /// Applies `config` to the sample covariance matrix, after checking its values.
+    ///
+    /// Returns [`CutupError::ZeroVariance`] for a constant asset unless shrinkage or
+    /// regularization gives it a positive variance.
     fn adjusted_covariance(&self, config: &CovarianceConfig) -> Result<DMatrix<f64>, CutupError> {
         if let Some(value) = config
             .regularization
@@ -513,6 +524,13 @@ impl PortfolioAllocator {
                 value,
             });
         }
+        let adjusted =
+            config.shrinkage.unwrap_or(0.0) > 0.0 || config.regularization.unwrap_or(0.0) > 0.0;
+        if !adjusted {
+            if let Some(asset) = self.find_zero_variance() {
+                return Err(CutupError::ZeroVariance { asset });
+            }
+        }
 
         let n = self.cov_matrix.ncols();
         let identity = DMatrix::identity(n, n);
@@ -531,39 +549,82 @@ impl PortfolioAllocator {
         })
     }
 
-    /// Returns the Moore-Penrose pseudo-inverse of `cov`, which equals the inverse when `cov` is
-    /// well conditioned. Singular values below `n * ε * σ_max` are treated as zero, matching
-    /// `numpy.linalg.pinv`.
-    fn pseudo_inverse(cov: DMatrix<f64>) -> Result<DMatrix<f64>, CutupError> {
-        // nalgebra's SVD never converges on NaN, so check first and cap the iterations.
-        if cov.iter().any(|x| !x.is_finite()) {
+    /// Solves `minimize ½ wᵀKw − cᵀw subject to Eᵀw = b` through its KKT system
+    /// `[K E; Eᵀ 0] [w; λ] = [c; b]`.
+    ///
+    /// The system is solved with the pseudo-inverse (singular values below `size · ε · σ_max`
+    /// count as zero, matching `numpy.linalg.pinv`), so a singular `K` still gives an exact
+    /// optimum: the one with the smallest norm. The solution is then checked against the
+    /// system. If it doesn't satisfy it, the problem has no optimum, either because the
+    /// objective is unbounded or because the constraints are infeasible, and `Ok(None)` is
+    /// returned.
+    fn solve_kkt(
+        k: &DMatrix<f64>,
+        c: &DVector<f64>,
+        e: &DMatrix<f64>,
+        b: &DVector<f64>,
+    ) -> Result<Option<DVector<f64>>, CutupError> {
+        // nalgebra's SVD never converges on NaN, so check first and cap the iterations below.
+        if k.iter().chain(c.iter()).any(|x| !x.is_finite()) {
             return Err(CutupError::NonFiniteCovariance);
         }
-        let n = cov.ncols();
-        let svd = cov
+        let (n, m) = (k.nrows(), e.ncols());
+
+        // Put every block on a comparable scale so the pseudo-inverse cutoff treats them alike.
+        // Scaling K and c together, or a constraint column of E with its entry of b, leaves the
+        // solution unchanged.
+        let k_scale = k.trace() / n as f64;
+        if !(k_scale.is_finite() && k_scale > 0.0) {
+            return Err(CutupError::SingularCovariance);
+        }
+        let mut kkt = DMatrix::zeros(n + m, n + m);
+        let mut rhs = DVector::zeros(n + m);
+        kkt.view_mut((0, 0), (n, n)).copy_from(&(k / k_scale));
+        rhs.rows_mut(0, n).copy_from(&(c / k_scale));
+        for j in 0..m {
+            let column_scale = match e.column(j).amax() {
+                s if s > 0.0 => s,
+                _ => 1.0,
+            };
+            let column = e.column(j) / column_scale;
+            kkt.view_mut((0, n + j), (n, 1)).copy_from(&column);
+            kkt.view_mut((n + j, 0), (1, n))
+                .copy_from(&column.transpose());
+            rhs[n + j] = b[j] / column_scale;
+        }
+
+        let size = n + m;
+        let svd = kkt
+            .clone()
             .try_svd(true, true, f64::EPSILON, 10_000)
             .ok_or(CutupError::SingularCovariance)?;
-        let tolerance = svd.singular_values.max() * n as f64 * f64::EPSILON;
-        svd.pseudo_inverse(tolerance)
-            .map_err(|_| CutupError::SingularCovariance)
-    }
+        let tolerance = svd.singular_values.max() * size as f64 * f64::EPSILON;
+        let solution = svd
+            .pseudo_inverse(tolerance)
+            .map_err(|_| CutupError::SingularCovariance)?
+            * &rhs;
 
-    /// Converts a weight vector to [`Weights`], rejecting non-finite results.
-    fn finite_weights(weights: DVector<f64>) -> Result<Weights, CutupError> {
+        let residual = (&kkt * &solution - &rhs).norm();
+        if residual > 1e-8 * (kkt.norm() * solution.norm() + rhs.norm()) {
+            return Ok(None);
+        }
+        let weights = solution.rows(0, n).into_owned();
         if weights.iter().any(|w| !w.is_finite()) {
             return Err(CutupError::SingularCovariance);
         }
-        Ok(Weights(weights.iter().copied().collect()))
+        Ok(Some(weights))
     }
 
-    /// Computes the global minimum variance (GMV) portfolio, `w = Σ⁻¹1 / 1ᵀΣ⁻¹1`.
+    /// Computes the global minimum variance (GMV) portfolio: minimize `wᵀΣw` subject to
+    /// `1ᵀw = 1`. When Σ is invertible this is `w = Σ⁻¹1 / 1ᵀΣ⁻¹1`.
     ///
     /// This uses only the covariance matrix, not expected returns, and has no long-only
     /// constraint. For a portfolio that also accounts for expected returns, use
     /// [`PortfolioAllocator::mean_variance_allocation`].
     ///
     /// When Σ is singular (no more rows of returns than assets, or perfectly collinear assets),
-    /// the pseudo-inverse is used and the result is one of many minimum variance portfolios. Add
+    /// many portfolios share the minimum variance and the one with the smallest norm is
+    /// returned. That minimum is often zero, an artifact of fitting too little data. Add
     /// shrinkage with [`PortfolioAllocator::min_variance_allocation_with_config`] for a unique,
     /// better-conditioned answer.
     ///
@@ -615,7 +676,8 @@ impl PortfolioAllocator {
     ///
     /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
     ///   `shrinkage` is outside `[0, 1]`.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     ///
     /// # Example
@@ -646,34 +708,33 @@ impl PortfolioAllocator {
         config: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
         let cov = self.adjusted_covariance(config)?;
-        if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
-        }
+        let n = cov.ncols();
+        let ones = DMatrix::from_element(n, 1, 1.0);
 
-        let inv_cov = PortfolioAllocator::pseudo_inverse(cov)?;
-        let ones = DVector::from_element(inv_cov.ncols(), 1.0);
-        let inv_ones = &inv_cov * &ones;
-        let a = ones.dot(&inv_ones);
-        if a <= 0.0 {
-            return Err(CutupError::SingularCovariance);
-        }
-
-        PortfolioAllocator::finite_weights(inv_ones / a)
+        // Variance is bounded below and full investment is always feasible, so an optimum
+        // exists; failing to find one is numerical.
+        let weights = PortfolioAllocator::solve_kkt(
+            &cov,
+            &DVector::zeros(n),
+            &ones,
+            &DVector::from_element(1, 1.0),
+        )?
+        .ok_or(CutupError::SingularCovariance)?;
+        Ok(Weights(weights.iter().copied().collect()))
     }
 
     /// Computes a Markowitz mean-variance portfolio with the budget constraint `1ᵀw = 1`.
     ///
-    /// Both objectives have closed-form solutions. With `S = Σ⁻¹`, `A = 1ᵀS1`, `B = 1ᵀSμ`,
-    /// `C = μᵀSμ` and `D = AC − B²`:
+    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
+    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
     ///
-    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: `w = (1/γ) S(μ − η1)` with
-    ///   `η = (B − γ) / A`.
-    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: `w = [(C − Bρ) S1 + (Aρ − B) Sμ] / D`
-    ///   (Merton, 1972).
+    /// When Σ is invertible, with `S = Σ⁻¹`, `A = 1ᵀS1`, `B = 1ᵀSμ`, `C = μᵀSμ` and
+    /// `D = AC − B²`, the solutions are `w = (1/γ) S(μ − η1)` with `η = (B − γ) / A`, and
+    /// `w = [(C − Bρ) S1 + (Aρ − B) Sμ] / D` (Merton, 1972). Both are computed through the
+    /// KKT system instead, so a singular Σ gives an exact optimum (as in
+    /// [`PortfolioAllocator::min_variance_allocation`]) or an error when there is none.
     ///
-    /// There is no long-only constraint, so weights can be negative (short positions). As with
-    /// [`PortfolioAllocator::min_variance_allocation`], a singular Σ is handled with the
-    /// pseudo-inverse.
+    /// There is no long-only constraint, so weights can be negative (short positions).
     ///
     /// # Arguments
     ///
@@ -690,8 +751,11 @@ impl PortfolioAllocator {
     ///   target return or an expected return is not finite, or the covariance config is invalid.
     /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
     /// * [`CutupError::DegenerateExpectedReturns`] for a target return when every asset has the
-    ///   same expected return, so no portfolio can reach a different one.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    ///   same expected return and the target differs from it.
+    /// * [`CutupError::Unbounded`] for a risk aversion when Σ is singular and some fully invested
+    ///   portfolio gains expected return without adding variance.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     ///
     /// # Example
@@ -759,38 +823,25 @@ impl PortfolioAllocator {
         };
 
         let cov = self.adjusted_covariance(&config.covariance)?;
-        if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
-        }
-
-        let inv_cov = PortfolioAllocator::pseudo_inverse(cov)?;
         let ones = DVector::from_element(n, 1.0);
-        let inv_ones = &inv_cov * &ones;
-        let inv_mu = &inv_cov * &mu;
-        let a = ones.dot(&inv_ones);
-        let b = ones.dot(&inv_mu);
-        let c = mu.dot(&inv_mu);
-        if a <= 0.0 {
-            return Err(CutupError::SingularCovariance);
-        }
 
         let weights = match config.objective {
-            MeanVarianceObjective::RiskAversion(gamma) => {
-                let eta = (b - gamma) / a;
-                (inv_mu - inv_ones * eta) / gamma
-            }
-            MeanVarianceObjective::TargetReturn(target) => {
-                // D ≥ 0 by Cauchy-Schwarz, with equality when μ is a multiple of 1 in the
-                // metric S; treat values within rounding of zero as degenerate.
-                let d = a * c - b * b;
-                if d <= 1e-12 * a * c {
-                    return Err(CutupError::DegenerateExpectedReturns);
-                }
-                (inv_ones * (c - b * target) + inv_mu * (a * target - b)) / d
-            }
+            MeanVarianceObjective::RiskAversion(gamma) => PortfolioAllocator::solve_kkt(
+                &(cov * gamma),
+                &mu,
+                &DMatrix::from_column_slice(n, 1, ones.as_slice()),
+                &DVector::from_element(1, 1.0),
+            )?
+            .ok_or(CutupError::Unbounded)?,
+            MeanVarianceObjective::TargetReturn(target) => PortfolioAllocator::solve_kkt(
+                &cov,
+                &DVector::zeros(n),
+                &DMatrix::from_columns(&[ones, mu]),
+                &DVector::from_vec(vec![1.0, target]),
+            )?
+            .ok_or(CutupError::DegenerateExpectedReturns)?,
         };
-
-        PortfolioAllocator::finite_weights(weights)
+        Ok(Weights(weights.iter().copied().collect()))
     }
 
     /// Computes Equal Weight (EW) portfolio allocation.
@@ -1094,8 +1145,12 @@ mod tests {
             "expected one value per asset (3) but got 2"
         );
         assert_eq!(
+            CutupError::Unbounded.to_string(),
+            "objective is unbounded: expected return can grow without adding variance"
+        );
+        assert_eq!(
             CutupError::DegenerateExpectedReturns.to_string(),
-            "every asset has the same expected return, so no target return can be reached"
+            "every asset has the same expected return, so no other target return can be reached"
         );
     }
 
@@ -1579,6 +1634,103 @@ mod tests {
                 .err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
+    }
+
+    /// Two rows of returns for three assets: Σ has rank 1, and the fully invested portfolio
+    /// `[4/7, 0, 3/7]` has zero variance.
+    fn rank_one_returns() -> DMatrix<f64> {
+        dmatrix![
+            0.01, 0.02, -0.01;
+            -0.02, 0.01, 0.03
+        ]
+    }
+
+    #[test]
+    fn test_min_variance_finds_zero_variance_portfolio_on_singular_covariance() {
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let weights = allocator.min_variance_allocation().unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(portfolio_variance(&allocator, &weights) < 1e-18);
+    }
+
+    #[test]
+    fn test_min_variance_anti_correlated_pair() {
+        // 1 lies in Σ's null space, so 1ᵀΣ⁺1 is rounding noise; the hedged pair has zero variance.
+        let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let weights = allocator.min_variance_allocation().unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
+    }
+
+    #[test]
+    fn test_mean_variance_unbounded_on_singular_covariance() {
+        // With Σ singular, d = [5, -7, 2] has Σd = 0 and 1ᵀd = 0, but μᵀd ≠ 0 for the sample
+        // mean, so utility grows without limit along d.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let config = MeanVarianceConfig::risk_aversion(2.0);
+        assert_eq!(
+            allocator.mean_variance_allocation(&config).err(),
+            Some(CutupError::Unbounded)
+        );
+
+        let shrunk = config.with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
+        assert!(allocator.mean_variance_allocation(&shrunk).is_ok());
+    }
+
+    #[test]
+    fn test_mean_variance_target_on_singular_covariance() {
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let target = 0.004;
+        let weights = allocator
+            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .unwrap();
+
+        let w = DVector::from_column_slice(weights.as_slice());
+        assert!((w.sum() - 1.0).abs() < 1e-12);
+        assert!((sample_mean(&allocator).dot(&w) - target).abs() < 1e-12);
+        assert!(portfolio_variance(&allocator, &weights) < 1e-18);
+    }
+
+    #[test]
+    fn test_mean_variance_target_equal_to_common_return() {
+        // Every fully invested portfolio earns the common return, so the target is met by the
+        // minimum variance portfolio.
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = MeanVarianceConfig::target_return(0.01)
+            .with_expected_returns(DVector::from_element(3, 0.01));
+        assert_weights_close(
+            &allocator.mean_variance_allocation(&config).unwrap(),
+            &allocator.min_variance_allocation().unwrap(),
+            1e-9,
+        );
+    }
+
+    #[test]
+    fn test_covariance_adjustment_allows_constant_asset() {
+        let returns = dmatrix![0.1, 0.01, 0.02; 0.1, -0.02, 0.01; 0.1, 0.03, -0.01];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_eq!(
+            allocator.min_variance_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+
+        let shrunk = CovarianceConfig::default().with_shrinkage(1.0);
+        assert_weights_close(
+            &allocator
+                .min_variance_allocation_with_config(&shrunk)
+                .unwrap(),
+            &allocator.ew_allocation(),
+            1e-12,
+        );
+
+        let regularized = CovarianceConfig::default().with_regularization(1e-6);
+        let weights = allocator
+            .min_variance_allocation_with_config(&regularized)
+            .unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        let config = MeanVarianceConfig::risk_aversion(2.0).with_covariance(shrunk);
+        assert!(allocator.mean_variance_allocation(&config).is_ok());
     }
 
     #[test]

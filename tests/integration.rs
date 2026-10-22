@@ -1,4 +1,4 @@
-use cutup::{run_portfolio_allocation, MeanVarianceConfig, PortfolioAllocator};
+use cutup::{run_portfolio_allocation, CovarianceConfig, MeanVarianceConfig, PortfolioAllocator};
 use nalgebra::dmatrix;
 
 #[test]
@@ -19,9 +19,10 @@ fn test_portfolio_allocations() {
     assert_eq!(min_variance.len(), 3);
     assert!((min_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
-    let mean_variance = allocator
-        .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(2.0))
-        .unwrap();
+    // Two rows of returns for three assets is too little data for an unshrunk covariance.
+    let config = MeanVarianceConfig::risk_aversion(2.0)
+        .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
+    let mean_variance = allocator.mean_variance_allocation(&config).unwrap();
     assert_eq!(mean_variance.len(), 3);
     assert!((mean_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
