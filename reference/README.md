@@ -17,6 +17,7 @@ fixtures in `tests/fixtures/`.
 | Method | Reference |
 | --- | --- |
 | Equal weight | `1 / n` |
+| Inverse volatility, inverse variance | `1 / σ` and `1 / σ²` from `np.var(ddof=1)`, normalized |
 | Minimum variance | NumPy closed form `Σ⁻¹1 / 1ᵀΣ⁻¹1`; minimum-norm KKT solution from `numpy.linalg.lstsq` when Σ is singular |
 | Mean-variance | NumPy closed forms for risk aversion and target return (Merton, 1972); minimum-norm KKT solution when Σ is singular. Expected errors are decided from the null space of Σ. |
 | HRP | PyPortfolioOpt `HRPOpt` |

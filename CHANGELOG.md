@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-22
+
+### Added
+
+- `PortfolioAllocator::inverse_volatility_allocation`: weights proportional to `1 / σᵢ`.
+- `PortfolioAllocator::inverse_variance_allocation`: weights proportional to `1 / σᵢ²`.
+- Integration tests that check every allocation method against independent Python
+  reference implementations (NumPy closed forms, PyPortfolioOpt for HRP) on fixed
+  datasets, including singular and ill-conditioned ones. See `reference/README.md`.
+
 ## [0.2.0] - 2026-10-22
 
 0.2.0 fixes how every covariance-based method computed its weights, and
@@ -105,5 +115,6 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
+[0.2.1]: https://github.com/thinkjrs/cutup/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/thinkjrs/cutup/compare/0.1.4...0.2.0
 [0.1.4]: https://github.com/thinkjrs/cutup/releases/tag/0.1.4

@@ -15,6 +15,7 @@ Here are some of the allocation methods included in this library:
 - **Minimum Variance (GMV)**
 - **Mean-Variance Optimization (MVO)**
 - **Equal Weight Allocation (EW)**
+- **Inverse Volatility and Inverse Variance**
 - **Hierarchical Risk Parity (HRP)**
 
 This library leverages `nalgebra` for efficient matrix operations and is designed for performance and extensibility.
@@ -24,6 +25,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **EW Allocation**: Assigns equal weights to all assets.
+- **Inverse Volatility / Inverse Variance**: Weights each asset by `1 / σ` or `1 / σ²`, ignoring correlations. Simple risk-based weights that are always positive.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
@@ -33,7 +35,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.2.0"
+cutup = "0.2.1"
 ```
 
 ## Usage
@@ -81,11 +83,13 @@ fn main() -> Result<(), CutupError> {
         .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
     let mean_variance_weights = allocator.mean_variance_allocation(&config)?;
     let ew_weights = allocator.ew_allocation();
+    let inverse_volatility_weights = allocator.inverse_volatility_allocation()?;
     let hrp_weights = allocator.hrp_allocation()?;
 
     println!("Min Variance Weights: {:?}", min_variance_weights.as_slice());
     println!("Mean-Variance Weights: {:?}", mean_variance_weights.as_slice());
     println!("EW Weights: {:?}", ew_weights.as_slice());
+    println!("Inverse Volatility Weights: {:?}", inverse_volatility_weights.as_slice());
     println!("HRP Weights: {:?}", hrp_weights.as_slice());
 
     // or run a minimum variance allocation in one go
