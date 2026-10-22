@@ -23,7 +23,12 @@ fixtures in `tests/fixtures/`.
 
 Each case's tolerance is relative to the size of the weight. Ill-conditioned
 covariances get a looser tolerance in proportion to their condition number, which is
-recorded in the case.
+recorded in the case. Numerically singular ones keep the tight tolerance, because both
+sides truncate the null space and agree on the minimum-norm solution.
+
+`--check` fails if a weight moves by more than a tenth of its tolerance (a NaN counts as
+moved), if a case's shape or expected error changes, or if a tolerance changes by more
+than a factor of two.
 
 ## Commands
 
