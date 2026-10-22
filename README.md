@@ -38,11 +38,13 @@ cutup = "0.1.4"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
+Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
+
 ```rust
-use cutup::{run_portfolio_allocation, PortfolioAllocator};
+use cutup::{run_portfolio_allocation, CutupError, PortfolioAllocator};
 use nalgebra::DMatrix;
 
-fn main() {
+fn main() -> Result<(), CutupError> {
     let prices = DMatrix::from_row_slice(
         4,
         4,
@@ -54,20 +56,22 @@ fn main() {
         ],
     );
 
-    let allocator = PortfolioAllocator::from_prices(prices.clone());
+    let allocator = PortfolioAllocator::from_prices(prices.clone())?;
 
-    let mvo_weights = allocator.mvo_allocation();
+    let mvo_weights = allocator.mvo_allocation()?;
     let ew_weights = allocator.ew_allocation();
-    let hrp_weights = allocator.hrp_allocation();
+    let hrp_weights = allocator.hrp_allocation()?;
 
-    println!("MVO Weights: {:?}", mvo_weights);
-    println!("EW Weights: {:?}", ew_weights);
-    println!("HRP Weights: {:?}", hrp_weights);
+    println!("MVO Weights: {:?}", mvo_weights.as_slice());
+    println!("EW Weights: {:?}", ew_weights.as_slice());
+    println!("HRP Weights: {:?}", hrp_weights.as_slice());
 
     // or do it all in one go
 
-    let weights = run_portfolio_allocation(prices);
-    println!("Portfolio Weights: {:?}", weights);
+    let weights = run_portfolio_allocation(prices)?;
+    println!("Portfolio Weights: {:?}", weights.as_slice());
+
+    Ok(())
 }
 ```
 
