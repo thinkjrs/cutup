@@ -257,4 +257,51 @@ proptest! {
             prop_assert!(other <= best + 1e-9 * (1.0 + best.abs()), "{name}: {other} > {best}");
         }
     }
+
+    #[test]
+    fn max_sharpe_ignores_column_order_and_joint_scale(
+        returns in returns(),
+        margin in 1e-4f64..0.01,
+        exponent in -3i32..=3,
+        custom in prop::collection::vec(-0.01f64..0.02, 6),
+        shrink in any::<bool>(),
+    ) {
+        // Reordering the assets, or scaling returns, expected returns and the risk-free rate
+        // together, must not change the tangency weights.
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let covariance = CovarianceConfig::default().with_shrinkage(if shrink { 0.3 } else { 0.0 });
+        let mu = DVector::from_column_slice(&custom[..n]);
+        let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+
+        // A rate below the minimum variance return (under the same covariance) has a maximum.
+        let min_variance = allocator.min_variance_allocation_with_config(&covariance).unwrap();
+        let rate = mu.dot(&DVector::from_column_slice(min_variance.as_slice())) - margin;
+        let config = |mu: DVector<f64>, rate: f64| {
+            MaxSharpeConfig::default()
+                .with_risk_free_rate(rate)
+                .with_expected_returns(mu)
+                .with_covariance(covariance.clone())
+        };
+        let base = allocator.max_sharpe_allocation(&config(mu.clone(), rate)).unwrap();
+
+        let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
+        let mu_reversed = DVector::from_fn(n, |j, _| mu[n - 1 - j]);
+        let flipped = PortfolioAllocator::from_returns(reversed)
+            .unwrap()
+            .max_sharpe_allocation(&config(mu_reversed, rate))
+            .unwrap();
+
+        let s = 2f64.powi(exponent);
+        let scaled = PortfolioAllocator::from_returns(returns * s)
+            .unwrap()
+            .max_sharpe_allocation(&config(mu.clone() * s, rate * s))
+            .unwrap();
+
+        let tolerance = 1e-9 * (1.0 + base.iter().fold(0.0f64, |m, w| m.max(w.abs())));
+        for j in 0..n {
+            prop_assert!((base[j] - flipped[n - 1 - j]).abs() < tolerance, "{base:?} vs {flipped:?}");
+            prop_assert!((base[j] - scaled[j]).abs() < tolerance, "{base:?} vs {scaled:?}");
+        }
+    }
 }
