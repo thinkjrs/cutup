@@ -37,8 +37,18 @@ pub enum CutupError {
         /// Column (asset) with zero variance.
         asset: usize,
     },
+    /// The input is finite but too extreme for a finite covariance matrix (for example, a
+    /// return large enough to overflow when squared).
+    NonFiniteCovariance,
     /// The covariance matrix is singular and no finite weights could be computed from it.
     SingularCovariance,
+    /// A configuration value is out of range.
+    InvalidConfig {
+        /// Name of the offending field.
+        field: &'static str,
+        /// The value supplied.
+        value: f64,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -56,10 +66,19 @@ impl fmt::Display for CutupError {
                 write!(f, "price at row {row}, column {col} is zero or negative")
             }
             CutupError::ZeroVariance { asset } => write!(f, "asset {asset} has zero variance"),
+            CutupError::NonFiniteCovariance => {
+                write!(
+                    f,
+                    "input is too extreme to compute a finite covariance matrix"
+                )
+            }
             CutupError::SingularCovariance => write!(
                 f,
                 "covariance matrix is singular; no finite weights could be computed"
             ),
+            CutupError::InvalidConfig { field, value } => {
+                write!(f, "config value `{field}` is out of range: {value}")
+            }
         }
     }
 }
@@ -213,6 +232,7 @@ impl PortfolioAllocator {
     /// * [`CutupError::InsufficientData`] if `prices` has fewer than three rows.
     /// * [`CutupError::NonFiniteValue`] if any price is NaN or infinite.
     /// * [`CutupError::NonPositivePrice`] if any price is zero or negative.
+    /// * [`CutupError::NonFiniteCovariance`] if the returns are too extreme for a finite covariance.
     ///
     /// # Example
     ///
@@ -234,7 +254,7 @@ impl PortfolioAllocator {
         if let Some((row, col)) = PortfolioAllocator::find(&prices, |p| p <= 0.0) {
             return Err(CutupError::NonPositivePrice { row, col });
         }
-        PortfolioAllocator::from_returns(PortfolioAllocator::compute_returns(&prices))
+        PortfolioAllocator::build(PortfolioAllocator::compute_returns(&prices))
     }
 
     /// Creates a new `PortfolioAllocator` from a matrix of asset returns.
@@ -251,6 +271,7 @@ impl PortfolioAllocator {
     /// * [`CutupError::NoAssets`] if `returns` has no columns.
     /// * [`CutupError::InsufficientData`] if `returns` has fewer than two rows.
     /// * [`CutupError::NonFiniteValue`] if any return is NaN or infinite.
+    /// * [`CutupError::NonFiniteCovariance`] if the returns are too extreme for a finite covariance.
     ///
     /// # Example
     ///
@@ -269,10 +290,28 @@ impl PortfolioAllocator {
     /// ```
     pub fn from_returns(returns: DMatrix<f64>) -> Result<Self, CutupError> {
         PortfolioAllocator::validate(&returns, 2)?;
+        PortfolioAllocator::build(returns)
+    }
+
+    /// Builds an allocator from returns that have already been validated, rejecting a
+    /// covariance matrix that overflowed.
+    fn build(returns: DMatrix<f64>) -> Result<Self, CutupError> {
         let cov_matrix = PortfolioAllocator::compute_covariance_matrix(&returns);
+        if cov_matrix.iter().any(|x| !x.is_finite()) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
         Ok(PortfolioAllocator {
             returns,
             cov_matrix,
+        })
+    }
+
+    /// Returns the first asset whose returns are constant, allowing for floating-point rounding:
+    /// a standard deviation below `1e-10` of the asset's largest absolute return counts as zero.
+    fn find_zero_variance(&self) -> Option<usize> {
+        (0..self.cov_matrix.ncols()).find(|&i| {
+            let scale = self.returns.column(i).amax();
+            self.cov_matrix[(i, i)].sqrt() <= 1e-10 * scale
         })
     }
 
@@ -358,6 +397,7 @@ impl PortfolioAllocator {
     ///
     /// # Errors
     ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     ///
     /// # Example
@@ -398,6 +438,9 @@ impl PortfolioAllocator {
     ///
     /// # Errors
     ///
+    /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
+    ///   `shrinkage` is outside `[0, 1]`.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     ///
     /// # Example
@@ -425,6 +468,28 @@ impl PortfolioAllocator {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn mvo_allocation_with_config(&self, config: &MvoConfig) -> Result<Weights, CutupError> {
+        if let Some(value) = config
+            .regularization
+            .filter(|eps| !(eps.is_finite() && *eps >= 0.0))
+        {
+            return Err(CutupError::InvalidConfig {
+                field: "regularization",
+                value,
+            });
+        }
+        if let Some(value) = config
+            .shrinkage
+            .filter(|lambda| !(0.0..=1.0).contains(lambda))
+        {
+            return Err(CutupError::InvalidConfig {
+                field: "shrinkage",
+                value,
+            });
+        }
+        if let Some(asset) = self.find_zero_variance() {
+            return Err(CutupError::ZeroVariance { asset });
+        }
+
         let n = self.cov_matrix.ncols();
         let ones = DVector::from_element(n, 1.0);
 
@@ -522,10 +587,11 @@ impl PortfolioAllocator {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn hrp_allocation(&self) -> Result<Weights, CutupError> {
-        let n = self.cov_matrix.ncols();
-        if let Some(asset) = (0..n).find(|&i| self.cov_matrix[(i, i)] <= 0.0) {
+        if let Some(asset) = self.find_zero_variance() {
             return Err(CutupError::ZeroVariance { asset });
         }
+
+        let n = self.cov_matrix.ncols();
 
         let mut weights = vec![1.0; n];
         let mut clusters: Vec<Vec<usize>> = vec![(0..n).collect()];
@@ -745,6 +811,14 @@ mod tests {
             CutupError::ZeroVariance { asset: 2 }.to_string(),
             "asset 2 has zero variance"
         );
+        assert_eq!(
+            CutupError::InvalidConfig {
+                field: "shrinkage",
+                value: 1.5
+            }
+            .to_string(),
+            "config value `shrinkage` is out of range: 1.5"
+        );
     }
 
     #[test]
@@ -883,6 +957,78 @@ mod tests {
             allocator.hrp_allocation().err(),
             Some(CutupError::ZeroVariance { asset: 1 })
         );
+        assert_eq!(
+            allocator.mvo_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 1 })
+        );
+        assert_eq!(allocator.ew_allocation().len(), 3);
+    }
+
+    #[test]
+    fn test_constructors_reject_overflowing_covariance() {
+        let prices = dmatrix![100.0, 50.0; 1e300, 51.0; 100.0, 50.5];
+        assert_eq!(
+            PortfolioAllocator::from_prices(prices).err(),
+            Some(CutupError::NonFiniteCovariance)
+        );
+
+        let returns = dmatrix![1e200, 0.01; -1e200, 0.02];
+        assert_eq!(
+            PortfolioAllocator::from_returns(returns).err(),
+            Some(CutupError::NonFiniteCovariance)
+        );
+    }
+
+    #[test]
+    fn test_rounding_noise_counts_as_zero_variance() {
+        // Constant returns whose computed variance is rounding noise rather than exactly zero.
+        let allocator =
+            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+        assert_eq!(
+            allocator.hrp_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+        assert_eq!(
+            allocator.mvo_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+
+        // Prices growing at a constant 10% per period.
+        let prices = dmatrix![100.0, 50.0; 110.0, 49.0; 121.0, 51.5; 133.1, 51.0];
+        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        assert_eq!(
+            allocator.hrp_allocation().err(),
+            Some(CutupError::ZeroVariance { asset: 0 })
+        );
+    }
+
+    #[test]
+    fn test_mvo_allocation_rejects_invalid_config() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let cases = [
+            (Some(-1e-3), None, "regularization"),
+            (Some(f64::NAN), None, "regularization"),
+            (Some(f64::INFINITY), None, "regularization"),
+            (None, Some(-0.1), "shrinkage"),
+            (None, Some(1.5), "shrinkage"),
+            (None, Some(f64::NAN), "shrinkage"),
+        ];
+        for (regularization, shrinkage, field) in cases {
+            let config = MvoConfig {
+                regularization,
+                shrinkage,
+            };
+            match allocator.mvo_allocation_with_config(&config) {
+                Err(CutupError::InvalidConfig { field: f, .. }) => assert_eq!(f, field),
+                other => panic!("{config:?} gave {other:?}"),
+            }
+        }
+
+        let edges = MvoConfig {
+            regularization: Some(0.0),
+            shrinkage: Some(1.0),
+        };
+        assert!(allocator.mvo_allocation_with_config(&edges).is_ok());
     }
 
     #[test]
