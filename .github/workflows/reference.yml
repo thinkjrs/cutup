@@ -1,0 +1,36 @@
+name: Reference
+
+# Recomputes tests/fixtures/expected.json from the pinned Python reference
+# implementations and fails if any weight drifts from the committed file beyond
+# floating-point noise, so the fixtures can't drift from what the reference
+# actually computes. The Rust side (tests/reference.rs) runs with the rest of the
+# tests in tests.yml.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "reference/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/reference.yml"
+  pull_request:
+    paths:
+      - "reference/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/reference.yml"
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Check fixtures against the reference
+        run: uv run --project reference --locked python reference/generate.py --check
