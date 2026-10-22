@@ -38,17 +38,26 @@ impl Default for MvoConfig {
 
 /// `PortfolioAllocator` handles various portfolio allocation strategies.
 /// Supports Mean-Variance Optimization (MVO), Equal Weight (EW), and Hierarchical Risk Parity (HRP).
+///
+/// All covariance-based methods work on the covariance of asset returns, never of price levels.
+/// Build an allocator from prices with [`PortfolioAllocator::from_prices`], or from returns you
+/// have already computed with [`PortfolioAllocator::from_returns`].
 pub struct PortfolioAllocator {
-    price_data: DMatrix<f64>,
+    returns: DMatrix<f64>,
     cov_matrix: DMatrix<f64>,
 }
 
 impl PortfolioAllocator {
     /// Creates a new `PortfolioAllocator` from a matrix of asset prices.
     ///
+    /// Prices are converted to simple returns, `r_t = p_t / p_{t-1} - 1`, before the covariance
+    /// matrix is computed. This matches `pandas.DataFrame.pct_change`. A price matrix with `T`
+    /// rows produces `T - 1` rows of returns, so at least three rows of prices are needed for a
+    /// sample covariance.
+    ///
     /// # Arguments
     ///
-    /// * `price_data` - A `DMatrix<f64>` representing asset price history (rows: time, columns: assets).
+    /// * `prices` - A `DMatrix<f64>` representing asset price history (rows: time, columns: assets).
     ///
     /// # Returns
     ///
@@ -66,14 +75,70 @@ impl PortfolioAllocator {
     ///     120.0, 220.0, 320.0
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::new(prices);
+    /// let allocator = PortfolioAllocator::from_prices(prices);
     /// ```
-    pub fn new(price_data: DMatrix<f64>) -> Self {
-        let cov_matrix = PortfolioAllocator::compute_covariance_matrix(&price_data);
+    pub fn from_prices(prices: DMatrix<f64>) -> Self {
+        PortfolioAllocator::from_returns(PortfolioAllocator::compute_returns(&prices))
+    }
+
+    /// Creates a new `PortfolioAllocator` from a matrix of asset returns.
+    ///
+    /// Use this when you already have returns (for example log returns, or returns net of a
+    /// benchmark). They are used as-is; at least two rows are needed for a sample covariance.
+    ///
+    /// # Arguments
+    ///
+    /// * `returns` - A `DMatrix<f64>` of periodic asset returns (rows: time, columns: assets).
+    ///
+    /// # Returns
+    ///
+    /// * A new instance of `PortfolioAllocator`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010, -0.020,  0.005;
+    ///     -0.004,  0.015,  0.002;
+    ///      0.007,  0.003, -0.006
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns);
+    /// ```
+    pub fn from_returns(returns: DMatrix<f64>) -> Self {
+        let cov_matrix = PortfolioAllocator::compute_covariance_matrix(&returns);
         PortfolioAllocator {
-            price_data,
+            returns,
             cov_matrix,
         }
+    }
+
+    /// Creates a new `PortfolioAllocator` from a matrix of asset prices.
+    ///
+    /// Identical to [`PortfolioAllocator::from_prices`]. Before 0.2.0 this computed the
+    /// covariance of price levels rather than of returns.
+    #[deprecated(since = "0.2.0", note = "use `PortfolioAllocator::from_prices` instead")]
+    pub fn new(price_data: DMatrix<f64>) -> Self {
+        PortfolioAllocator::from_prices(price_data)
+    }
+
+    /// Converts a price matrix into simple returns, `r_t = p_t / p_{t-1} - 1`.
+    ///
+    /// # Arguments
+    ///
+    /// * `prices` - A `DMatrix<f64>` of prices (rows: time, columns: assets).
+    ///
+    /// # Returns
+    ///
+    /// * A `DMatrix<f64>` with one fewer row than `prices`.
+    fn compute_returns(prices: &DMatrix<f64>) -> DMatrix<f64> {
+        let rows = prices.nrows().saturating_sub(1);
+        DMatrix::from_fn(rows, prices.ncols(), |t, j| {
+            prices[(t + 1, j)] / prices[(t, j)] - 1.0
+        })
     }
 
     /// Computes the covariance matrix from asset returns.
@@ -110,7 +175,7 @@ impl PortfolioAllocator {
     ///     120.0, 220.0, 320.0
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::new(prices);
+    /// let allocator = PortfolioAllocator::from_prices(prices);
     /// let weights = allocator.mvo_allocation();
     ///
     /// let total: f64 = weights.values().sum();
@@ -145,7 +210,7 @@ impl PortfolioAllocator {
     ///     120.0, 220.0, 320.0
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::new(prices);
+    /// let allocator = PortfolioAllocator::from_prices(prices);
     /// let config = MvoConfig {
     ///     regularization: Some(1e-6),
     ///     shrinkage: Some(0.05),
@@ -207,13 +272,13 @@ impl PortfolioAllocator {
     ///     120.0, 220.0, 320.0
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::new(prices);
+    /// let allocator = PortfolioAllocator::from_prices(prices);
     /// let weights = allocator.ew_allocation();
     ///
     /// assert_eq!(weights.len(), 3);
     /// ```
     pub fn ew_allocation(&self) -> HashMap<usize, f64> {
-        let n = self.price_data.ncols();
+        let n = self.returns.ncols();
         (0..n).map(|i| (i, 1.0 / n as f64)).collect()
     }
 
@@ -235,7 +300,7 @@ impl PortfolioAllocator {
     ///     120.0, 220.0, 320.0
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::new(prices);
+    /// let allocator = PortfolioAllocator::from_prices(prices);
     /// let weights = allocator.hrp_allocation();
     ///
     /// let sum: f64 = weights.values().sum();
@@ -298,7 +363,7 @@ impl PortfolioAllocator {
 /// assert_eq!(weights.len(), 4);
 /// ```
 pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> HashMap<usize, f64> {
-    let allocator = PortfolioAllocator::new(prices);
+    let allocator = PortfolioAllocator::from_prices(prices);
     allocator.mvo_allocation()
 }
 
@@ -307,6 +372,75 @@ mod tests {
     use super::*;
     use nalgebra::dmatrix;
 
+    /// Six periods of prices for three assets whose returns covariance is full rank.
+    fn full_rank_prices() -> DMatrix<f64> {
+        dmatrix![
+            100.0, 50.0, 20.0;
+            102.0, 49.0, 20.5;
+            101.0, 51.5, 20.2;
+            104.0, 51.0, 20.9;
+            103.0, 52.5, 21.3;
+            106.0, 52.0, 21.0
+        ]
+    }
+
+    fn assert_weights_close(a: &HashMap<usize, f64>, b: &HashMap<usize, f64>, tol: f64) {
+        assert_eq!(a.len(), b.len());
+        for (i, w) in a {
+            assert!((w - b[i]).abs() < tol, "asset {i}: {w} vs {}", b[i]);
+        }
+    }
+
+    #[test]
+    fn test_compute_returns() {
+        let prices = dmatrix![
+            100.0, 200.0;
+            110.0, 190.0;
+            121.0, 209.0
+        ];
+        let returns = PortfolioAllocator::compute_returns(&prices);
+        let expected = dmatrix![
+            0.1, -0.05;
+            0.1, 0.1
+        ];
+        assert_eq!(returns.shape(), (2, 2));
+        assert!((returns - expected).abs().max() < 1e-12);
+    }
+
+    #[test]
+    fn test_from_prices_matches_from_returns() {
+        let prices = full_rank_prices();
+        let returns = PortfolioAllocator::compute_returns(&prices);
+        let from_prices = PortfolioAllocator::from_prices(prices);
+        let from_returns = PortfolioAllocator::from_returns(returns);
+        assert_eq!(from_prices.cov_matrix, from_returns.cov_matrix);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_new_matches_from_prices() {
+        let prices = full_rank_prices();
+        let new = PortfolioAllocator::new(prices.clone());
+        let from_prices = PortfolioAllocator::from_prices(prices);
+        assert_eq!(new.cov_matrix, from_prices.cov_matrix);
+    }
+
+    #[test]
+    fn test_weights_ignore_price_scale() {
+        // Rescaling one asset's prices (a stock split, or quoting in cents) leaves its returns
+        // unchanged, so no weight should move. On price-level covariance this fails.
+        let prices = full_rank_prices();
+        let mut scaled = prices.clone();
+        scaled.column_mut(1).scale_mut(1000.0);
+
+        let base = PortfolioAllocator::from_prices(prices);
+        let rescaled = PortfolioAllocator::from_prices(scaled);
+        assert!(base.cov_matrix.clone().try_inverse().is_some());
+
+        assert_weights_close(&base.mvo_allocation(), &rescaled.mvo_allocation(), 1e-9);
+        assert_weights_close(&base.hrp_allocation(), &rescaled.hrp_allocation(), 1e-9);
+    }
+
     #[test]
     fn test_ew_allocation() {
         let prices = dmatrix![
@@ -314,7 +448,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
         let ew_weights = allocator.ew_allocation();
         assert_eq!(ew_weights.len(), 3);
         assert!((ew_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
@@ -327,7 +461,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
         let mvo_weights = allocator.mvo_allocation();
         assert_eq!(mvo_weights.len(), 3);
         assert!((mvo_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
@@ -340,7 +474,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
         let hrp_weights = allocator.hrp_allocation();
         assert_eq!(hrp_weights.len(), 3);
         assert!((hrp_weights.values().sum::<f64>() - 1.0).abs() < 1e-6);
@@ -354,7 +488,7 @@ mod tests {
             102.0, 202.0, 302.0, 402.0;
             103.0, 203.0, 303.0, 403.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
         let weights = allocator.hrp_allocation();
 
         assert_eq!(weights.len(), 4);
@@ -372,7 +506,7 @@ mod tests {
             110.0;
             120.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
         let ew_weights = allocator.ew_allocation();
         assert_eq!(ew_weights.len(), 1);
         assert_eq!(ew_weights.get(&0), Some(&1.0));
@@ -406,7 +540,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::new(prices);
+        let allocator = PortfolioAllocator::from_prices(prices);
 
         // 1. No regularization or shrinkage
         let config_none = MvoConfig::default();
@@ -450,7 +584,7 @@ mod tests {
             101.0, 201.0, 301.0;
             102.0, 202.0, 302.0
         ];
-        let mut allocator = PortfolioAllocator::new(prices);
+        let mut allocator = PortfolioAllocator::from_prices(prices);
 
         // Force a corrupted covariance matrix with NaN
         allocator.cov_matrix = dmatrix![
@@ -473,7 +607,7 @@ mod tests {
         // Any shape, all NaNs
         let bad_matrix = DMatrix::<f64>::from_element(3, 3, f64::NAN);
 
-        let mut allocator = PortfolioAllocator::new(dmatrix![
+        let mut allocator = PortfolioAllocator::from_prices(dmatrix![
             100.0, 200.0, 300.0;
             101.0, 201.0, 301.0;
             102.0, 202.0, 302.0
