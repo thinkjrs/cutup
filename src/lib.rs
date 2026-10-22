@@ -877,7 +877,7 @@ impl PortfolioAllocator {
     /// single-linkage clustering on the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)`.
     ///
     /// Follows SciPy's `linkage(method="single")` and `to_tree().pre_order()` step for step,
-    /// including how ties are broken, so the order matches PyPortfolioOpt's `HRPOpt`:
+    /// including the tie-breaking rule, so the order matches PyPortfolioOpt's `HRPOpt`:
     ///
     /// 1. Prim's algorithm builds the minimum spanning tree, starting from asset 0 and taking
     ///    the lowest-index asset among equally distant ones.
@@ -885,13 +885,25 @@ impl PortfolioAllocator {
     ///    creates cluster `n + k`, whose left child is whichever of the two merged clusters has
     ///    the smaller id.
     /// 3. A pre-order traversal from the root lists the assets left to right.
-    fn quasi_diagonal_order(&self) -> Vec<usize> {
+    ///
+    /// Returns [`CutupError::NonFiniteCovariance`] if a correlation can't be computed, for
+    /// example when variances are so small that their product underflows to zero.
+    fn quasi_diagonal_order(&self) -> Result<Vec<usize>, CutupError> {
         let cov = &self.cov_matrix;
         let n = cov.ncols();
-        let distance = |i: usize, j: usize| {
+        let distance = DMatrix::from_fn(n, n, |i, j| {
             let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
-            ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt()
-        };
+            // Mark a non-finite correlation as NaN: clamping would hide an infinite one.
+            if rho.is_finite() {
+                ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt()
+            } else {
+                f64::NAN
+            }
+        });
+        // A NaN distance would be skipped by the minimum below and corrupt the tree.
+        if distance.iter().any(|d| d.is_nan()) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
 
         let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(n - 1);
         let mut distance_to_tree = vec![f64::INFINITY; n];
@@ -904,7 +916,7 @@ impl PortfolioAllocator {
                 if in_tree[i] {
                     continue;
                 }
-                *to_tree = to_tree.min(distance(x, i));
+                *to_tree = to_tree.min(distance[(x, i)]);
                 if *to_tree < nearest {
                     (y, nearest) = (i, *to_tree);
                 }
@@ -941,7 +953,7 @@ impl PortfolioAllocator {
                 stack.push(left);
             }
         }
-        order
+        Ok(order)
     }
 
     /// Returns the variance of the inverse-variance portfolio over `cluster`.
@@ -969,9 +981,15 @@ impl PortfolioAllocator {
     ///    risk: each half's variance is that of its own inverse-variance portfolio, and the
     ///    first half gets `α = 1 − V₁ / (V₁ + V₂)`.
     ///
-    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` exactly, including tie
-    /// breaking, so results match `HRPOpt(returns).optimize()`. HRP never inverts the
-    /// covariance matrix, so it works when Σ is singular. Weights are always positive.
+    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` step for step, including the
+    /// tie-breaking rule, so results match `HRPOpt(returns).optimize()` up to floating-point
+    /// rounding. (The correlations are computed here rather than by pandas, so two distances
+    /// that tie in one may differ by a rounding error in the other and break the tie the other
+    /// way.)
+    ///
+    /// HRP never inverts the covariance matrix, so it works when Σ is singular. Weights are
+    /// never negative. A half with zero variance, such as a perfectly hedged pair, takes its
+    /// parent's whole weight and leaves the other half at zero, as in `HRPOpt`.
     ///
     /// # Returns
     ///
@@ -980,6 +998,8 @@ impl PortfolioAllocator {
     /// # Errors
     ///
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
+    ///   variances are too small.
     ///
     /// # Example
     ///
@@ -998,7 +1018,7 @@ impl PortfolioAllocator {
     ///
     /// let sum: f64 = weights.iter().sum();
     /// assert!((sum - 1.0).abs() < 1e-6);
-    /// assert!(weights.iter().all(|&w| w > 0.0));
+    /// assert!(weights.iter().all(|&w| w >= 0.0));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn hrp_allocation(&self) -> Result<Weights, CutupError> {
@@ -1006,23 +1026,28 @@ impl PortfolioAllocator {
             return Err(CutupError::ZeroVariance { asset });
         }
 
-        let order = self.quasi_diagonal_order();
+        let order = self.quasi_diagonal_order()?;
         let mut weights = vec![1.0; order.len()];
-        let mut clusters = vec![order];
+        // Clusters are ranges of positions in `order`, bisected one level at a time.
+        let mut ranges = vec![(0, order.len())];
 
-        while !clusters.is_empty() {
-            clusters = clusters
+        while !ranges.is_empty() {
+            ranges = ranges
                 .into_iter()
-                .filter(|cluster| cluster.len() > 1)
-                .flat_map(|cluster| {
-                    let (left, right) = cluster.split_at(cluster.len() / 2);
-                    [left.to_vec(), right.to_vec()]
+                .filter(|(start, end)| end - start > 1)
+                .flat_map(|(start, end)| {
+                    let mid = start + (end - start) / 2;
+                    [(start, mid), (mid, end)]
                 })
                 .collect();
 
-            for pair in clusters.chunks(2) {
-                let (left, right) = (&pair[0], &pair[1]);
-                let (v_left, v_right) = (self.cluster_variance(left), self.cluster_variance(right));
+            for pair in ranges.chunks(2) {
+                let left = &order[pair[0].0..pair[0].1];
+                let right = &order[pair[1].0..pair[1].1];
+                // On singular data rounding can leave a variance slightly below zero, which
+                // would push α outside [0, 1] and short the other half.
+                let v_left = self.cluster_variance(left).max(0.0);
+                let v_right = self.cluster_variance(right).max(0.0);
                 // Two halves with zero variance each (perfectly hedged pairs) split evenly.
                 let alpha = match v_left + v_right {
                     total if total > 0.0 => 1.0 - v_left / total,
@@ -1858,7 +1883,7 @@ mod tests {
             0.23653580200415913,
             0.3314082162724219,
         ]);
-        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-15);
+        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-12);
     }
 
     #[test]
@@ -1895,7 +1920,7 @@ mod tests {
     #[test]
     fn test_hrp_order_groups_correlated_assets() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let order = allocator.quasi_diagonal_order();
+        let order = allocator.quasi_diagonal_order().unwrap();
 
         let mut sorted = order.clone();
         sorted.sort_unstable();
@@ -1932,7 +1957,7 @@ mod tests {
     #[test]
     fn test_hrp_single_asset() {
         let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
-        assert_eq!(allocator.quasi_diagonal_order(), vec![0]);
+        assert_eq!(allocator.quasi_diagonal_order().unwrap(), vec![0]);
         assert_eq!(allocator.hrp_allocation().unwrap().as_slice(), &[1.0]);
     }
 
@@ -1943,6 +1968,45 @@ mod tests {
         let weights = allocator.hrp_allocation().unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
+    }
+
+    #[test]
+    fn test_hrp_zero_variance_half_takes_all_weight() {
+        // Assets 0 and 1 are a perfect hedge, so their cluster has zero variance and takes all
+        // of the weight; the correlated pair 2 and 3 gets none. HRPOpt behaves the same way.
+        let a = [0.01, -0.02, 0.015, -0.005, 0.02, -0.01];
+        let b = [0.005, 0.01, -0.02, 0.015, -0.01, 0.004];
+        let noise = [0.0005, -0.0003, 0.0002, -0.0004, 0.0001, 0.0003];
+        let returns = DMatrix::from_fn(6, 4, |t, j| match j {
+            0 => a[t],
+            1 => -a[t],
+            2 => b[t],
+            _ => b[t] + noise[t],
+        });
+        let weights = PortfolioAllocator::from_returns(returns)
+            .unwrap()
+            .hrp_allocation()
+            .unwrap();
+
+        assert!((weights[0] - 0.5).abs() < 1e-12 && (weights[1] - 0.5).abs() < 1e-12);
+        assert!(weights[2] < 1e-12 && weights[3] < 1e-12);
+        assert!(weights.iter().all(|&w| w >= 0.0));
+    }
+
+    #[test]
+    fn test_hrp_rejects_underflowing_correlation() {
+        // Variances around 1e-320 pass validation, but their product underflows to zero, so ρ
+        // is infinite (nonzero covariance) or NaN (zero covariance, orthogonal columns).
+        let s = 1e-160;
+        let infinite = dmatrix![s, 2.0 * s; -s, 3.0 * s; 2.0 * s, -s];
+        let nan = dmatrix![s, s; -s, s; s, -s; -s, -s];
+        for returns in [infinite, nan] {
+            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            assert_eq!(
+                allocator.hrp_allocation().err(),
+                Some(CutupError::NonFiniteCovariance)
+            );
+        }
     }
 
     #[test]
