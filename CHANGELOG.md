@@ -9,8 +9,9 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - HRP linkage choice: `HrpConfig` with `Linkage::{Single, Complete, Average, Ward}`, and
-  `PortfolioAllocator::hrp_allocation_with_config`. Every linkage reproduces SciPy's
-  `linkage` exactly, including tie breaking, and matches PyPortfolioOpt's `HRPOpt`.
+  `PortfolioAllocator::hrp_allocation_with_config`. Every linkage follows SciPy's
+  `linkage` algorithm and tie-breaking rule step for step, so results match
+  PyPortfolioOpt's `HRPOpt` up to floating-point rounding.
 - `PortfolioAllocator::hrp_cluster_order`, the order HRP puts the assets in.
 - Property tests (`tests/properties.rs`) checking invariants on random returns: weights
   sum to 1, long-only methods never short, minimum variance has the lowest variance,
