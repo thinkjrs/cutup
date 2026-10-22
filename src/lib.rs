@@ -983,13 +983,15 @@ impl PortfolioAllocator {
         let n = cov.ncols();
         let mut distance = DMatrix::zeros(n, n);
         for i in 0..n {
-            for j in 0..n {
+            for j in i + 1..n {
                 let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
                 // Clamping would hide an infinite correlation, so reject it first.
                 if !rho.is_finite() {
                     return Err(CutupError::NonFiniteCovariance);
                 }
-                distance[(i, j)] = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
+                let d = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
+                distance[(i, j)] = d;
+                distance[(j, i)] = d;
             }
         }
         Ok(distance)

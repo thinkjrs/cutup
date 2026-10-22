@@ -137,8 +137,8 @@ fn nearest_neighbor_chain(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<Merg
         let (nx, ny) = (size[x] as f64, size[y] as f64);
         merges.push((x, y, nearest));
         // The merged cluster lives on in slot y; slot x is retired.
+        size[y] += size[x];
         size[x] = 0;
-        size[y] = (nx + ny) as usize;
 
         for i in 0..n {
             if size[i] == 0 || i == y {
@@ -146,14 +146,18 @@ fn nearest_neighbor_chain(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<Merg
             }
             let ni = size[i] as f64;
             let (dxi, dyi) = (d[(i, x)], d[(i, y)]);
+            // Written in the same order of operations as SciPy's update functions, so the
+            // rounding, and with it every near-tie, comes out the same.
             let updated = match linkage {
                 Linkage::Complete => dxi.max(dyi),
                 Linkage::Average => (nx * dxi + ny * dyi) / (nx + ny),
-                Linkage::Ward => (((ni + nx) * dxi * dxi + (ni + ny) * dyi * dyi
-                    - ni * nearest * nearest)
-                    / (nx + ny + ni))
-                    .sqrt(),
-                Linkage::Single => dxi.min(dyi),
+                Linkage::Ward => {
+                    let t = 1.0 / (nx + ny + ni);
+                    ((ni + nx) * t * dxi * dxi + (ni + ny) * t * dyi * dyi
+                        - ni * t * nearest * nearest)
+                        .sqrt()
+                }
+                Linkage::Single => unreachable!("single linkage uses the minimum spanning tree"),
             };
             d[(i, y)] = updated;
             d[(y, i)] = updated;
