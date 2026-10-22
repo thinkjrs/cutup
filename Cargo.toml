@@ -1,6 +1,6 @@
 [package]
 name = "cutup"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 authors = ["Jason R. Stevens, CFA <jason@thinkjrs.dev>"]
 license = "MIT"
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
-include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**/*", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE"]
 rust-version = "1.78.0"
 
 [badges]
