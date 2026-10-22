@@ -35,10 +35,14 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
-      # One run produces both reports: coverage (lcov.info) and per-test results
-      # (target/nextest/ci/junit.xml, from the ci profile in .config/nextest.toml).
+      # nextest writes per-test results to target/nextest/ci/junit.xml (the ci profile
+      # in .config/nextest.toml) but doesn't run doctests, so they run in a second pass
+      # and both are merged into lcov.info. Doctest coverage needs nightly.
       - name: Run tests with coverage
-        run: cargo llvm-cov nextest --all-features --lcov --output-path lcov.info
+        run: |
+          cargo llvm-cov nextest --all-features --no-report
+          cargo llvm-cov --doc --all-features --no-report
+          cargo llvm-cov report --doctests --lcov --output-path lcov.info
         env:
           NEXTEST_PROFILE: ci
 
