@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- HRP linkage choice: `HrpConfig` with `Linkage::{Single, Complete, Average, Ward}`, and
+  `PortfolioAllocator::hrp_allocation_with_config`. Every linkage reproduces SciPy's
+  `linkage` exactly, including tie breaking, and matches PyPortfolioOpt's `HRPOpt`.
+- `PortfolioAllocator::hrp_cluster_order`, the order HRP puts the assets in.
+- Property tests (`tests/properties.rs`) checking invariants on random returns: weights
+  sum to 1, long-only methods never short, minimum variance has the lowest variance,
+  results don't depend on column order or return scale, and mean-variance meets its
+  objective.
+- `examples/compare.rs`, running every method on the same data, and a table in the README
+  for choosing a method.
+
+### Changed
+
+- HRP's clustering moved into a private `cluster` module. Results are unchanged.
+
+### Documented
+
+- HRP, like the original algorithm and `HRPOpt`, can depend on the order of the input
+  columns: reordering them can move where the recursive bisection splits. Found by the new
+  property tests.
+
 ## [0.2.1] - 2026-10-22
 
 ### Added
