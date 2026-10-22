@@ -1,7 +1,6 @@
 use cutup::run_portfolio_allocation;
 use nalgebra::DMatrix;
 
-#[cfg(not(tarpaulin_include))]
 fn main() {
     let prices = DMatrix::from_row_slice(
         4,

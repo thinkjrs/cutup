@@ -11,7 +11,7 @@ documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
-exclude = [".github", ".gitignore", "tests/", "examples/", ".vscode/", ".idea/"]
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 rust-version = "1.78.0"
 
 [badges]
@@ -19,6 +19,3 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 nalgebra = "0.33.2"
-
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ["cfg(tarpaulin_include)"] }
