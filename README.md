@@ -12,6 +12,7 @@ It's designed to be efficient and easy to use.
 
 Here are some of the allocation methods included in this library:
 
+- **Minimum Variance (GMV)**
 - **Mean-Variance Optimization (MVO)**
 - **Equal Weight Allocation (EW)**
 - **Hierarchical Risk Parity (HRP)**
@@ -20,7 +21,8 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 
 ## Features
 
-- **MVO Allocation**: Computes portfolio weights using mean-variance optimization with covariance matrix regularization.
+- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **EW Allocation**: Assigns equal weights to all assets.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
@@ -38,10 +40,12 @@ cutup = "0.1.4"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
+Minimum variance and mean-variance weights can be negative (short positions); there is no long-only constraint yet.
+
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
 ```rust
-use cutup::{run_portfolio_allocation, CutupError, PortfolioAllocator};
+use cutup::{run_portfolio_allocation, CutupError, MeanVarianceConfig, PortfolioAllocator};
 use nalgebra::DMatrix;
 
 fn main() -> Result<(), CutupError> {
@@ -58,15 +62,18 @@ fn main() -> Result<(), CutupError> {
 
     let allocator = PortfolioAllocator::from_prices(prices.clone())?;
 
-    let mvo_weights = allocator.mvo_allocation()?;
+    let min_variance_weights = allocator.min_variance_allocation()?;
+    let mean_variance_weights =
+        allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(2.0))?;
     let ew_weights = allocator.ew_allocation();
     let hrp_weights = allocator.hrp_allocation()?;
 
-    println!("MVO Weights: {:?}", mvo_weights.as_slice());
+    println!("Min Variance Weights: {:?}", min_variance_weights.as_slice());
+    println!("Mean-Variance Weights: {:?}", mean_variance_weights.as_slice());
     println!("EW Weights: {:?}", ew_weights.as_slice());
     println!("HRP Weights: {:?}", hrp_weights.as_slice());
 
-    // or do it all in one go
+    // or run a minimum variance allocation in one go
 
     let weights = run_portfolio_allocation(prices)?;
     println!("Portfolio Weights: {:?}", weights.as_slice());
