@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] - 2026-10-22
 
 ### Added
 
@@ -148,6 +148,7 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
+[0.2.2]: https://github.com/thinkjrs/cutup/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/thinkjrs/cutup/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/thinkjrs/cutup/compare/0.1.4...0.2.0
 [0.1.4]: https://github.com/thinkjrs/cutup/releases/tag/0.1.4
