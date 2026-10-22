@@ -97,6 +97,14 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
+## Testing
+
+```bash
+cargo test
+```
+
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance and mean-variance, and PyPortfolioOpt for HRP. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+
 ## License
 
 This project is licensed under the MIT License.
