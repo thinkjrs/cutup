@@ -1,0 +1,4 @@
+# Resolve dependencies to the newest versions that still support the crate's
+# rust-version (1.78), so the lockfile works on every toolchain CI tests.
+[resolver]
+incompatible-rust-versions = "fallback"
