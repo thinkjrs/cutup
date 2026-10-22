@@ -14,6 +14,7 @@ Here are some of the allocation methods included in this library:
 
 - **Minimum Variance (GMV)**
 - **Mean-Variance Optimization (MVO)**
+- **Maximum Sharpe Ratio (tangency portfolio)**
 - **Equal Weight Allocation (EW)**
 - **Inverse Volatility and Inverse Variance**
 - **Hierarchical Risk Parity (HRP)**
@@ -24,6 +25,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
+- **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **EW Allocation**: Assigns equal weights to all assets.
 - **Inverse Volatility / Inverse Variance**: Weights each asset by `1 / σ` or `1 / σ²`, ignoring correlations. Simple risk-based weights that are always positive.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
@@ -38,6 +40,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 | `inverse_variance_allocation` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
 | `min_variance_allocation` | covariance | ❌ | The lowest-variance fully invested portfolio. Sensitive to estimation error, so consider shrinkage. |
 | `mean_variance_allocation` | covariance, expected returns | ❌ | Markowitz, for a risk aversion or a target return. Most sensitive to the expected returns you supply. |
+| `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
 | `hrp_allocation` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
 
 Long-only methods never return negative weights. The others can, since there is no long-only constraint yet. To see every method on the same data:
@@ -52,7 +55,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.2.1"
+cutup = "0.2.2"
 ```
 
 ## Usage

@@ -4,10 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] - 2026-10-22
 
 ### Added
 
+- `PortfolioAllocator::max_sharpe_allocation` with `MaxSharpeConfig`: the unconstrained
+  maximum Sharpe ratio (tangency) portfolio for a risk-free rate, with optional expected
+  returns and covariance adjustments. Handles a singular covariance like minimum variance
+  does.
+- `CutupError::RiskFreeRateTooHigh`, returned when the risk-free rate is at or above the
+  minimum variance portfolio's return, where no maximum exists.
 - HRP linkage choice: `HrpConfig` with `Linkage::{Single, Complete, Average, Ward}`, and
   `PortfolioAllocator::hrp_allocation_with_config`. Every linkage follows SciPy's
   `linkage` algorithm and tie-breaking rule step for step, so results match
@@ -15,8 +21,8 @@ All notable changes to this project are documented here. The format follows
 - `PortfolioAllocator::hrp_cluster_order`, the order HRP puts the assets in.
 - Property tests (`tests/properties.rs`) checking invariants on random returns: weights
   sum to 1, long-only methods never short, minimum variance has the lowest variance,
-  results don't depend on column order or return scale, and mean-variance meets its
-  objective.
+  results don't depend on column order or return scale, mean-variance meets its objective,
+  and max Sharpe has the highest Sharpe ratio.
 - `examples/compare.rs`, running every method on the same data, and a table in the README
   for choosing a method.
 
@@ -141,6 +147,7 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
+[0.2.2]: https://github.com/thinkjrs/cutup/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/thinkjrs/cutup/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/thinkjrs/cutup/compare/0.1.4...0.2.0
 [0.1.4]: https://github.com/thinkjrs/cutup/releases/tag/0.1.4
