@@ -9,7 +9,7 @@ fn test_portfolio_allocations() {
         120.0, 220.0, 320.0
     ];
 
-    let allocator = PortfolioAllocator::new(prices.clone());
+    let allocator = PortfolioAllocator::from_prices(prices.clone());
 
     let ew = allocator.ew_allocation();
     assert_eq!(ew.len(), 3);

@@ -36,6 +36,8 @@ cutup = "0.1.4"
 
 ## Usage
 
+Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
+
 ```rust
 use cutup::{run_portfolio_allocation, PortfolioAllocator};
 use nalgebra::DMatrix;
@@ -52,7 +54,7 @@ fn main() {
         ],
     );
 
-    let allocator = PortfolioAllocator::new(prices.clone());
+    let allocator = PortfolioAllocator::from_prices(prices.clone());
 
     let mvo_weights = allocator.mvo_allocation();
     let ew_weights = allocator.ew_allocation();
