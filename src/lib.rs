@@ -873,7 +873,105 @@ impl PortfolioAllocator {
         Weights(vec![1.0 / n as f64; n])
     }
 
-    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation.
+    /// Orders assets so that correlated assets sit next to each other: the leaf order of a
+    /// single-linkage clustering on the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)`.
+    ///
+    /// Follows SciPy's `linkage(method="single")` and `to_tree().pre_order()` step for step,
+    /// including how ties are broken, so the order matches PyPortfolioOpt's `HRPOpt`:
+    ///
+    /// 1. Prim's algorithm builds the minimum spanning tree, starting from asset 0 and taking
+    ///    the lowest-index asset among equally distant ones.
+    /// 2. The tree's edges are stably sorted by distance and merged in that order. Merge `k`
+    ///    creates cluster `n + k`, whose left child is whichever of the two merged clusters has
+    ///    the smaller id.
+    /// 3. A pre-order traversal from the root lists the assets left to right.
+    fn quasi_diagonal_order(&self) -> Vec<usize> {
+        let cov = &self.cov_matrix;
+        let n = cov.ncols();
+        let distance = |i: usize, j: usize| {
+            let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
+            ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt()
+        };
+
+        let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(n - 1);
+        let mut distance_to_tree = vec![f64::INFINITY; n];
+        let mut in_tree = vec![false; n];
+        let mut x = 0;
+        for _ in 1..n {
+            in_tree[x] = true;
+            let (mut y, mut nearest) = (0, f64::INFINITY);
+            for (i, to_tree) in distance_to_tree.iter_mut().enumerate() {
+                if in_tree[i] {
+                    continue;
+                }
+                *to_tree = to_tree.min(distance(x, i));
+                if *to_tree < nearest {
+                    (y, nearest) = (i, *to_tree);
+                }
+            }
+            edges.push((x, y, nearest));
+            x = y;
+        }
+        edges.sort_by(|a, b| a.2.total_cmp(&b.2));
+
+        let mut parent: Vec<usize> = (0..2 * n - 1).collect();
+        let find = |parent: &mut Vec<usize>, mut node: usize| {
+            while parent[node] != node {
+                parent[node] = parent[parent[node]];
+                node = parent[node];
+            }
+            node
+        };
+        let mut children = Vec::with_capacity(n - 1);
+        for (k, &(a, b, _)) in edges.iter().enumerate() {
+            let (root_a, root_b) = (find(&mut parent, a), find(&mut parent, b));
+            parent[root_a] = n + k;
+            parent[root_b] = n + k;
+            children.push((root_a.min(root_b), root_a.max(root_b)));
+        }
+
+        let mut order = Vec::with_capacity(n);
+        let mut stack = vec![2 * n - 2];
+        while let Some(node) = stack.pop() {
+            if node < n {
+                order.push(node);
+            } else {
+                let (left, right) = children[node - n];
+                stack.push(right);
+                stack.push(left);
+            }
+        }
+        order
+    }
+
+    /// Returns the variance of the inverse-variance portfolio over `cluster`.
+    fn cluster_variance(&self, cluster: &[usize]) -> f64 {
+        let inverse: Vec<f64> = cluster
+            .iter()
+            .map(|&i| 1.0 / self.cov_matrix[(i, i)])
+            .collect();
+        let total: f64 = inverse.iter().sum();
+        let mut variance = 0.0;
+        for (a, &i) in cluster.iter().enumerate() {
+            for (b, &j) in cluster.iter().enumerate() {
+                variance += inverse[a] * inverse[b] * self.cov_matrix[(i, j)];
+            }
+        }
+        variance / (total * total)
+    }
+
+    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016).
+    ///
+    /// 1. **Cluster.** Assets are clustered by single linkage on the correlation distance
+    ///    `sqrt((1 − ρ) / 2)`, and ordered so that correlated assets sit next to each other.
+    /// 2. **Recursive bisection.** The ordered list is split in half, repeatedly. At each
+    ///    split, the two halves share their parent's weight in inverse proportion to their
+    ///    risk: each half's variance is that of its own inverse-variance portfolio, and the
+    ///    first half gets `α = 1 − V₁ / (V₁ + V₂)`.
+    ///
+    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` exactly, including tie
+    /// breaking, so results match `HRPOpt(returns).optimize()`. HRP never inverts the
+    /// covariance matrix, so it works when Σ is singular. Weights are always positive.
     ///
     /// # Returns
     ///
@@ -900,6 +998,7 @@ impl PortfolioAllocator {
     ///
     /// let sum: f64 = weights.iter().sum();
     /// assert!((sum - 1.0).abs() < 1e-6);
+    /// assert!(weights.iter().all(|&w| w > 0.0));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn hrp_allocation(&self) -> Result<Weights, CutupError> {
@@ -907,30 +1006,34 @@ impl PortfolioAllocator {
             return Err(CutupError::ZeroVariance { asset });
         }
 
-        let n = self.cov_matrix.ncols();
+        let order = self.quasi_diagonal_order();
+        let mut weights = vec![1.0; order.len()];
+        let mut clusters = vec![order];
 
-        let mut weights = vec![1.0; n];
-        let mut clusters: Vec<Vec<usize>> = vec![(0..n).collect()];
+        while !clusters.is_empty() {
+            clusters = clusters
+                .into_iter()
+                .filter(|cluster| cluster.len() > 1)
+                .flat_map(|cluster| {
+                    let (left, right) = cluster.split_at(cluster.len() / 2);
+                    [left.to_vec(), right.to_vec()]
+                })
+                .collect();
 
-        while let Some(cluster) = clusters.pop() {
-            if cluster.len() != 1 {
-                let mid = cluster.len() / 2;
-                let left = &cluster[..mid];
-                let right = &cluster[mid..];
-
-                let vol_left: f64 = left.iter().map(|&i| self.cov_matrix[(i, i)]).sum();
-                let vol_right: f64 = right.iter().map(|&i| self.cov_matrix[(i, i)]).sum();
-                let total_vol = vol_left + vol_right;
-
-                for &idx in left {
-                    weights[idx] *= vol_right / total_vol;
+            for pair in clusters.chunks(2) {
+                let (left, right) = (&pair[0], &pair[1]);
+                let (v_left, v_right) = (self.cluster_variance(left), self.cluster_variance(right));
+                // Two halves with zero variance each (perfectly hedged pairs) split evenly.
+                let alpha = match v_left + v_right {
+                    total if total > 0.0 => 1.0 - v_left / total,
+                    _ => 0.5,
+                };
+                for &i in left {
+                    weights[i] *= alpha;
                 }
-                for &idx in right {
-                    weights[idx] *= vol_left / total_vol;
+                for &i in right {
+                    weights[i] *= 1.0 - alpha;
                 }
-
-                clusters.push(left.to_vec());
-                clusters.push(right.to_vec());
             }
         }
 
@@ -1731,6 +1834,128 @@ mod tests {
 
         let config = MeanVarianceConfig::risk_aversion(2.0).with_covariance(shrunk);
         assert!(allocator.mean_variance_allocation(&config).is_ok());
+    }
+
+    /// Five assets driven by two factors, interleaved: assets 0, 2 and 4 follow the first
+    /// factor and assets 1 and 3 the second.
+    fn two_block_returns() -> DMatrix<f64> {
+        let f1 = [0.010, -0.010, 0.020, -0.020, 0.005, -0.005, 0.012, -0.008];
+        let f2 = [0.010, 0.010, -0.010, -0.010, 0.003, -0.003, -0.006, 0.009];
+        let noise = [0.0011, -0.0007, 0.0004, -0.0013, 0.0009];
+        DMatrix::from_fn(8, 5, |t, j| {
+            let factor = if j % 2 == 0 { f1[t] } else { f2[t] };
+            factor + noise[j] * ((t * (j + 2)) % 5) as f64
+        })
+    }
+
+    #[test]
+    fn test_hrp_matches_pyportfolioopt() {
+        // HRPOpt(returns).optimize() on the returns of full_rank_prices, with PyPortfolioOpt
+        // 1.6.0 and SciPy 1.17.1.
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let expected = Weights(vec![
+            0.43205598172341897,
+            0.23653580200415913,
+            0.3314082162724219,
+        ]);
+        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-15);
+    }
+
+    #[test]
+    fn test_hrp_two_assets_is_inverse_variance() {
+        let prices = full_rank_prices().columns(0, 2).into_owned();
+        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let (v1, v2) = (allocator.cov_matrix[(0, 0)], allocator.cov_matrix[(1, 1)]);
+        let w1 = (1.0 / v1) / (1.0 / v1 + 1.0 / v2);
+        assert_weights_close(
+            &allocator.hrp_allocation().unwrap(),
+            &Weights(vec![w1, 1.0 - w1]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_hrp_uncorrelated_assets_is_inverse_variance() {
+        // Uncorrelated assets are all equally far apart, so the clustering is decided by tie
+        // breaking; whatever the order, the weights reduce to inverse variance.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
+        let total: f64 = inverse.iter().sum();
+        let expected = Weights(inverse.iter().map(|x| x / total).collect());
+        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-12);
+    }
+
+    #[test]
+    fn test_hrp_order_groups_correlated_assets() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let order = allocator.quasi_diagonal_order();
+
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4]);
+
+        let position = |asset: usize| order.iter().position(|&a| a == asset).unwrap();
+        let mut first_block: Vec<usize> = [0, 2, 4].iter().map(|&a| position(a)).collect();
+        first_block.sort_unstable();
+        assert_eq!(first_block[2] - first_block[0], 2, "order {order:?}");
+    }
+
+    #[test]
+    fn test_hrp_ignores_column_order() {
+        // Index-order bisection fails this: the clustering, not the input order, decides how
+        // assets are grouped.
+        let returns = two_block_returns();
+        let permutation = [3, 0, 4, 1, 2];
+        let permuted = DMatrix::from_fn(returns.nrows(), 5, |t, j| returns[(t, permutation[j])]);
+
+        let base = PortfolioAllocator::from_returns(returns)
+            .unwrap()
+            .hrp_allocation()
+            .unwrap();
+        let shuffled = PortfolioAllocator::from_returns(permuted)
+            .unwrap()
+            .hrp_allocation()
+            .unwrap();
+
+        for (j, &asset) in permutation.iter().enumerate() {
+            assert!((shuffled[j] - base[asset]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_hrp_single_asset() {
+        let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
+        assert_eq!(allocator.quasi_diagonal_order(), vec![0]);
+        assert_eq!(allocator.hrp_allocation().unwrap().as_slice(), &[1.0]);
+    }
+
+    #[test]
+    fn test_hrp_singular_covariance() {
+        // HRP never inverts Σ, so rank-deficient data still gives positive weights.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let weights = allocator.hrp_allocation().unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(weights.iter().all(|&w| w > 0.0));
+    }
+
+    #[test]
+    fn test_hrp_anti_correlated_pair_splits_evenly() {
+        // A perfectly anti-correlated pair with equal variances: the two assets are as far apart
+        // as possible, and each half carries the same risk.
+        let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_weights_close(
+            &allocator.hrp_allocation().unwrap(),
+            &Weights(vec![0.5, 0.5]),
+            1e-12,
+        );
     }
 
     #[test]
