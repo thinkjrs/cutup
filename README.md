@@ -1,7 +1,7 @@
 # Cutup: A Rust Portfolio Allocation Library
 
 [![Crates.io](https://img.shields.io/crates/v/cutup)](https://crates.io/crates/cutup)
-[![Build Status](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml/badge.svg)](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml)
+[![Build Status](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/thinkjrs/cutup/actions/workflows/tests.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/thinkjrs/cutup/branch/main/graph/badge.svg)](https://codecov.io/gh/thinkjrs/cutup)
 [![Docs.rs](https://docs.rs/cutup/badge.svg)](https://docs.rs/cutup)
 [![License](https://img.shields.io/crates/l/cutup)](https://crates.io/crates/cutup)
@@ -37,8 +37,8 @@ cutup = "0.1.4"
 ## Usage
 
 ```rust
+use cutup::{run_portfolio_allocation, PortfolioAllocator};
 use nalgebra::DMatrix;
-use cutup::PortfolioAllocator;
 
 fn main() {
     let prices = DMatrix::from_row_slice(
@@ -52,7 +52,7 @@ fn main() {
         ],
     );
 
-    let allocator = PortfolioAllocator::new(prices);
+    let allocator = PortfolioAllocator::new(prices.clone());
 
     let mvo_weights = allocator.mvo_allocation();
     let ew_weights = allocator.ew_allocation();
