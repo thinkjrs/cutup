@@ -13,6 +13,8 @@ cutup's implementation:
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
   covariance, not by running the same solver as cutup.
+* Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
+  least-squares solution when Σ is singular.
 * HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
 
 With --check, nothing is written: the cases are recomputed and compared with the
@@ -119,6 +121,25 @@ def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray 
     return kkt_min_norm(cov, np.zeros(n), np.column_stack([ones, mu]), np.array([1.0, target]))
 
 
+def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
+    excess = mu - risk_free_rate
+    if well_conditioned(cov):
+        z = np.linalg.solve(cov, excess)
+    else:
+        z, *_ = np.linalg.lstsq(cov, excess, rcond=None)
+        # No exact solution: some zero-variance portfolio earns excess return.
+        if np.linalg.norm(cov @ z - excess) > 1e-9 * np.linalg.norm(excess):
+            return "Unbounded"
+    # 1ᵀz > 0 exactly when r_f is below the minimum variance portfolio's return.
+    if z.sum() <= 1e-12 * np.abs(z).sum():
+        return "RiskFreeRateTooHigh"
+    return z / z.sum()
+
+
+def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
+    return float(min_variance(cov) @ mu)
+
+
 def hrp(returns: np.ndarray, linkage: str) -> np.ndarray:
     weights = HRPOpt(pd.DataFrame(returns)).optimize(linkage_method=linkage)
     return np.array([weights[i] for i in range(returns.shape[1])])
@@ -142,6 +163,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return risk_aversion(adjusted, mu, params["risk_aversion"])
         case "mean_variance":
             return target_return(adjusted, mu, params["target_return"])
+        case "max_sharpe":
+            return max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
         case "hrp":
             return hrp(returns, params.get("linkage", "single"))
     raise ValueError(f"unknown method {case['method']}")
@@ -195,6 +218,27 @@ def cases(datasets: dict) -> list[dict]:
         target = round(1.25 * float(returns.mean()), 6)
         out.append({"dataset": name, "method": "mean_variance", "params": {"target_return": target}, "tolerance": solver})
     out.append({"dataset": "orthogonal3", "method": "mean_variance", "params": {"target_return": 0.01}, "tolerance": solver})
+
+    # Max Sharpe at a risk-free rate just below the minimum variance return, where the
+    # maximum exists, plus the error cases.
+    for name in ["two_asset", "two_blocks5", "prices10x60", "near_singular4"]:
+        returns = load_returns(datasets[name])
+        threshold = min_variance_return(np.cov(returns, rowvar=False), returns.mean(axis=0))
+        rate = round(threshold - abs(threshold) * 0.5 - 1e-4, 6)
+        out.append({"dataset": name, "method": "max_sharpe", "params": {"risk_free_rate": rate}, "tolerance": solver})
+    out.append({"dataset": "prices10x60", "method": "max_sharpe", "params": {"risk_free_rate": 0.0, "shrinkage": 0.3}, "tolerance": solver})
+    out.append({
+        "dataset": "prices10x60",
+        "method": "max_sharpe",
+        "params": {
+            "risk_free_rate": 0.0001,
+            "expected_returns": [0.0010, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        },
+        "tolerance": solver,
+    })
+    out.append({"dataset": "prices10x60", "method": "max_sharpe", "params": {"risk_free_rate": 0.01}, "tolerance": solver})
+    out.append({"dataset": "rank_deficient6", "method": "max_sharpe", "tolerance": solver})
+    out.append({"dataset": "rank_deficient6", "method": "max_sharpe", "params": {"risk_free_rate": -0.01, "shrinkage": 0.3}, "tolerance": solver})
     return out
 
 
@@ -244,7 +288,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "mean_variance"):
+        if case["method"] in ("min_variance", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.

@@ -5,8 +5,8 @@
 //! `reference/README.md`). Every case is checked and all failures are reported together.
 
 use cutup::{
-    CovarianceConfig, CutupError, HrpConfig, Linkage, MeanVarianceConfig, PortfolioAllocator,
-    Weights,
+    CovarianceConfig, CutupError, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig,
+    PortfolioAllocator, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -71,6 +71,17 @@ fn mean_variance_config(params: &Value) -> MeanVarianceConfig {
     }
 }
 
+fn max_sharpe_config(params: &Value) -> MaxSharpeConfig {
+    let config = MaxSharpeConfig::default()
+        .with_risk_free_rate(params["risk_free_rate"].as_f64().unwrap_or(0.0))
+        .with_covariance(covariance_config(params));
+    if params["expected_returns"].is_array() {
+        config.with_expected_returns(DVector::from_vec(floats(&params["expected_returns"])))
+    } else {
+        config
+    }
+}
+
 fn hrp_config(params: &Value) -> HrpConfig {
     let linkage = match params["linkage"].as_str() {
         None | Some("single") => Linkage::Single,
@@ -82,12 +93,13 @@ fn hrp_config(params: &Value) -> HrpConfig {
     HrpConfig::default().with_linkage(linkage)
 }
 
-const METHODS: [&str; 6] = [
+const METHODS: [&str; 7] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
     "min_variance",
     "mean_variance",
+    "max_sharpe",
     "hrp",
 ];
 
@@ -102,6 +114,7 @@ fn run(
         "inverse_variance" => allocator.inverse_variance_allocation(),
         "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
+        "max_sharpe" => allocator.max_sharpe_allocation(&max_sharpe_config(params)),
         "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
         other => unreachable!("unknown method {other} is rejected in check"),
     }
