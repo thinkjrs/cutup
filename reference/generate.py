@@ -8,6 +8,7 @@ tests/reference.rs checks cutup against. Each method's reference is independent 
 cutup's implementation:
 
 * Equal weight: 1 / n.
+* Inverse volatility and inverse variance: 1 / σ and 1 / σ² from np.var, normalized.
 * Minimum variance and mean-variance: NumPy closed forms when the covariance is well
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
@@ -129,6 +130,12 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
     match case["method"]:
         case "equal_weight":
             return np.full(returns.shape[1], 1.0 / returns.shape[1])
+        case "inverse_volatility":
+            raw = 1.0 / np.sqrt(np.var(returns, axis=0, ddof=1))
+            return raw / raw.sum()
+        case "inverse_variance":
+            raw = 1.0 / np.var(returns, axis=0, ddof=1)
+            return raw / raw.sum()
         case "min_variance":
             return min_variance(adjusted)
         case "mean_variance" if "risk_aversion" in params:
@@ -148,6 +155,8 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": name, "method": "equal_weight", "tolerance": exact})
         out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
         out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
+        out.append({"dataset": name, "method": "inverse_volatility", "tolerance": clustering})
+        out.append({"dataset": name, "method": "inverse_variance", "tolerance": clustering})
 
     for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
         out.append({"dataset": name, "method": "min_variance", "params": {"shrinkage": 0.3}, "tolerance": solver})

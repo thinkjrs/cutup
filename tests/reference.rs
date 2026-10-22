@@ -68,7 +68,14 @@ fn mean_variance_config(params: &Value) -> MeanVarianceConfig {
     }
 }
 
-const METHODS: [&str; 4] = ["equal_weight", "min_variance", "mean_variance", "hrp"];
+const METHODS: [&str; 6] = [
+    "equal_weight",
+    "inverse_volatility",
+    "inverse_variance",
+    "min_variance",
+    "mean_variance",
+    "hrp",
+];
 
 fn run(
     allocator: &PortfolioAllocator,
@@ -77,6 +84,8 @@ fn run(
 ) -> Result<Weights, CutupError> {
     match method {
         "equal_weight" => Ok(allocator.ew_allocation()),
+        "inverse_volatility" => allocator.inverse_volatility_allocation(),
+        "inverse_variance" => allocator.inverse_variance_allocation(),
         "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
         "hrp" => allocator.hrp_allocation(),
