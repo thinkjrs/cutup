@@ -10,8 +10,9 @@ All notable changes to this project are documented here. The format follows
 
 - `PortfolioAllocator::max_sharpe_allocation` with `MaxSharpeConfig`: the unconstrained
   maximum Sharpe ratio (tangency) portfolio for a risk-free rate, with optional expected
-  returns and covariance adjustments. Handles a singular covariance like minimum variance
-  does.
+  returns and covariance adjustments. On a singular covariance it returns the
+  minimum-norm optimum, or decides from Σ's null space whether the Sharpe ratio is unbounded
+  or the risk-free rate is too high.
 - `CutupError::RiskFreeRateTooHigh`, returned when the risk-free rate is at or above the
   minimum variance portfolio's return, where no maximum exists.
 - HRP linkage choice: `HrpConfig` with `Linkage::{Single, Complete, Average, Ward}`, and

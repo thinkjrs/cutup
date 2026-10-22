@@ -20,7 +20,7 @@ fixtures in `tests/fixtures/`.
 | Inverse volatility, inverse variance | `1 / σ` and `1 / σ²` from `np.var(ddof=1)`, normalized |
 | Minimum variance | NumPy closed form `Σ⁻¹1 / 1ᵀΣ⁻¹1`; minimum-norm KKT solution from `numpy.linalg.lstsq` when Σ is singular |
 | Mean-variance | NumPy closed forms for risk aversion and target return (Merton, 1972); minimum-norm KKT solution when Σ is singular. Expected errors are decided from the null space of Σ. |
-| Max Sharpe | NumPy closed form `Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f)`; minimum-norm least squares when Σ is singular |
+| Max Sharpe | NumPy closed form `Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f)`, or `numpy.linalg.pinv` when Σ is singular. Expected errors are decided from the minimum variance portfolio's own variance and return, and the null space of Σ. |
 | HRP | PyPortfolioOpt `HRPOpt`, for each linkage |
 
 Each case's tolerance is relative to the size of the weight. Ill-conditioned
