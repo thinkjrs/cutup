@@ -13,7 +13,7 @@ cutup's implementation:
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
   covariance, not by running the same solver as cutup.
-* HRP: PyPortfolioOpt's HRPOpt.
+* HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
 
 With --check, nothing is written: the cases are recomputed and compared with the
 committed file, failing if any weight moved by more than a tenth of its tolerance or
@@ -119,8 +119,8 @@ def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray 
     return kkt_min_norm(cov, np.zeros(n), np.column_stack([ones, mu]), np.array([1.0, target]))
 
 
-def hrp(returns: np.ndarray) -> np.ndarray:
-    weights = HRPOpt(pd.DataFrame(returns)).optimize()
+def hrp(returns: np.ndarray, linkage: str) -> np.ndarray:
+    weights = HRPOpt(pd.DataFrame(returns)).optimize(linkage_method=linkage)
     return np.array([weights[i] for i in range(returns.shape[1])])
 
 
@@ -143,7 +143,7 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
         case "mean_variance":
             return target_return(adjusted, mu, params["target_return"])
         case "hrp":
-            return hrp(returns)
+            return hrp(returns, params.get("linkage", "single"))
     raise ValueError(f"unknown method {case['method']}")
 
 
@@ -157,6 +157,8 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_volatility", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_variance", "tolerance": clustering})
+        for linkage in ["complete", "average", "ward"]:
+            out.append({"dataset": name, "method": "hrp", "params": {"linkage": linkage}, "tolerance": clustering})
 
     for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
         out.append({"dataset": name, "method": "min_variance", "params": {"shrinkage": 0.3}, "tolerance": solver})
