@@ -104,8 +104,10 @@ def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray |
 def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray | str:
     n = cov.shape[0]
     ones = np.ones(n)
-    # With every expected return equal, only that return can be targeted.
-    if np.allclose(mu, mu.mean(), rtol=0.0, atol=1e-15) and not np.isclose(target, mu.mean()):
+    # With every expected return equal (relative to their size), only that return can
+    # be targeted.
+    scale = np.abs(mu).max()
+    if np.ptp(mu) <= 1e-12 * scale and abs(target - mu.mean()) > 1e-12 * max(scale, abs(target)):
         return "DegenerateExpectedReturns"
     if well_conditioned(cov):
         inv_ones = np.linalg.solve(cov, ones)
@@ -121,16 +123,9 @@ def hrp(returns: np.ndarray) -> np.ndarray:
     return np.array([weights[i] for i in range(returns.shape[1])])
 
 
-def adjusted_covariance(case: dict, returns: np.ndarray) -> np.ndarray:
-    params = case.get("params", {})
-    cov = np.cov(returns, rowvar=False)
-    return adjust(cov, params.get("shrinkage"), params.get("regularization"))
-
-
-def run(case: dict, returns: np.ndarray) -> np.ndarray | str:
+def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | str:
     params = case.get("params", {})
     mu = np.array(params["expected_returns"]) if "expected_returns" in params else returns.mean(axis=0)
-    adjusted = adjusted_covariance(case, returns)
     match case["method"]:
         case "equal_weight":
             return np.full(returns.shape[1], 1.0 / returns.shape[1])
@@ -203,12 +198,21 @@ def drift(committed: dict, fresh: dict) -> list[str]:
         if any(old.get(key) != new.get(key) for key in keys) or ("weights" in old) != ("weights" in new):
             problems.append(f"{label}: case changed")
             continue
+        # Tolerances come from the condition number, which carries platform noise, so
+        # only a change of more than 2x counts as a different tolerance rule.
+        old_tol, new_tol = old["tolerance"], new["tolerance"]
+        if (old_tol == 0) != (new_tol == 0) or (old_tol and not 0.5 <= new_tol / old_tol <= 2.0):
+            problems.append(f"{label}: tolerance changed from {old_tol} to {new_tol}")
         if "weights" not in new:
             continue
         old_w, new_w = np.array(old["weights"]), np.array(new["weights"])
+        if old_w.shape != new_w.shape:
+            problems.append(f"{label}: {old_w.size} committed weights, {new_w.size} regenerated")
+            continue
         allowed = max(old["tolerance"], new["tolerance"]) / 10
         moved = np.max(np.abs(old_w - new_w) / np.maximum(np.abs(old_w), 1.0))
-        if old_w.shape != new_w.shape or moved > allowed:
+        # Written as "not <=" so that a NaN counts as drift.
+        if not moved <= allowed:
             problems.append(f"{label}: weights moved by {moved:.2e} (allowed {allowed:.0e})")
     return problems
 
@@ -216,20 +220,27 @@ def drift(committed: dict, fresh: dict) -> list[str]:
 def main() -> None:
     check = "--check" in sys.argv[1:]
     datasets = json.loads(DATASETS.read_text())
+    returns_by_dataset = {name: load_returns(dataset) for name, dataset in datasets.items()}
     results = []
     for case in cases(datasets):
-        returns = load_returns(datasets[case["dataset"]])
-        outcome = run(case, returns)
+        returns = returns_by_dataset[case["dataset"]]
+        params = case.get("params", {})
+        adjusted = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
+        outcome = run(case, returns, adjusted)
         if isinstance(outcome, str):
             case["error"] = outcome
+        elif not np.all(np.isfinite(outcome)):
+            raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
         if case["method"] in ("min_variance", "mean_variance"):
-            # Any solver loses about cond(Σ) · ε of accuracy, so ill-conditioned
-            # cases get a proportionally looser tolerance.
-            condition = float(np.linalg.cond(adjusted_covariance(case, returns)))
+            # A numerically singular covariance has its null space truncated, which
+            # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
+            # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
+            condition = float(np.linalg.cond(adjusted))
             case["condition_number"] = float(f"{condition:.3e}")
-            if condition < WELL_CONDITIONED:
+            singular = condition > 1.0 / (adjusted.shape[0] * np.finfo(float).eps)
+            if not singular:
                 case["tolerance"] = max(case["tolerance"], float(f"{condition * 1e-14:.1e}"))
         results.append(case)
 

@@ -68,6 +68,8 @@ fn mean_variance_config(params: &Value) -> MeanVarianceConfig {
     }
 }
 
+const METHODS: [&str; 4] = ["equal_weight", "min_variance", "mean_variance", "hrp"];
+
 fn run(
     allocator: &PortfolioAllocator,
     method: &str,
@@ -78,19 +80,33 @@ fn run(
         "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
         "hrp" => allocator.hrp_allocation(),
-        other => panic!("unknown method {other}"),
+        other => unreachable!("unknown method {other} is rejected in check"),
     }
 }
 
 /// Compares one case, returning a description of the mismatch if there is one.
 fn check(case: &Value, datasets: &Value) -> Option<String> {
-    let dataset = case["dataset"].as_str().unwrap();
-    let method = case["method"].as_str().unwrap();
+    let dataset = case["dataset"].as_str().unwrap_or_default();
+    let method = case["method"].as_str().unwrap_or_default();
     let params = &case["params"];
     let label = match params {
         Value::Null => format!("{dataset} / {method}"),
         _ => format!("{dataset} / {method} {params}"),
     };
+
+    // Report a malformed case like any other failure instead of panicking, so the rest
+    // of the cases still run.
+    if datasets[dataset].is_null() {
+        return Some(format!("{label}: no dataset named {dataset:?}"));
+    }
+    if !METHODS.contains(&method) {
+        return Some(format!("{label}: unknown method {method:?}"));
+    }
+    if case["weights"].is_array() == case["error"].is_string() {
+        return Some(format!(
+            "{label}: case needs exactly one of weights or error"
+        ));
+    }
     let result = run(&allocator(&datasets[dataset]), method, params);
 
     match (result, case["error"].as_str()) {
@@ -114,10 +130,12 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
                 ));
             }
             // Relative to the weight's size, so large long-short weights get a fair tolerance.
+            // f64::max would skip a NaN, so a non-finite weight counts as infinitely far off.
             let worst = weights
                 .iter()
                 .zip(&expected)
                 .map(|(got, want)| (got - want).abs() / want.abs().max(1.0))
+                .map(|error| if error.is_nan() { f64::INFINITY } else { error })
                 .fold(0.0, f64::max);
             (worst > tolerance).then(|| {
                 format!(
@@ -156,7 +174,7 @@ fn every_method_and_dataset_is_covered() {
     let expected: Value = serde_json::from_str(EXPECTED).unwrap();
     let cases = expected["cases"].as_array().unwrap();
 
-    for method in ["equal_weight", "min_variance", "mean_variance", "hrp"] {
+    for method in METHODS {
         assert!(
             cases.iter().any(|case| case["method"] == method),
             "no reference case for {method}"
