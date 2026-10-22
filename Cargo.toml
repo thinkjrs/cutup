@@ -11,7 +11,7 @@ documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
-include = ["src/**/*", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["/src/**/*", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 rust-version = "1.78.0"
 
 [badges]
@@ -19,3 +19,6 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 nalgebra = "0.33.2"
+
+[dev-dependencies]
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
