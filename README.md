@@ -17,7 +17,9 @@ Here are some of the allocation methods included in this library:
 - **Maximum Sharpe Ratio (tangency portfolio)**
 - **Equal Weight Allocation (EW)**
 - **Inverse Volatility and Inverse Variance**
+- **Risk Parity (Equal Risk Contribution) and Risk Budgeting**
 - **Hierarchical Risk Parity (HRP)**
+- **Hierarchical Equal Risk Contribution (HERC)**
 
 This library leverages `nalgebra` for efficient matrix operations and is designed for performance and extensibility.
 
@@ -28,7 +30,9 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **EW Allocation**: Assigns equal weights to all assets.
 - **Inverse Volatility / Inverse Variance**: Weights each asset by `1 / σ` or `1 / σ²`, ignoring correlations. Simple risk-based weights that are always positive.
+- **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
+- **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
 ## Choosing a method
@@ -41,7 +45,9 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 | `min_variance_allocation` | covariance | ❌ | The lowest-variance fully invested portfolio. Sensitive to estimation error, so consider shrinkage. |
 | `mean_variance_allocation` | covariance, expected returns | ❌ | Markowitz, for a risk aversion or a target return. Most sensitive to the expected returns you supply. |
 | `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
+| `risk_parity_allocation` | covariance | ✅ | Every asset contributes the same risk. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `hrp_allocation` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
+| `herc_allocation` | covariance, correlations | ✅ | Like HRP, but splits where the clustering tree branches and groups similar assets, so the result doesn't depend on column order. |
 
 Long-only methods never return negative weights. The others can, since there is no long-only constraint yet. To see every method on the same data:
 
@@ -127,7 +133,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance and mean-variance, and PyPortfolioOpt for HRP. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 

@@ -10,7 +10,7 @@ fixtures in `tests/fixtures/`.
 | `inputs.py` | Builds the input datasets and freezes them to `tests/fixtures/datasets.json`. |
 | `generate.py` | Computes the expected weights for every case and writes `tests/fixtures/expected.json`. |
 | `fixtures.py` | Shared paths and JSON formatting. |
-| `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy and PyPortfolioOpt. |
+| `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy, PyPortfolioOpt and riskfolio-lib. |
 
 ## References
 
@@ -21,7 +21,9 @@ fixtures in `tests/fixtures/`.
 | Minimum variance | NumPy closed form `Σ⁻¹1 / 1ᵀΣ⁻¹1`; minimum-norm KKT solution from `numpy.linalg.lstsq` when Σ is singular |
 | Mean-variance | NumPy closed forms for risk aversion and target return (Merton, 1972); minimum-norm KKT solution when Σ is singular. Expected errors are decided from the null space of Σ. |
 | Max Sharpe | NumPy closed form `Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f)`, or `numpy.linalg.pinv` when Σ is singular. Expected errors are decided from the minimum variance portfolio's own variance and return, and the null space of Σ. |
+| Risk parity | Cyclical coordinate descent (Griveau-Billion et al., 2013) run to convergence, unlike cutup's Newton iteration, with equal and custom risk budgets. The expected error is decided by `scipy.optimize.nnls` finding a long-only portfolio with zero variance. |
 | HRP | PyPortfolioOpt `HRPOpt`, for each linkage |
+| HERC | riskfolio-lib `HCPortfolio.optimization(model="HERC", rm="MV")`, for each linkage and for fixed numbers of clusters. Datasets with two assets are skipped, because riskfolio-lib's gap statistic can't choose a number of clusters for them. |
 
 Each case's tolerance is relative to the size of the weight. Ill-conditioned
 covariances get a looser tolerance in proportion to their condition number, which is

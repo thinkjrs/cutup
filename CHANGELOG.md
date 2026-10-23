@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `PortfolioAllocator::risk_parity_allocation` and `risk_parity_allocation_with_config` with
+  `RiskParityConfig`: the long-only portfolio where every asset contributes the same share
+  of variance, or a share set by risk budgets, with optional covariance adjustments. Solved
+  with Newton's method (Spinu, 2013); returns `SingularCovariance` when a long-only
+  portfolio has zero variance, where no solution exists.
+- `PortfolioAllocator::herc_allocation` and `herc_allocation_with_config` with
+  `HercConfig`: Hierarchical Equal Risk Contribution (Raffinot, 2017) as riskfolio-lib
+  implements it, with any linkage, and the number of clusters either fixed or chosen by
+  the two-difference gap statistic. Results match riskfolio-lib up to floating-point
+  rounding and don't depend on column order.
+- Reference cases for both, against coordinate descent and riskfolio-lib, and property
+  tests: risk parity meets its budgets, HERC ignores column order, and both are long-only
+  and ignore return scale.
+
 ## [0.2.2] - 2026-10-22
 
 ### Added
