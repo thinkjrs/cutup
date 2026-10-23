@@ -15,7 +15,12 @@ cutup's implementation:
   covariance, not by running the same solver as cutup.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
+* Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
+  convergence, a different algorithm from cutup's Newton iteration. Expected errors are
+  decided by finding a long-only portfolio with zero variance with scipy.optimize.nnls.
 * HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
+* HERC: riskfolio-lib's HCPortfolio with model="HERC" and rm="MV", for each linkage
+  method and for fixed numbers of clusters.
 
 With --check, nothing is written: the cases are recomputed and compared with the
 committed file, failing if any weight moved by more than a tenth of its tolerance or
@@ -31,7 +36,9 @@ import sys
 
 import numpy as np
 import pandas as pd
+import riskfolio
 from pypfopt import HRPOpt
+from scipy.optimize import nnls
 
 from fixtures import FIXTURES, write_json
 
@@ -155,6 +162,44 @@ def hrp(returns: np.ndarray, linkage: str) -> np.ndarray:
     return np.array([weights[i] for i in range(returns.shape[1])])
 
 
+def risk_parity(cov: np.ndarray, budgets: np.ndarray) -> np.ndarray | str:
+    """The risk budgeting portfolio, or the error cutup should return.
+
+    Each coordinate step solves Σᵢᵢ yᵢ² + (Σy − Σᵢᵢ yᵢ)ᵢ yᵢ − bᵢ = 0 for yᵢ > 0, which
+    minimizes ½ yᵀΣy − bᵀ ln y in that coordinate. When a long-only portfolio has zero
+    variance there is no minimum.
+    """
+    n = cov.shape[0]
+    cov = cov / (np.trace(cov) / n)
+    budgets = budgets / budgets.sum()
+    # min dᵀΣd over long-only d summing to 1, as a least-squares problem in Σ's square root.
+    values, vectors = np.linalg.eigh(cov)
+    root = np.sqrt(np.clip(values, 0.0, None))[:, None] * vectors.T
+    weight = 1e4
+    d, _ = nnls(np.vstack([root, weight * np.ones(n)]), np.r_[np.zeros(n), weight])
+    if d @ cov @ d <= 1e-12:
+        return "SingularCovariance"
+
+    y = 1.0 / np.sqrt(np.diag(cov))
+    y /= np.sqrt(y @ cov @ y)
+    for _ in range(100_000):
+        previous = y.copy()
+        for i in range(n):
+            c = cov[i] @ y - cov[i, i] * y[i]
+            y[i] = (-c + np.sqrt(c * c + 4.0 * cov[i, i] * budgets[i])) / (2.0 * cov[i, i])
+        if np.max(np.abs(y - previous) / y) < 1e-14:
+            return y / y.sum()
+    raise ValueError("coordinate descent didn't converge")
+
+
+def herc(returns: np.ndarray, linkage: str, clusters: int | None) -> np.ndarray:
+    data = pd.DataFrame(returns, columns=[str(i) for i in range(returns.shape[1])])
+    weights = riskfolio.HCPortfolio(returns=data).optimization(
+        model="HERC", codependence="pearson", rm="MV", linkage=linkage, k=clusters
+    )
+    return weights["weights"].to_numpy()
+
+
 def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | str:
     params = case.get("params", {})
     mu = np.array(params["expected_returns"]) if "expected_returns" in params else returns.mean(axis=0)
@@ -175,8 +220,13 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return target_return(adjusted, mu, params["target_return"])
         case "max_sharpe":
             return max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
+        case "risk_parity":
+            budgets = np.array(params.get("risk_budgets", np.ones(returns.shape[1])), dtype=float)
+            return risk_parity(adjusted, budgets)
         case "hrp":
             return hrp(returns, params.get("linkage", "single"))
+        case "herc":
+            return herc(returns, params.get("linkage", "single"), params.get("clusters"))
     raise ValueError(f"unknown method {case['method']}")
 
 
@@ -185,6 +235,7 @@ def cases(datasets: dict) -> list[dict]:
     exact, solver, clustering = 0.0, 1e-9, 1e-12
     out = []
     for name in datasets:
+        out.append({"dataset": name, "method": "risk_parity", "tolerance": solver})
         out.append({"dataset": name, "method": "equal_weight", "tolerance": exact})
         out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
         out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
@@ -254,6 +305,27 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0}, "tolerance": solver})
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0, "shrinkage": 0.3}, "tolerance": solver})
+
+    # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
+    # parity portfolio once shrinkage removes it.
+    out.append({"dataset": "rank_deficient6", "method": "risk_parity", "params": {"shrinkage": 0.3}, "tolerance": solver})
+    out.append({"dataset": "near_singular4", "method": "risk_parity", "params": {"regularization": 1e-5}, "tolerance": solver})
+    out.append({
+        "dataset": "prices10x60",
+        "method": "risk_parity",
+        "params": {"risk_budgets": [4.0, 1.0, 1.0, 2.0, 0.5, 1.0, 3.0, 1.0, 1.0, 0.25]},
+        "tolerance": solver,
+    })
+    out.append({"dataset": "two_asset", "method": "risk_parity", "params": {"risk_budgets": [3.0, 1.0]}, "tolerance": solver})
+
+    # riskfolio-lib can't choose a number of clusters for two assets.
+    for name in [name for name, dataset in datasets.items() if len(dataset["data"][0]) > 2]:
+        for linkage in ["single", "complete", "average", "ward"]:
+            out.append({"dataset": name, "method": "herc", "params": {"linkage": linkage}, "tolerance": clustering})
+    for clusters in [1, 2, 4, 10]:
+        out.append({"dataset": "prices10x60", "method": "herc", "params": {"clusters": clusters}, "tolerance": clustering})
+    out.append({"dataset": "prices10x60", "method": "herc", "params": {"linkage": "ward", "clusters": 5}, "tolerance": clustering})
+    out.append({"dataset": "two_blocks5", "method": "herc", "params": {"linkage": "average", "clusters": 3}, "tolerance": clustering})
     return out
 
 
@@ -315,7 +387,7 @@ def main() -> None:
         results.append(case)
 
     versions = {"python": platform.python_version()}
-    for package in ["numpy", "pandas", "scipy", "pyportfolioopt"]:
+    for package in ["numpy", "pandas", "scipy", "pyportfolioopt", "riskfolio-lib"]:
         versions[package] = importlib.metadata.version(package)
     fresh = {"generated_with": versions, "cases": results}
 

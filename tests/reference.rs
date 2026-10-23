@@ -5,8 +5,8 @@
 //! `reference/README.md`). Every case is checked and all failures are reported together.
 
 use cutup::{
-    CovarianceConfig, CutupError, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig,
-    PortfolioAllocator, Weights,
+    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
+    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -82,25 +82,47 @@ fn max_sharpe_config(params: &Value) -> MaxSharpeConfig {
     }
 }
 
-fn hrp_config(params: &Value) -> HrpConfig {
-    let linkage = match params["linkage"].as_str() {
+fn risk_parity_config(params: &Value) -> RiskParityConfig {
+    let config = RiskParityConfig::default().with_covariance(covariance_config(params));
+    if params["risk_budgets"].is_array() {
+        config.with_risk_budgets(DVector::from_vec(floats(&params["risk_budgets"])))
+    } else {
+        config
+    }
+}
+
+fn linkage(params: &Value) -> Linkage {
+    match params["linkage"].as_str() {
         None | Some("single") => Linkage::Single,
         Some("complete") => Linkage::Complete,
         Some("average") => Linkage::Average,
         Some("ward") => Linkage::Ward,
         Some(other) => panic!("unknown linkage {other}"),
-    };
-    HrpConfig::default().with_linkage(linkage)
+    }
 }
 
-const METHODS: [&str; 7] = [
+fn hrp_config(params: &Value) -> HrpConfig {
+    HrpConfig::default().with_linkage(linkage(params))
+}
+
+fn herc_config(params: &Value) -> HercConfig {
+    let config = HercConfig::default().with_linkage(linkage(params));
+    match params["clusters"].as_u64() {
+        Some(k) => config.with_clusters(k as usize),
+        None => config,
+    }
+}
+
+const METHODS: [&str; 9] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
     "min_variance",
     "mean_variance",
     "max_sharpe",
+    "risk_parity",
     "hrp",
+    "herc",
 ];
 
 fn run(
@@ -115,7 +137,9 @@ fn run(
         "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
         "max_sharpe" => allocator.max_sharpe_allocation(&max_sharpe_config(params)),
+        "risk_parity" => allocator.risk_parity_allocation_with_config(&risk_parity_config(params)),
         "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
+        "herc" => allocator.herc_allocation_with_config(&herc_config(params)),
         other => unreachable!("unknown method {other} is rejected in check"),
     }
 }
