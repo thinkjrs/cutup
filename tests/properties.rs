@@ -1,8 +1,8 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    CovarianceConfig, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig, PortfolioAllocator,
-    Weights,
+    CovarianceConfig, HercConfig, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig,
+    PortfolioAllocator, RiskParityConfig, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -65,6 +65,20 @@ fn hrp_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
         .collect()
 }
 
+/// HERC with every linkage, by name.
+fn herc_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
+    LINKAGES
+        .iter()
+        .map(|&linkage| {
+            let config = HercConfig::default().with_linkage(linkage);
+            (
+                format!("herc ({linkage:?})"),
+                allocator.herc_allocation_with_config(&config).unwrap(),
+            )
+        })
+        .collect()
+}
+
 /// Every method that returns fully invested weights, by name.
 fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
@@ -94,12 +108,18 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
                 .unwrap(),
         ),
     ];
+    out.push((
+        "risk parity".to_string(),
+        allocator.risk_parity_allocation().unwrap(),
+    ));
     out.extend(hrp_methods(allocator));
+    out.extend(herc_methods(allocator));
     out
 }
 
-/// Methods that depend only on Σ, and on neither column order nor return scale. HRP is
-/// tested separately: like the original algorithm, it can depend on column order.
+/// Methods that depend only on Σ, and on neither column order nor return scale. HRP and
+/// HERC are tested separately: like the original algorithm, HRP can depend on column order,
+/// and both cluster on correlations, which only an exact rescaling leaves bit-identical.
 fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
     let shrunk = CovarianceConfig::default().with_shrinkage(0.3);
     vec![
@@ -119,6 +139,18 @@ fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
             "min variance (shrinkage)".to_string(),
             allocator
                 .min_variance_allocation_with_config(&shrunk)
+                .unwrap(),
+        ),
+        (
+            "risk parity".to_string(),
+            allocator.risk_parity_allocation().unwrap(),
+        ),
+        (
+            "risk parity (shrinkage)".to_string(),
+            allocator
+                .risk_parity_allocation_with_config(
+                    &RiskParityConfig::default().with_covariance(shrunk),
+                )
                 .unwrap(),
         ),
     ]
@@ -157,8 +189,10 @@ proptest! {
             allocator.ew_allocation(),
             allocator.inverse_volatility_allocation().unwrap(),
             allocator.inverse_variance_allocation().unwrap(),
+            allocator.risk_parity_allocation().unwrap(),
         ];
         long_only.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
+        long_only.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
         for weights in long_only {
             prop_assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         }
@@ -200,7 +234,58 @@ proptest! {
     }
 
     #[test]
-    fn hrp_ignores_return_scale(returns in returns(), exponent in -4i32..=4) {
+    fn herc_ignores_column_order(returns in returns()) {
+        // HERC splits where the tree branches, not at a position in the ordered list, so
+        // unlike HRP it doesn't depend on the order of the columns.
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
+        let base = herc_methods(&PortfolioAllocator::from_returns(returns).unwrap());
+        let flipped = herc_methods(&PortfolioAllocator::from_returns(reversed).unwrap());
+        for ((name, a), (_, b)) in base.iter().zip(&flipped) {
+            for j in 0..n {
+                prop_assert!((a[j] - b[n - 1 - j]).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn risk_parity_meets_its_budgets(
+        returns in returns(),
+        budgets in prop::collection::vec(0.01f64..1.0, 6),
+        shrinkage in prop::option::of(0.0f64..1.0),
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let mut covariance_config = CovarianceConfig::default();
+        if let Some(lambda) = shrinkage {
+            covariance_config = covariance_config.with_shrinkage(lambda);
+        }
+        let budgets = DVector::from_column_slice(&budgets[..n]);
+        let config = RiskParityConfig::default()
+            .with_risk_budgets(budgets.clone())
+            .with_covariance(covariance_config);
+        let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let weights = allocator.risk_parity_allocation_with_config(&config).unwrap();
+        prop_assert!(weights.iter().all(|&w| w > 0.0), "{weights:?}");
+
+        // The same shrinkage, applied here: Σ' = λ·(tr Σ / n)·I + (1 − λ)·Σ.
+        let mut cov = covariance(&returns);
+        if let Some(lambda) = shrinkage {
+            let average = cov.trace() / n as f64;
+            cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
+        }
+        let w = DVector::from_column_slice(weights.as_slice());
+        let contributions = w.component_mul(&(&cov * &w));
+        for i in 0..n {
+            let share = contributions[i] / contributions.sum();
+            let budget = budgets[i] / budgets.sum();
+            prop_assert!((share - budget).abs() < 1e-9, "asset {i}: {share} vs {budget}");
+        }
+    }
+
+    #[test]
+    fn hrp_and_herc_ignore_return_scale(returns in returns(), exponent in -4i32..=4) {
         // A power of two scales every value exactly, so the correlations are bit-identical
         // and a near-tie between distances can't flip a merge. Any other factor could round
         // a tie differently and legitimately move a split.
@@ -208,6 +293,7 @@ proptest! {
         let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
         let scaled = PortfolioAllocator::from_returns(returns * 2f64.powi(exponent)).unwrap();
         assert_same(&hrp_methods(&base), &hrp_methods(&scaled))?;
+        assert_same(&herc_methods(&base), &herc_methods(&scaled))?;
     }
 
     #[test]
