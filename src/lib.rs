@@ -406,9 +406,104 @@ impl HrpConfig {
     }
 }
 
+/// Configuration for [`PortfolioAllocator::risk_parity_allocation_with_config`].
+///
+/// The default gives every asset the same risk budget and uses the unadjusted sample
+/// covariance:
+///
+/// ```
+/// use cutup::{CovarianceConfig, RiskParityConfig};
+/// use nalgebra::dvector;
+///
+/// // Asset 0 carries half the risk, assets 1 and 2 a quarter each.
+/// let config = RiskParityConfig::default()
+///     .with_risk_budgets(dvector![2.0, 1.0, 1.0])
+///     .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct RiskParityConfig {
+    /// Each asset's share of the portfolio's risk. Must be positive and finite, one per asset;
+    /// only the ratios matter, so they needn't sum to 1. When `None`, every asset gets the same
+    /// share.
+    pub risk_budgets: Option<DVector<f64>>,
+    /// Adjustments applied to the covariance matrix.
+    pub covariance: CovarianceConfig,
+}
+
+impl RiskParityConfig {
+    /// Sets each asset's risk budget.
+    pub fn with_risk_budgets(mut self, risk_budgets: DVector<f64>) -> Self {
+        self.risk_budgets = Some(risk_budgets);
+        self
+    }
+
+    /// Applies `covariance` adjustments to the covariance matrix.
+    pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
+        self.covariance = covariance;
+        self
+    }
+}
+
+/// Configuration for [`PortfolioAllocator::herc_allocation_with_config`].
+///
+/// The defaults match riskfolio-lib's `HCPortfolio.optimization(model="HERC")`: single
+/// linkage, and the number of clusters chosen by the two-difference gap statistic from at
+/// most 10.
+///
+/// ```
+/// use cutup::{HercConfig, Linkage};
+///
+/// let config = HercConfig::default().with_linkage(Linkage::Ward).with_clusters(3);
+/// assert_eq!(config.clusters, Some(3));
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct HercConfig {
+    /// How the distance between clusters is measured. Defaults to [`Linkage::Single`].
+    pub linkage: Linkage,
+    /// How many clusters to cut the hierarchy into, from 1 to the number of assets. When
+    /// `None`, the two-difference gap statistic chooses.
+    pub clusters: Option<usize>,
+    /// The most clusters the gap statistic may choose, at least 1. Defaults to 10. It also
+    /// never chooses more than `√n` for `n` assets.
+    pub max_clusters: usize,
+}
+
+impl Default for HercConfig {
+    fn default() -> Self {
+        Self {
+            linkage: Linkage::default(),
+            clusters: None,
+            max_clusters: 10,
+        }
+    }
+}
+
+impl HercConfig {
+    /// Sets the linkage used to build the clustering hierarchy.
+    pub fn with_linkage(mut self, linkage: Linkage) -> Self {
+        self.linkage = linkage;
+        self
+    }
+
+    /// Cuts the hierarchy into `clusters` clusters instead of choosing the number.
+    pub fn with_clusters(mut self, clusters: usize) -> Self {
+        self.clusters = Some(clusters);
+        self
+    }
+
+    /// Sets the most clusters the gap statistic may choose.
+    pub fn with_max_clusters(mut self, max_clusters: usize) -> Self {
+        self.max_clusters = max_clusters;
+        self
+    }
+}
+
 /// `PortfolioAllocator` handles various portfolio allocation strategies.
 /// Supports minimum variance, mean-variance optimization, maximum Sharpe ratio, Equal Weight
-/// (EW), inverse volatility, inverse variance, and Hierarchical Risk Parity (HRP).
+/// (EW), inverse volatility, inverse variance, risk parity (equal risk contribution),
+/// Hierarchical Risk Parity (HRP), and Hierarchical Equal Risk Contribution (HERC).
 ///
 /// All covariance-based methods work on the covariance of asset returns, never of price levels.
 /// Build an allocator from prices with [`PortfolioAllocator::from_prices`], or from returns you
@@ -1190,6 +1285,218 @@ impl PortfolioAllocator {
         self.weight_by_variance(|variance| 1.0 / variance)
     }
 
+    /// Computes the risk parity (equal risk contribution) portfolio: long-only weights where
+    /// every asset contributes the same share of the portfolio's variance. See
+    /// [`PortfolioAllocator::risk_parity_allocation_with_config`] for the details, risk
+    /// budgets and covariance adjustments.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, positive and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance, so
+    ///   no portfolio spreads a positive risk.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010,  0.020,  0.011;
+    ///     -0.010,  0.010, -0.012;
+    ///      0.020, -0.020,  0.018;
+    ///     -0.015, -0.010, -0.014;
+    ///      0.005,  0.015,  0.004
+    /// ];
+    ///
+    /// let weights = PortfolioAllocator::from_returns(returns)?.risk_parity_allocation()?;
+    ///
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// assert!(weights.iter().all(|&w| w > 0.0));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn risk_parity_allocation(&self) -> Result<Weights, CutupError> {
+        self.risk_parity_allocation_with_config(&RiskParityConfig::default())
+    }
+
+    /// Computes the risk budgeting portfolio: long-only weights where asset `i` contributes
+    /// the share `bᵢ` of the portfolio's variance, `wᵢ (Σw)ᵢ / wᵀΣw = bᵢ / Σⱼ bⱼ`. With equal
+    /// budgets, the default, this is the equal risk contribution (risk parity) portfolio.
+    ///
+    /// Unlike [`PortfolioAllocator::inverse_volatility_allocation`], which gives equal risk
+    /// contributions only when assets are uncorrelated, this accounts for every correlation.
+    /// The weights are the unique solution, found by minimizing
+    /// `½ yᵀΣy − Σᵢ bᵢ ln yᵢ` over `y > 0` with Newton's method and a backtracking line search
+    /// (Spinu, 2013), then normalizing `y` to sum to 1. The result doesn't depend on the scale
+    /// of the returns or of the budgets.
+    ///
+    /// The solution exists whenever every long-only portfolio has positive variance, which
+    /// holds when Σ is invertible and also for most singular Σ. When some long-only portfolio
+    /// has zero variance, a [`CutupError::SingularCovariance`] is returned; shrinkage or
+    /// regularization removes it.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Optional risk budgets (default: equal) and covariance adjustments.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, positive and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if a risk budget isn't positive and finite, or the
+    ///   covariance config is invalid.
+    /// * [`CutupError::DimensionMismatch`] if `risk_budgets` doesn't have one entry per asset.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{PortfolioAllocator, RiskParityConfig};
+    /// use nalgebra::{dmatrix, dvector};
+    ///
+    /// // Uncorrelated assets with volatilities in the ratio 1 : 2.
+    /// let returns = dmatrix![
+    ///      0.01,  0.02;
+    ///     -0.01, -0.02;
+    ///      0.01, -0.02;
+    ///     -0.01,  0.02
+    /// ];
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    ///
+    /// // Equal budgets: weights in inverse proportion to volatility, 2 : 1.
+    /// let weights = allocator.risk_parity_allocation()?;
+    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
+    ///
+    /// // Budgets 1 : 4: wᵢ ∝ sqrt(bᵢ) / σᵢ, so 1 : 1.
+    /// let config = RiskParityConfig::default().with_risk_budgets(dvector![1.0, 4.0]);
+    /// let weights = allocator.risk_parity_allocation_with_config(&config)?;
+    /// assert!((weights[0] - 0.5).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn risk_parity_allocation_with_config(
+        &self,
+        config: &RiskParityConfig,
+    ) -> Result<Weights, CutupError> {
+        let n = self.cov_matrix.ncols();
+        let budgets = match &config.risk_budgets {
+            Some(b) if b.len() != n => {
+                return Err(CutupError::DimensionMismatch {
+                    expected: n,
+                    actual: b.len(),
+                })
+            }
+            Some(b) => match b.iter().find(|b| !(b.is_finite() && **b > 0.0)) {
+                Some(&value) => {
+                    return Err(CutupError::InvalidConfig {
+                        field: "risk_budgets",
+                        value,
+                    })
+                }
+                None => b.clone(),
+            },
+            None => DVector::from_element(n, 1.0),
+        };
+        let cov = self.adjusted_covariance(&config.covariance)?;
+        if cov.iter().any(|x| !x.is_finite()) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
+        PortfolioAllocator::risk_budget_weights(&cov, &budgets)
+            .map(|w| Weights(w.iter().copied().collect()))
+            .ok_or(CutupError::SingularCovariance)
+    }
+
+    /// Minimizes `f(y) = ½ yᵀΣy − bᵀ ln y` over `y > 0` and returns `y / 1ᵀy`, or `None` when
+    /// `f` has no minimum.
+    ///
+    /// At the minimum, `yᵢ (Σy)ᵢ = bᵢ`, so the normalized `y` has the budgeted risk
+    /// contributions. `f` is strictly convex, so Newton's method with a backtracking line
+    /// search converges to it from any start. `f` is unbounded below exactly when a
+    /// long-only `d` has `dᵀΣd = 0`; then `y` grows along `d` until the iteration breaks
+    /// down or runs out.
+    fn risk_budget_weights(cov: &DMatrix<f64>, budgets: &DVector<f64>) -> Option<DVector<f64>> {
+        let n = cov.ncols();
+        // Scaling Σ to an average variance of 1 and b to a sum of 1 makes the tolerances
+        // below independent of the input's scale. Neither changes the normalized solution.
+        let sigma = cov / (cov.trace() / n as f64);
+        let b = budgets / budgets.sum();
+        let smallest_budget = b.min();
+        let objective = |y: &DVector<f64>| {
+            0.5 * y.dot(&(&sigma * y))
+                - b.iter().zip(y.iter()).map(|(b, y)| b * y.ln()).sum::<f64>()
+        };
+
+        // Start from inverse volatility, scaled so that yᵀΣy = 1 as at the solution. If that
+        // long-only portfolio has no variance, there is no solution.
+        let mut y = sigma.diagonal().map(|v| 1.0 / v.sqrt());
+        let start_variance = y.dot(&(&sigma * &y));
+        if start_variance.is_nan() || start_variance <= 0.0 {
+            return None;
+        }
+        y /= start_variance.sqrt();
+
+        let mut previous = f64::INFINITY;
+        for _ in 0..500 {
+            let gradient = &sigma * &y - b.component_div(&y);
+            let mut hessian = sigma.clone();
+            for i in 0..n {
+                hessian[(i, i)] += b[i] / (y[i] * y[i]);
+            }
+            let step = hessian.cholesky()?.solve(&gradient);
+            // The squared Newton decrement, which is never negative unless rounding has broken
+            // the Hessian. Divided by the smallest budget, it bounds (Δᵢ / yᵢ)² for every i.
+            let decrement = gradient.dot(&step);
+            if decrement.is_nan() || decrement < 0.0 {
+                return None;
+            }
+            let scaled = decrement / smallest_budget;
+
+            if scaled < 1e-2 {
+                // Close enough for full steps, which stay positive and converge quadratically.
+                // A line search would only see rounding in f from here on.
+                if scaled >= previous {
+                    // Rounding noise: y is as close as it gets.
+                    return Some(&y / y.sum());
+                }
+                y -= step;
+                if scaled < 1e-20 {
+                    return Some(&y / y.sum());
+                }
+                previous = scaled;
+                continue;
+            }
+            previous = f64::INFINITY;
+
+            let current = objective(&y);
+            let mut t = 1.0;
+            loop {
+                let candidate = &y - t * &step;
+                if candidate.iter().all(|v| *v > 0.0)
+                    && objective(&candidate) <= current - 0.25 * t * decrement
+                {
+                    y = candidate;
+                    break;
+                }
+                t *= 0.5;
+                if t < 1e-10 {
+                    return None;
+                }
+            }
+            if !y.iter().all(|v| v.is_finite()) {
+                return None;
+            }
+        }
+        None
+    }
+
     /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
     /// assets.
     ///
@@ -1259,7 +1566,7 @@ impl PortfolioAllocator {
             return Err(CutupError::ZeroVariance { asset });
         }
         let distance = self.correlation_distance()?;
-        Ok(cluster::leaf_order(&distance, config.linkage))
+        Ok(cluster::hierarchy(&distance, config.linkage).leaf_order())
     }
 
     /// Returns the variance of the inverse-variance portfolio over `cluster`.
@@ -1409,6 +1716,170 @@ impl PortfolioAllocator {
             }
         }
 
+        Ok(Weights(weights))
+    }
+
+    /// Computes Hierarchical Equal Risk Contribution (HERC) portfolio allocation (Raffinot,
+    /// 2017) with the defaults of riskfolio-lib. See
+    /// [`PortfolioAllocator::herc_allocation_with_config`] for the details and options.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
+    ///   variances are too small.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010,  0.020,  0.011,  0.019;
+    ///     -0.010,  0.010, -0.012,  0.012;
+    ///      0.020, -0.020,  0.018, -0.021;
+    ///     -0.015, -0.010, -0.014, -0.009
+    /// ];
+    ///
+    /// let weights = PortfolioAllocator::from_returns(returns)?.herc_allocation()?;
+    ///
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// assert!(weights.iter().all(|&w| w >= 0.0));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn herc_allocation(&self) -> Result<Weights, CutupError> {
+        self.herc_allocation_with_config(&HercConfig::default())
+    }
+
+    /// Computes Hierarchical Equal Risk Contribution (HERC) portfolio allocation (Raffinot,
+    /// 2017), as riskfolio-lib implements it with the variance as the risk measure.
+    ///
+    /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)`
+    ///    with the linkage in `config`, as for [`PortfolioAllocator::hrp_cluster_order`].
+    /// 2. **Cut.** The hierarchy is cut into `k` clusters: `config.clusters` if set, otherwise
+    ///    the number chosen by the two-difference gap statistic, as in riskfolio-lib.
+    /// 3. **Split down the tree.** Each of the `k − 1` merges above the cut splits its weight
+    ///    between its two branches in inverse proportion to their risk. A branch's risk is
+    ///    the sum of the variances of the clusters under it, each cluster's being that of its
+    ///    own inverse-variance portfolio. The left branch gets `α = 1 − R₁ / (R₁ + R₂)`.
+    /// 4. **Within clusters.** Each cluster's weight is shared by inverse variance.
+    ///
+    /// Unlike HRP, which bisects the ordered list of assets at its midpoint, HERC splits where
+    /// the tree branches, so similar assets are never separated and the result doesn't depend
+    /// on the order of the input columns (up to ties in the clustering). Results match
+    /// riskfolio-lib's `HCPortfolio.optimization(model="HERC", rm="MV")` up to floating-point
+    /// rounding, which can break a tie in the clustering or the gap statistic differently.
+    ///
+    /// HERC never inverts the covariance matrix, so it works when Σ is singular, and weights
+    /// are never negative. Two branches that both have zero risk split their weight evenly.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if `clusters` is 0 or more than the number of assets,
+    ///   or `max_clusters` is 0.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
+    ///   variances are too small.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{HercConfig, PortfolioAllocator};
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Assets 0 and 2 move together, as do 1 and 3.
+    /// let returns = dmatrix![
+    ///      0.010,  0.020,  0.011,  0.019;
+    ///     -0.010,  0.010, -0.012,  0.012;
+    ///      0.020, -0.020,  0.018, -0.021;
+    ///     -0.015, -0.010, -0.014, -0.009
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let weights = allocator.herc_allocation_with_config(&HercConfig::default().with_clusters(2))?;
+    ///
+    /// // With two clusters, {0, 2} and {1, 3}, each pair is weighted by inverse variance.
+    /// let inverse_variance = allocator.inverse_variance_allocation()?;
+    /// let ratio = |a: usize, b: usize| weights[a] / weights[b];
+    /// assert!((ratio(0, 2) - inverse_variance[0] / inverse_variance[2]).abs() < 1e-12);
+    /// assert!((ratio(1, 3) - inverse_variance[1] / inverse_variance[3]).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn herc_allocation_with_config(&self, config: &HercConfig) -> Result<Weights, CutupError> {
+        let n = self.cov_matrix.ncols();
+        if let Some(k) = config.clusters.filter(|k| !(1..=n).contains(k)) {
+            return Err(CutupError::InvalidConfig {
+                field: "clusters",
+                value: k as f64,
+            });
+        }
+        if config.max_clusters == 0 {
+            return Err(CutupError::InvalidConfig {
+                field: "max_clusters",
+                value: 0.0,
+            });
+        }
+        if let Some(asset) = self.find_zero_variance() {
+            return Err(CutupError::ZeroVariance { asset });
+        }
+        let distance = self.correlation_distance()?;
+        let hierarchy = cluster::hierarchy(&distance, config.linkage);
+        let k = config
+            .clusters
+            .unwrap_or_else(|| hierarchy.cluster_count(&distance, config.max_clusters));
+
+        let clusters = hierarchy.cut(k);
+        let mut cluster_of = vec![0; n];
+        for (c, members) in clusters.iter().enumerate() {
+            for &i in members {
+                cluster_of[i] = c;
+            }
+        }
+        // On singular data rounding can leave a variance slightly below zero, which would
+        // push α outside [0, 1].
+        let risk: Vec<f64> = clusters
+            .iter()
+            .map(|c| self.cluster_variance(c).max(0.0))
+            .collect();
+        let branch_risk = |leaves: &[usize]| {
+            let mut under: Vec<usize> = leaves.iter().map(|&i| cluster_of[i]).collect();
+            under.sort_unstable();
+            under.dedup();
+            under.iter().map(|&c| risk[c]).sum::<f64>()
+        };
+
+        let mut weights = vec![1.0; n];
+        // The last k − 1 merges are the ones above the cut.
+        for node in 2 * n - k..2 * n - 1 {
+            let (left, right) = hierarchy.children(node);
+            let (left, right) = (hierarchy.leaves(left), hierarchy.leaves(right));
+            let (r_left, r_right) = (branch_risk(&left), branch_risk(&right));
+            let alpha = match r_left + r_right {
+                total if total > 0.0 => 1.0 - r_left / total,
+                _ => 0.5,
+            };
+            for &i in &left {
+                weights[i] *= alpha;
+            }
+            for &i in &right {
+                weights[i] *= 1.0 - alpha;
+            }
+        }
+        for members in &clusters {
+            let total: f64 = members.iter().map(|&i| 1.0 / self.cov_matrix[(i, i)]).sum();
+            for &i in members {
+                weights[i] *= 1.0 / self.cov_matrix[(i, i)] / total;
+            }
+        }
         Ok(Weights(weights))
     }
 }
@@ -2779,5 +3250,299 @@ mod tests {
                 "{config:?}"
             );
         }
+    }
+
+    /// Each asset's share of the portfolio variance, `wᵢ (Σw)ᵢ / wᵀΣw`.
+    fn risk_shares(allocator: &PortfolioAllocator, weights: &Weights) -> Vec<f64> {
+        let w = DVector::from_column_slice(weights.as_slice());
+        let contributions = w.component_mul(&(&allocator.cov_matrix * &w));
+        let total = contributions.sum();
+        contributions.iter().map(|c| c / total).collect()
+    }
+
+    #[test]
+    fn test_risk_parity_equalizes_risk_contributions() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let weights = allocator.risk_parity_allocation().unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(weights.iter().all(|&w| w > 0.0));
+        for share in risk_shares(&allocator, &weights) {
+            assert!((share - 1.0 / 3.0).abs() < 1e-12, "{share}");
+        }
+    }
+
+    #[test]
+    fn test_risk_parity_meets_risk_budgets() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        // Spanning eight orders of magnitude, and not summing to 1.
+        let budgets = [1e-8, 3.0, 1.0];
+        let config =
+            RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(&budgets));
+        let weights = allocator
+            .risk_parity_allocation_with_config(&config)
+            .unwrap();
+        let total: f64 = budgets.iter().sum();
+        for (share, budget) in risk_shares(&allocator, &weights).iter().zip(budgets) {
+            assert!(
+                (share - budget / total).abs() < 1e-12,
+                "{share} vs {}",
+                budget / total
+            );
+        }
+    }
+
+    #[test]
+    fn test_risk_parity_converges_below_rounding_noise() {
+        // Found by the property tests: near the solution the decrease a line search checks
+        // for is below the rounding in the objective, so only full Newton steps finish.
+        let returns = DMatrix::from_column_slice(
+            5,
+            2,
+            &[
+                -0.011054998419255687,
+                0.02268592417867769,
+                0.028346158812172808,
+                -0.04316318369020081,
+                0.04868903549835187,
+                -0.01337776138331863,
+                0.012639084624998789,
+                -0.04497829673506405,
+                -0.030576298169914445,
+                -0.04666742643312797,
+            ],
+        );
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = RiskParityConfig::default()
+            .with_risk_budgets(DVector::from_row_slice(&[
+                0.8571666963481355,
+                0.45606979884293564,
+            ]))
+            .with_covariance(CovarianceConfig::default().with_shrinkage(0.29613802865778266));
+        assert!(allocator
+            .risk_parity_allocation_with_config(&config)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_risk_parity_two_assets_is_inverse_volatility() {
+        // With two assets, equal contributions mean w₀σ₀ = w₁σ₁ whatever the correlation.
+        let allocator =
+            PortfolioAllocator::from_prices(full_rank_prices().columns(0, 2).into_owned()).unwrap();
+        assert_weights_close(
+            &allocator.risk_parity_allocation().unwrap(),
+            &allocator.inverse_volatility_allocation().unwrap(),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_risk_parity_ignores_return_and_budget_scale() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let scaled = PortfolioAllocator::from_returns(&allocator.returns * 1e-3).unwrap();
+        let budgets = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
+        let config = RiskParityConfig::default().with_risk_budgets(budgets.clone());
+        let scaled_config = RiskParityConfig::default().with_risk_budgets(budgets * 7.0);
+        assert_weights_close(
+            &allocator
+                .risk_parity_allocation_with_config(&config)
+                .unwrap(),
+            &scaled
+                .risk_parity_allocation_with_config(&scaled_config)
+                .unwrap(),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_risk_parity_on_singular_covariance() {
+        // Positively collinear assets have a singular Σ, but every long-only portfolio is risky.
+        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let weights = allocator.risk_parity_allocation().unwrap();
+        assert_weights_close(&weights, &Weights(vec![2.0 / 3.0, 1.0 / 3.0]), 1e-12);
+
+        // Here the long-only portfolio (1, 1, 1) / 3 has zero variance.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        assert_eq!(
+            allocator.risk_parity_allocation(),
+            Err(CutupError::SingularCovariance)
+        );
+        let config = RiskParityConfig::default()
+            .with_covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let weights = allocator
+            .risk_parity_allocation_with_config(&config)
+            .unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(weights.iter().all(|&w| w > 0.0));
+    }
+
+    #[test]
+    fn test_risk_parity_anti_correlated_pair() {
+        let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.015, -0.015];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_eq!(
+            allocator.risk_parity_allocation(),
+            Err(CutupError::SingularCovariance)
+        );
+        let config = RiskParityConfig::default()
+            .with_covariance(CovarianceConfig::default().with_regularization(1e-6));
+        let weights = allocator
+            .risk_parity_allocation_with_config(&config)
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
+    }
+
+    #[test]
+    fn test_risk_parity_rejects_invalid_config() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let budgets =
+            |b: &[f64]| RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(b));
+        assert_eq!(
+            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1.0])),
+            Err(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
+        );
+        for bad in [0.0, -1.0, f64::INFINITY] {
+            assert_eq!(
+                allocator.risk_parity_allocation_with_config(&budgets(&[1.0, bad, 1.0])),
+                Err(CutupError::InvalidConfig {
+                    field: "risk_budgets",
+                    value: bad
+                })
+            );
+        }
+        assert!(matches!(
+            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1.0, f64::NAN])),
+            Err(CutupError::InvalidConfig {
+                field: "risk_budgets",
+                ..
+            })
+        ));
+        let config = RiskParityConfig::default()
+            .with_covariance(CovarianceConfig::default().with_shrinkage(2.0));
+        assert_eq!(
+            allocator.risk_parity_allocation_with_config(&config),
+            Err(CutupError::InvalidConfig {
+                field: "shrinkage",
+                value: 2.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_risk_parity_rejects_zero_variance() {
+        let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_eq!(
+            allocator.risk_parity_allocation(),
+            Err(CutupError::ZeroVariance { asset: 1 })
+        );
+        // Regularization gives the constant asset a variance, and nearly all the weight.
+        let config = RiskParityConfig::default()
+            .with_covariance(CovarianceConfig::default().with_regularization(1e-8));
+        let weights = allocator
+            .risk_parity_allocation_with_config(&config)
+            .unwrap();
+        assert!(weights[1] > 0.99);
+    }
+
+    #[test]
+    fn test_herc_with_one_cluster_is_inverse_variance() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let config = HercConfig::default().with_clusters(1);
+        assert_weights_close(
+            &allocator.herc_allocation_with_config(&config).unwrap(),
+            &allocator.inverse_variance_allocation().unwrap(),
+            1e-15,
+        );
+    }
+
+    #[test]
+    fn test_herc_splits_between_blocks_by_risk() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let weights = allocator
+            .herc_allocation_with_config(&HercConfig::default().with_clusters(2))
+            .unwrap();
+        let (a, b) = ([0, 2, 4], [1, 3]);
+        let (risk_a, risk_b) = (
+            allocator.cluster_variance(&a),
+            allocator.cluster_variance(&b),
+        );
+        let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
+        assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
+        // Within a block, inverse variance.
+        let iv = allocator.inverse_variance_allocation().unwrap();
+        assert!((weights[0] / weights[4] - iv[0] / iv[4]).abs() < 1e-12);
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_herc_chooses_the_blocks() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let config = HercConfig::default().with_clusters(2);
+        assert_eq!(
+            allocator.herc_allocation(),
+            allocator.herc_allocation_with_config(&config)
+        );
+    }
+
+    #[test]
+    fn test_herc_two_assets_is_inverse_variance() {
+        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let iv = allocator.inverse_variance_allocation().unwrap();
+        for clusters in [1, 2] {
+            let config = HercConfig::default().with_clusters(clusters);
+            assert_weights_close(
+                &allocator.herc_allocation_with_config(&config).unwrap(),
+                &iv,
+                1e-15,
+            );
+        }
+        assert_weights_close(&allocator.herc_allocation().unwrap(), &iv, 1e-15);
+    }
+
+    #[test]
+    fn test_herc_hedged_pair_splits_evenly() {
+        // Each cluster is a perfectly hedged pair with zero variance.
+        let returns = dmatrix![
+            0.01, -0.01, 0.02, -0.02;
+            -0.02, 0.02, 0.01, -0.01;
+            0.015, -0.015, -0.01, 0.01
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = HercConfig::default().with_clusters(4);
+        let weights = allocator.herc_allocation_with_config(&config).unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(weights.iter().all(|&w| w >= 0.0));
+    }
+
+    #[test]
+    fn test_herc_rejects_invalid_config() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        for clusters in [0, 6] {
+            assert_eq!(
+                allocator
+                    .herc_allocation_with_config(&HercConfig::default().with_clusters(clusters)),
+                Err(CutupError::InvalidConfig {
+                    field: "clusters",
+                    value: clusters as f64
+                })
+            );
+        }
+        assert_eq!(
+            allocator.herc_allocation_with_config(&HercConfig::default().with_max_clusters(0)),
+            Err(CutupError::InvalidConfig {
+                field: "max_clusters",
+                value: 0.0
+            })
+        );
+        let returns = dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01];
+        assert_eq!(
+            PortfolioAllocator::from_returns(returns)
+                .unwrap()
+                .herc_allocation(),
+            Err(CutupError::ZeroVariance { asset: 1 })
+        );
     }
 }

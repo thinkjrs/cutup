@@ -1,8 +1,9 @@
-//! Agglomerative clustering for HRP.
+//! Agglomerative clustering for HRP and HERC.
 //!
 //! Reproduces SciPy's `scipy.cluster.hierarchy.linkage` followed by
 //! `to_tree().pre_order()` step for step, including how ties are broken, so the leaf order
-//! matches SciPy and PyPortfolioOpt's `HRPOpt` exactly.
+//! matches SciPy and PyPortfolioOpt's `HRPOpt` exactly. `cut` and `cluster_count` follow
+//! SciPy's `cut_tree` and riskfolio-lib's gap statistic for HERC.
 
 use nalgebra::DMatrix;
 
@@ -27,12 +28,18 @@ pub enum Linkage {
 /// One merge: the two clusters joined and the distance between them.
 type Merge = (usize, usize, f64);
 
-/// Returns the leaves of the hierarchy built from `distance`, left to right.
+/// A clustering hierarchy over `n` assets. Merge `k` joins two clusters into cluster `n + k`,
+/// and merges are ordered by increasing distance, so the last merge creates the root.
+pub(crate) struct Hierarchy {
+    /// The two clusters each merge joins, the one with the smaller id first, as SciPy labels
+    /// them.
+    children: Vec<(usize, usize)>,
+}
+
+/// Builds the hierarchy of `distance` with `linkage`.
 ///
-/// `distance` must be symmetric, finite and non-negative. Merge `k` creates cluster `n + k`.
-/// Its children are the two merged clusters, the one with the smaller id on the left, as
-/// SciPy labels them.
-pub(crate) fn leaf_order(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<usize> {
+/// `distance` must be symmetric, finite and non-negative.
+pub(crate) fn hierarchy(distance: &DMatrix<f64>, linkage: Linkage) -> Hierarchy {
     let n = distance.nrows();
     let mut merges = match linkage {
         Linkage::Single => minimum_spanning_tree(distance),
@@ -56,19 +63,101 @@ pub(crate) fn leaf_order(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<usize
         parent[root_b] = n + k;
         children.push((root_a.min(root_b), root_a.max(root_b)));
     }
+    Hierarchy { children }
+}
 
-    let mut order = Vec::with_capacity(n);
-    let mut stack = vec![2 * n - 2];
-    while let Some(node) = stack.pop() {
-        if node < n {
-            order.push(node);
-        } else {
-            let (left, right) = children[node - n];
-            stack.push(right);
-            stack.push(left);
-        }
+impl Hierarchy {
+    /// The number of assets clustered.
+    fn assets(&self) -> usize {
+        self.children.len() + 1
     }
-    order
+
+    /// The two clusters merged into `node`, which must not be a leaf.
+    pub(crate) fn children(&self, node: usize) -> (usize, usize) {
+        self.children[node - self.assets()]
+    }
+
+    /// The assets in cluster `node`, left to right, as SciPy's `pre_order` lists them.
+    pub(crate) fn leaves(&self, node: usize) -> Vec<usize> {
+        let n = self.assets();
+        let mut order = Vec::new();
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            if node < n {
+                order.push(node);
+            } else {
+                let (left, right) = self.children[node - n];
+                stack.push(right);
+                stack.push(left);
+            }
+        }
+        order
+    }
+
+    /// Every asset, left to right.
+    pub(crate) fn leaf_order(&self) -> Vec<usize> {
+        self.leaves(2 * self.assets() - 2)
+    }
+
+    /// The `k` clusters left after the first `n − k` merges, as SciPy's `cut_tree` gives them
+    /// for a monotonic hierarchy. `k` must be between 1 and `n`.
+    pub(crate) fn cut(&self, k: usize) -> Vec<Vec<usize>> {
+        let n = self.assets();
+        let mut clusters: Vec<Option<Vec<usize>>> = (0..n).map(|i| Some(vec![i])).collect();
+        clusters.resize(2 * n - 1, None);
+        for (m, &(a, b)) in self.children[..n - k].iter().enumerate() {
+            let mut merged = clusters[a].take().expect("each cluster merges once");
+            merged.extend(clusters[b].take().expect("each cluster merges once"));
+            clusters[n + m] = Some(merged);
+        }
+        clusters.into_iter().flatten().collect()
+    }
+
+    /// Chooses the number of clusters with the two-difference gap statistic (Yue et al.,
+    /// 2008), exactly as riskfolio-lib's `two_diff_gap_stat` does.
+    ///
+    /// For each `k` up to `min(max_clusters, √n) + 2`, the dispersion `W_k` sums, over the
+    /// `k` clusters, the population standard deviation of the distances within each cluster.
+    /// The chosen `k` maximizes `W_{k+2} + W_k − 2 W_{k+1}`, with `W_1 = −∞`, and is at most
+    /// `min(max_clusters, √n)`. The smallest `k` wins a tie, and 1 is returned when there are
+    /// too few assets to compare.
+    pub(crate) fn cluster_count(&self, distance: &DMatrix<f64>, max_clusters: usize) -> usize {
+        let n = self.assets();
+        let most = (max_clusters as f64).min((n as f64).sqrt()) + 2.0;
+        let dispersion: Vec<f64> = (1..=n)
+            .take_while(|&k| k as f64 <= most)
+            .map(|k| match k {
+                1 => f64::NEG_INFINITY,
+                _ => self
+                    .cut(k)
+                    .iter()
+                    .filter(|cluster| cluster.len() > 1)
+                    .map(|cluster| spread(distance, cluster))
+                    .sum(),
+            })
+            .collect();
+
+        let (mut best_k, mut best_gap) = (1, f64::NEG_INFINITY);
+        for (i, w) in dispersion.windows(3).enumerate() {
+            let gap = w[2] + w[0] - 2.0 * w[1];
+            if gap > best_gap {
+                (best_k, best_gap) = (i + 1, gap);
+            }
+        }
+        best_k
+    }
+}
+
+/// The population standard deviation of the distances between each pair in `cluster`.
+fn spread(distance: &DMatrix<f64>, cluster: &[usize]) -> f64 {
+    let pairs: Vec<f64> = cluster
+        .iter()
+        .enumerate()
+        .flat_map(|(a, &i)| cluster[a + 1..].iter().map(move |&j| distance[(i, j)]))
+        .collect();
+    let mean = pairs.iter().sum::<f64>() / pairs.len() as f64;
+    let variance = pairs.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / pairs.len() as f64;
+    variance.sqrt()
 }
 
 /// Single linkage through Prim's minimum spanning tree, as in SciPy's `mst_single_linkage`:
@@ -164,4 +253,70 @@ fn nearest_neighbor_chain(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<Merg
         }
     }
     merges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Distances for points on a line at 0, 1, 10, 11, 30, so single linkage merges (0, 1),
+    /// (2, 3), then those two pairs, then 4.
+    fn line() -> DMatrix<f64> {
+        let x = [0.0, 1.0, 10.0, 11.0, 30.0];
+        DMatrix::from_fn(5, 5, |i, j| f64::abs(x[i] - x[j]))
+    }
+
+    fn sorted(mut clusters: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
+        clusters.iter_mut().for_each(|c| c.sort_unstable());
+        clusters.sort();
+        clusters
+    }
+
+    #[test]
+    fn cut_gives_k_clusters() {
+        let h = hierarchy(&line(), Linkage::Single);
+        assert_eq!(
+            sorted(h.cut(5)),
+            vec![vec![0], vec![1], vec![2], vec![3], vec![4]]
+        );
+        assert_eq!(sorted(h.cut(3)), vec![vec![0, 1], vec![2, 3], vec![4]]);
+        assert_eq!(sorted(h.cut(2)), vec![vec![0, 1, 2, 3], vec![4]]);
+        assert_eq!(sorted(h.cut(1)), vec![vec![0, 1, 2, 3, 4]]);
+        assert_eq!(h.children(8), (4, 7));
+        assert_eq!(h.leaves(7), vec![0, 1, 2, 3]);
+        assert_eq!(h.leaf_order(), vec![4, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn cluster_count_follows_the_gap_statistic() {
+        let distance = line();
+        let h = hierarchy(&distance, Linkage::Single);
+        // W₁..W₄ are computed, up to min(10, √5) + 2 ≈ 4.2. The k = 1 gap is −∞, so k = 2
+        // wins with W₄ + W₂ − 2W₃, which is finite.
+        assert_eq!(h.cluster_count(&distance, 10), 2);
+        // With max_clusters = 1 only W₁..W₃ are computed, leaving the k = 1 gap of −∞.
+        assert_eq!(h.cluster_count(&distance, 1), 1);
+    }
+
+    #[test]
+    fn cluster_count_with_too_few_assets_is_one() {
+        for n in [2, 3] {
+            let distance = DMatrix::from_fn(n, n, |i, j| if i == j { 0.0 } else { 0.5 });
+            assert_eq!(
+                hierarchy(&distance, Linkage::Average).cluster_count(&distance, 10),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn spread_is_the_population_standard_deviation() {
+        // The distances between 0, 1 and 10 are 1, 10 and 9.
+        let s = spread(&line(), &[0, 1, 2]);
+        let mean = (1.0 + 10.0 + 9.0) / 3.0;
+        let expected =
+            (((1.0f64 - mean).powi(2) + (10.0f64 - mean).powi(2) + (9.0f64 - mean).powi(2)) / 3.0)
+                .sqrt();
+        assert!((s - expected).abs() < 1e-15);
+    }
 }
