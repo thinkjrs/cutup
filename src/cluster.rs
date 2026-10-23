@@ -100,17 +100,34 @@ impl Hierarchy {
     }
 
     /// The `k` clusters left after the first `n − k` merges, as SciPy's `cut_tree` gives them
-    /// for a monotonic hierarchy. `k` must be between 1 and `n`.
-    pub(crate) fn cut(&self, k: usize) -> Vec<Vec<usize>> {
+    /// for a monotonic hierarchy, each with the id of the node that formed it. `k` must be
+    /// between 1 and `n`.
+    pub(crate) fn cut(&self, k: usize) -> Vec<(usize, Vec<usize>)> {
+        self.merge_down_to(k, |_, _| {})
+            .into_iter()
+            .enumerate()
+            .filter_map(|(node, members)| members.map(|members| (node, members)))
+            .collect()
+    }
+
+    /// Replays the merges until `k` clusters remain, calling `visit` with the number of
+    /// clusters and the clusters, indexed by node, at each level from `n` down to `k`.
+    fn merge_down_to(
+        &self,
+        k: usize,
+        mut visit: impl FnMut(usize, &[Option<Vec<usize>>]),
+    ) -> Vec<Option<Vec<usize>>> {
         let n = self.assets();
         let mut clusters: Vec<Option<Vec<usize>>> = (0..n).map(|i| Some(vec![i])).collect();
         clusters.resize(2 * n - 1, None);
+        visit(n, &clusters);
         for (m, &(a, b)) in self.children[..n - k].iter().enumerate() {
             let mut merged = clusters[a].take().expect("each cluster merges once");
             merged.extend(clusters[b].take().expect("each cluster merges once"));
             clusters[n + m] = Some(merged);
+            visit(n - m - 1, &clusters);
         }
-        clusters.into_iter().flatten().collect()
+        clusters
     }
 
     /// Chooses the number of clusters with the two-difference gap statistic (Yue et al.,
@@ -124,18 +141,19 @@ impl Hierarchy {
     pub(crate) fn cluster_count(&self, distance: &DMatrix<f64>, max_clusters: usize) -> usize {
         let n = self.assets();
         let most = (max_clusters as f64).min((n as f64).sqrt()) + 2.0;
-        let dispersion: Vec<f64> = (1..=n)
-            .take_while(|&k| k as f64 <= most)
-            .map(|k| match k {
-                1 => f64::NEG_INFINITY,
-                _ => self
-                    .cut(k)
+        // Levels 1..=levels; the cuts are nested, so one replay of the merges visits them all.
+        let levels = (1..=n).take_while(|&k| k as f64 <= most).count();
+        let mut dispersion = vec![f64::NEG_INFINITY; levels];
+        self.merge_down_to(2.min(n), |k, clusters| {
+            if (2..=levels).contains(&k) {
+                dispersion[k - 1] = clusters
                     .iter()
+                    .flatten()
                     .filter(|cluster| cluster.len() > 1)
                     .map(|cluster| spread(distance, cluster))
-                    .sum(),
-            })
-            .collect();
+                    .sum();
+            }
+        });
 
         let (mut best_k, mut best_gap) = (1, f64::NEG_INFINITY);
         for (i, w) in dispersion.windows(3).enumerate() {
@@ -266,7 +284,8 @@ mod tests {
         DMatrix::from_fn(5, 5, |i, j| f64::abs(x[i] - x[j]))
     }
 
-    fn sorted(mut clusters: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
+    fn sorted(clusters: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
+        let mut clusters: Vec<Vec<usize>> = clusters.into_iter().map(|(_, c)| c).collect();
         clusters.iter_mut().for_each(|c| c.sort_unstable());
         clusters.sort();
         clusters
@@ -282,6 +301,7 @@ mod tests {
         assert_eq!(sorted(h.cut(3)), vec![vec![0, 1], vec![2, 3], vec![4]]);
         assert_eq!(sorted(h.cut(2)), vec![vec![0, 1, 2, 3], vec![4]]);
         assert_eq!(sorted(h.cut(1)), vec![vec![0, 1, 2, 3, 4]]);
+        assert_eq!(h.cut(2)[1].0, 7);
         assert_eq!(h.children(8), (4, 7));
         assert_eq!(h.leaves(7), vec![0, 1, 2, 3]);
         assert_eq!(h.leaf_order(), vec![4, 0, 1, 2, 3]);

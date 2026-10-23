@@ -76,6 +76,9 @@ pub enum CutupError {
         /// The minimum variance portfolio's expected return, which the rate must be below.
         min_variance_return: f64,
     },
+    /// An iterative solver stopped before reaching a solution, although one exists. This
+    /// happens only with extreme inputs, such as risk budgets more than about 10¹⁴ apart.
+    NotConverged,
 }
 
 impl fmt::Display for CutupError {
@@ -126,6 +129,9 @@ impl fmt::Display for CutupError {
                 "risk-free rate {risk_free_rate} must be below the minimum variance portfolio's \
                  expected return {min_variance_return}"
             ),
+            CutupError::NotConverged => {
+                write!(f, "the solver stopped before reaching a solution")
+            }
         }
     }
 }
@@ -674,7 +680,8 @@ impl PortfolioAllocator {
     /// Applies `config` to the sample covariance matrix, after checking its values.
     ///
     /// Returns [`CutupError::ZeroVariance`] for a constant asset unless shrinkage or
-    /// regularization gives it a positive variance.
+    /// regularization gives it a positive variance, and [`CutupError::NonFiniteCovariance`] if
+    /// the result isn't finite.
     fn adjusted_covariance(&self, config: &CovarianceConfig) -> Result<DMatrix<f64>, CutupError> {
         if let Some(value) = config
             .regularization
@@ -712,11 +719,16 @@ impl PortfolioAllocator {
             self.cov_matrix.clone()
         };
 
-        Ok(if let Some(eps) = config.regularization {
+        let adjusted = if let Some(eps) = config.regularization {
             shrunk_cov + eps * identity
         } else {
             shrunk_cov
-        })
+        };
+        // A solver given NaN or infinity would fail in its own, less telling way.
+        if adjusted.iter().any(|x| !x.is_finite()) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
+        Ok(adjusted)
     }
 
     /// Solves `minimize ½ wᵀKw − cᵀw subject to Eᵀw = b` through its KKT system
@@ -1093,9 +1105,6 @@ impl PortfolioAllocator {
         }
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
         let cov = self.adjusted_covariance(&config.covariance)?;
-        if cov.iter().any(|x| !x.is_finite()) {
-            return Err(CutupError::NonFiniteCovariance);
-        }
         let n = cov.ncols();
         let ones = DVector::from_element(n, 1.0);
         let excess = mu.add_scalar(-risk_free_rate);
@@ -1338,7 +1347,9 @@ impl PortfolioAllocator {
     /// The solution exists whenever every long-only portfolio has positive variance, which
     /// holds when Σ is invertible and also for most singular Σ. When some long-only portfolio
     /// has zero variance, a [`CutupError::SingularCovariance`] is returned; shrinkage or
-    /// regularization removes it.
+    /// regularization removes it. Risk budgets can span many orders of magnitude, up to about
+    /// 10¹⁴ between the largest and the smallest, beyond which the solver may stop early with
+    /// [`CutupError::NotConverged`].
     ///
     /// # Arguments
     ///
@@ -1356,6 +1367,8 @@ impl PortfolioAllocator {
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
     /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which takes risk budgets more
+    ///   than about 10¹⁴ apart.
     ///
     /// # Example
     ///
@@ -1406,40 +1419,48 @@ impl PortfolioAllocator {
             None => DVector::from_element(n, 1.0),
         };
         let cov = self.adjusted_covariance(&config.covariance)?;
-        if cov.iter().any(|x| !x.is_finite()) {
-            return Err(CutupError::NonFiniteCovariance);
-        }
         PortfolioAllocator::risk_budget_weights(&cov, &budgets)
             .map(|w| Weights(w.iter().copied().collect()))
-            .ok_or(CutupError::SingularCovariance)
     }
 
-    /// Minimizes `f(y) = ½ yᵀΣy − bᵀ ln y` over `y > 0` and returns `y / 1ᵀy`, or `None` when
-    /// `f` has no minimum.
+    /// Minimizes `f(y) = ½ yᵀΣy − bᵀ ln y` over `y > 0` and returns `y / 1ᵀy`.
     ///
     /// At the minimum, `yᵢ (Σy)ᵢ = bᵢ`, so the normalized `y` has the budgeted risk
     /// contributions. `f` is strictly convex, so Newton's method with a backtracking line
     /// search converges to it from any start. `f` is unbounded below exactly when a
-    /// long-only `d` has `dᵀΣd = 0`; then `y` grows along `d` until the iteration breaks
-    /// down or runs out.
-    fn risk_budget_weights(cov: &DMatrix<f64>, budgets: &DVector<f64>) -> Option<DVector<f64>> {
+    /// long-only `d` has `dᵀΣd = 0`: then `y` grows along `d`, and the normalized `y`
+    /// approaches that zero-variance portfolio until the iteration breaks down. A failed
+    /// iteration is classified by the variance of its last normalized `y`.
+    fn risk_budget_weights(
+        cov: &DMatrix<f64>,
+        budgets: &DVector<f64>,
+    ) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
         // Scaling Σ to an average variance of 1 and b to a sum of 1 makes the tolerances
         // below independent of the input's scale. Neither changes the normalized solution.
+        // Dividing b by its largest entry first keeps the sum from overflowing.
         let sigma = cov / (cov.trace() / n as f64);
-        let b = budgets / budgets.sum();
+        let b = budgets / budgets.max();
+        let b = &b / b.sum();
         let smallest_budget = b.min();
         let objective = |y: &DVector<f64>| {
             0.5 * y.dot(&(&sigma * y))
                 - b.iter().zip(y.iter()).map(|(b, y)| b * y.ln()).sum::<f64>()
         };
+        let failed = |y: &DVector<f64>| {
+            let w = y / y.sum();
+            if w.dot(&(&sigma * &w)) <= 1e-12 {
+                CutupError::SingularCovariance
+            } else {
+                CutupError::NotConverged
+            }
+        };
 
-        // Start from inverse volatility, scaled so that yᵀΣy = 1 as at the solution. If that
-        // long-only portfolio has no variance, there is no solution.
+        // Start from inverse volatility, scaled so that yᵀΣy = 1 as at the solution.
         let mut y = sigma.diagonal().map(|v| 1.0 / v.sqrt());
         let start_variance = y.dot(&(&sigma * &y));
-        if start_variance.is_nan() || start_variance <= 0.0 {
-            return None;
+        if start_variance.is_nan() || start_variance <= 1e-12 * y.norm_squared() {
+            return Err(CutupError::SingularCovariance);
         }
         y /= start_variance.sqrt();
 
@@ -1450,12 +1471,15 @@ impl PortfolioAllocator {
             for i in 0..n {
                 hessian[(i, i)] += b[i] / (y[i] * y[i]);
             }
-            let step = hessian.cholesky()?.solve(&gradient);
+            let Some(cholesky) = hessian.cholesky() else {
+                return Err(failed(&y));
+            };
+            let step = cholesky.solve(&gradient);
             // The squared Newton decrement, which is never negative unless rounding has broken
             // the Hessian. Divided by the smallest budget, it bounds (Δᵢ / yᵢ)² for every i.
             let decrement = gradient.dot(&step);
             if decrement.is_nan() || decrement < 0.0 {
-                return None;
+                return Err(failed(&y));
             }
             let scaled = decrement / smallest_budget;
 
@@ -1464,11 +1488,11 @@ impl PortfolioAllocator {
                 // A line search would only see rounding in f from here on.
                 if scaled >= previous {
                     // Rounding noise: y is as close as it gets.
-                    return Some(&y / y.sum());
+                    return Ok(&y / y.sum());
                 }
                 y -= step;
                 if scaled < 1e-20 {
-                    return Some(&y / y.sum());
+                    return Ok(&y / y.sum());
                 }
                 previous = scaled;
                 continue;
@@ -1479,7 +1503,7 @@ impl PortfolioAllocator {
             let mut t = 1.0;
             loop {
                 let candidate = &y - t * &step;
-                if candidate.iter().all(|v| *v > 0.0)
+                if candidate.iter().all(|v| v.is_finite() && *v > 0.0)
                     && objective(&candidate) <= current - 0.25 * t * decrement
                 {
                     y = candidate;
@@ -1487,14 +1511,11 @@ impl PortfolioAllocator {
                 }
                 t *= 0.5;
                 if t < 1e-10 {
-                    return None;
+                    return Err(failed(&y));
                 }
             }
-            if !y.iter().all(|v| v.is_finite()) {
-                return None;
-            }
         }
-        None
+        Err(failed(&y))
     }
 
     /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
@@ -1571,18 +1592,24 @@ impl PortfolioAllocator {
 
     /// Returns the variance of the inverse-variance portfolio over `cluster`.
     fn cluster_variance(&self, cluster: &[usize]) -> f64 {
+        let weights = self.inverse_variance_weights(cluster);
+        let mut variance = 0.0;
+        for (a, &i) in cluster.iter().enumerate() {
+            for (b, &j) in cluster.iter().enumerate() {
+                variance += weights[a] * weights[b] * self.cov_matrix[(i, j)];
+            }
+        }
+        variance
+    }
+
+    /// Returns the inverse-variance weights of the assets in `cluster`, summing to 1.
+    fn inverse_variance_weights(&self, cluster: &[usize]) -> Vec<f64> {
         let inverse: Vec<f64> = cluster
             .iter()
             .map(|&i| 1.0 / self.cov_matrix[(i, i)])
             .collect();
         let total: f64 = inverse.iter().sum();
-        let mut variance = 0.0;
-        for (a, &i) in cluster.iter().enumerate() {
-            for (b, &j) in cluster.iter().enumerate() {
-                variance += inverse[a] * inverse[b] * self.cov_matrix[(i, j)];
-            }
-        }
-        variance / (total * total)
+        inverse.iter().map(|w| w / total).collect()
     }
 
     /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016), with
@@ -1771,9 +1798,15 @@ impl PortfolioAllocator {
     ///
     /// Unlike HRP, which bisects the ordered list of assets at its midpoint, HERC splits where
     /// the tree branches, so similar assets are never separated and the result doesn't depend
-    /// on the order of the input columns (up to ties in the clustering). Results match
-    /// riskfolio-lib's `HCPortfolio.optimization(model="HERC", rm="MV")` up to floating-point
-    /// rounding, which can break a tie in the clustering or the gap statistic differently.
+    /// on the order of the input columns. Results match riskfolio-lib's
+    /// `HCPortfolio.optimization(model="HERC", rm="MV")` up to floating-point rounding.
+    ///
+    /// Both hold except when merges tie in distance at the cut, for example when assets are
+    /// duplicated. The cut is then made after exactly `n − k` merges, taking tied merges in
+    /// the order the clustering found them, which depends on column order. riskfolio-lib
+    /// instead takes the `k − 1` highest merges in the order of an unstable sort, and builds
+    /// the clusters with SciPy's `fcluster`, which can return fewer than `k` clusters at a
+    /// tie, so its weights can differ there.
     ///
     /// HERC never inverts the covariance matrix, so it works when Σ is singular, and weights
     /// are never negative. Two branches that both have zero risk split their weight evenly.
@@ -1822,7 +1855,7 @@ impl PortfolioAllocator {
                 value: k as f64,
             });
         }
-        if config.max_clusters == 0 {
+        if config.clusters.is_none() && config.max_clusters == 0 {
             return Err(CutupError::InvalidConfig {
                 field: "max_clusters",
                 value: 0.0,
@@ -1837,47 +1870,37 @@ impl PortfolioAllocator {
             .clusters
             .unwrap_or_else(|| hierarchy.cluster_count(&distance, config.max_clusters));
 
+        // Each cluster below the cut, by the node that formed it.
         let clusters = hierarchy.cut(k);
-        let mut cluster_of = vec![0; n];
-        for (c, members) in clusters.iter().enumerate() {
-            for &i in members {
-                cluster_of[i] = c;
-            }
+        let mut risk = vec![0.0; 2 * n - 1];
+        for (node, members) in &clusters {
+            // On singular data rounding can leave a variance slightly below zero, which would
+            // push α outside [0, 1].
+            risk[*node] = self.cluster_variance(members).max(0.0);
         }
-        // On singular data rounding can leave a variance slightly below zero, which would
-        // push α outside [0, 1].
-        let risk: Vec<f64> = clusters
-            .iter()
-            .map(|c| self.cluster_variance(c).max(0.0))
-            .collect();
-        let branch_risk = |leaves: &[usize]| {
-            let mut under: Vec<usize> = leaves.iter().map(|&i| cluster_of[i]).collect();
-            under.sort_unstable();
-            under.dedup();
-            under.iter().map(|&c| risk[c]).sum::<f64>()
-        };
-
-        let mut weights = vec![1.0; n];
-        // The last k − 1 merges are the ones above the cut.
-        for node in 2 * n - k..2 * n - 1 {
+        // The last k − 1 merges are the ones above the cut. A node's children always have
+        // lower ids, so one pass up sums each branch's risk and one pass down splits weight.
+        let top = 2 * n - k..2 * n - 1;
+        for node in top.clone() {
             let (left, right) = hierarchy.children(node);
-            let (left, right) = (hierarchy.leaves(left), hierarchy.leaves(right));
-            let (r_left, r_right) = (branch_risk(&left), branch_risk(&right));
-            let alpha = match r_left + r_right {
-                total if total > 0.0 => 1.0 - r_left / total,
+            risk[node] = risk[left] + risk[right];
+        }
+        let mut branch_weight = vec![0.0; 2 * n - 1];
+        branch_weight[2 * n - 2] = 1.0;
+        for node in top.rev() {
+            let (left, right) = hierarchy.children(node);
+            let alpha = match risk[left] + risk[right] {
+                total if total > 0.0 => 1.0 - risk[left] / total,
                 _ => 0.5,
             };
-            for &i in &left {
-                weights[i] *= alpha;
-            }
-            for &i in &right {
-                weights[i] *= 1.0 - alpha;
-            }
+            branch_weight[left] = branch_weight[node] * alpha;
+            branch_weight[right] = branch_weight[node] * (1.0 - alpha);
         }
-        for members in &clusters {
-            let total: f64 = members.iter().map(|&i| 1.0 / self.cov_matrix[(i, i)]).sum();
-            for &i in members {
-                weights[i] *= 1.0 / self.cov_matrix[(i, i)] / total;
+
+        let mut weights = vec![0.0; n];
+        for (node, members) in &clusters {
+            for (&i, w) in members.iter().zip(self.inverse_variance_weights(members)) {
+                weights[i] = branch_weight[*node] * w;
             }
         }
         Ok(Weights(weights))
@@ -2089,6 +2112,10 @@ mod tests {
         assert_eq!(
             CutupError::DegenerateExpectedReturns.to_string(),
             "every asset has the same expected return, so no other target return can be reached"
+        );
+        assert_eq!(
+            CutupError::NotConverged.to_string(),
+            "the solver stopped before reaching a solution"
         );
     }
 
@@ -3324,6 +3351,35 @@ mod tests {
     }
 
     #[test]
+    fn test_risk_parity_extreme_budgets() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let budgets =
+            |b: &[f64]| RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(b));
+        // Budgets whose sum overflows give the same weights as equal budgets.
+        assert_weights_close(
+            &allocator
+                .risk_parity_allocation_with_config(&budgets(&[1e308, 1e308, 1e308]))
+                .unwrap(),
+            &allocator.risk_parity_allocation().unwrap(),
+            1e-15,
+        );
+        // Budgets 10¹⁴ apart still converge.
+        let weights = allocator
+            .risk_parity_allocation_with_config(&budgets(&[1.0, 1e-14, 1e-14]))
+            .unwrap();
+        let shares = risk_shares(&allocator, &weights);
+        // Rounding in (Σw)ᵢ limits a tiny share's relative accuracy, so compare absolutely.
+        for (share, budget) in shares.iter().zip([1.0, 1e-14, 1e-14]) {
+            assert!((share - budget).abs() < 1e-12, "{share} vs {budget}");
+        }
+        // Far beyond that the solver can stop early, which isn't a singular covariance.
+        assert_eq!(
+            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1e-200, 1.0])),
+            Err(CutupError::NotConverged)
+        );
+    }
+
+    #[test]
     fn test_risk_parity_two_assets_is_inverse_volatility() {
         // With two assets, equal contributions mean w₀σ₀ = w₁σ₁ whatever the correlation.
         let allocator =
@@ -3530,6 +3586,9 @@ mod tests {
                 })
             );
         }
+        // max_clusters only limits the gap statistic, so it's ignored when clusters is set.
+        let fixed = HercConfig::default().with_clusters(2).with_max_clusters(0);
+        assert!(allocator.herc_allocation_with_config(&fixed).is_ok());
         assert_eq!(
             allocator.herc_allocation_with_config(&HercConfig::default().with_max_clusters(0)),
             Err(CutupError::InvalidConfig {
