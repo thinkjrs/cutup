@@ -13,11 +13,13 @@ All notable changes to this project are documented here. The format follows
   of variance, or a share set by risk budgets, with optional covariance adjustments. Solved
   with Newton's method (Spinu, 2013); returns `SingularCovariance` when a long-only
   portfolio has zero variance, where no solution exists.
+- `CutupError::NotConverged`, returned when an iterative solver stops before reaching a
+  solution that exists, which risk parity does only for budgets more than about 10¹⁴ apart.
 - `PortfolioAllocator::herc_allocation` and `herc_allocation_with_config` with
   `HercConfig`: Hierarchical Equal Risk Contribution (Raffinot, 2017) as riskfolio-lib
   implements it, with any linkage, and the number of clusters either fixed or chosen by
   the two-difference gap statistic. Results match riskfolio-lib up to floating-point
-  rounding and don't depend on column order.
+  rounding and don't depend on column order, except where merges tie at the cut.
 - Reference cases for both, against coordinate descent and riskfolio-lib, and property
   tests: risk parity meets its budgets, HERC ignores column order, and both are long-only
   and ignore return scale.
