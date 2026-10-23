@@ -61,7 +61,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.2.2"
+cutup = "0.2.3"
 ```
 
 ## Usage
