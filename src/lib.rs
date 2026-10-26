@@ -681,8 +681,8 @@ impl PortfolioAllocator {
     /// Applies `config` to the sample covariance matrix, after checking its values.
     ///
     /// Returns [`CutupError::ZeroVariance`] for a constant asset unless shrinkage or
-    /// regularization gives it a positive variance, and [`CutupError::NonFiniteCovariance`] if
-    /// the result isn't finite.
+    /// regularization gives it a positive variance, [`CutupError::NonFiniteCovariance`] if the
+    /// result isn't finite, and [`CutupError::SingularCovariance`] if it is zero.
     fn adjusted_covariance(&self, config: &CovarianceConfig) -> Result<DMatrix<f64>, CutupError> {
         if let Some(value) = config
             .regularization
@@ -728,6 +728,11 @@ impl PortfolioAllocator {
         // A solver given NaN or infinity would fail in its own, less telling way.
         if adjusted.iter().any(|x| !x.is_finite()) {
             return Err(CutupError::NonFiniteCovariance);
+        }
+        // Shrinking or regularizing by zero leaves a covariance of constant assets at zero,
+        // which gives nothing to allocate by.
+        if adjusted.trace() == 0.0 {
+            return Err(CutupError::SingularCovariance);
         }
         Ok(adjusted)
     }
@@ -2771,6 +2776,27 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_covariance_is_singular_after_shrinkage() {
+        // Shrinkage lets constant assets past the zero-variance check, but shrinking a zero
+        // covariance leaves it zero.
+        let returns = dmatrix![0.01, 0.02; 0.01, 0.02; 0.01, 0.02];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let shrunk = CovarianceConfig::default().with_shrinkage(0.5);
+        let mean_variance = MeanVarianceConfig::risk_aversion(10.0).with_covariance(shrunk.clone());
+        let max_sharpe = MaxSharpeConfig::default().with_covariance(shrunk.clone());
+        let risk_parity = RiskParityConfig::default().with_covariance(shrunk.clone());
+        for result in [
+            allocator.min_variance_allocation_with_config(&shrunk),
+            allocator.long_only_min_variance_allocation_with_config(&shrunk),
+            allocator.mean_variance_allocation(&mean_variance),
+            allocator.max_sharpe_allocation(&max_sharpe),
+            allocator.risk_parity_allocation_with_config(&risk_parity),
+        ] {
+            assert_eq!(result, Err(CutupError::SingularCovariance));
+        }
+    }
+
+    #[test]
     fn test_long_only_min_variance_matches_unconstrained_when_long() {
         // A diagonal covariance gives all-positive minimum variance weights, so the
         // constraint is inactive.
@@ -2817,6 +2843,36 @@ mod tests {
             &Weights(vec![0.5, 0.5]),
             1e-12,
         );
+    }
+
+    #[test]
+    fn test_long_only_min_variance_is_optimal_on_short_histories() {
+        // Fewer rows than assets make Σ singular, so the free problems have many minima. The
+        // solver must still reach a point where no asset's marginal variance (Σw)ᵢ is below
+        // the portfolio's variance wᵀΣw.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 * 0.1 - 0.05
+        };
+        for case in 0..300 {
+            let assets = 4 + case % 9;
+            let rows = 2 + case % (assets - 1);
+            let returns = DMatrix::from_fn(rows, assets, |_, _| next());
+            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            let weights = allocator.long_only_min_variance_allocation().unwrap();
+            let w = DVector::from_column_slice(weights.as_slice());
+            let marginal = &allocator.cov_matrix * &w;
+            let v = w.dot(&marginal);
+            let tolerance = 1e-9 * allocator.cov_matrix.amax();
+            assert!(w.iter().all(|&x| x >= 0.0), "case {case}: {weights:?}");
+            assert!(
+                marginal.iter().all(|&m| m >= v - tolerance),
+                "case {case}: {marginal:?} vs {v}"
+            );
+        }
     }
 
     #[test]
