@@ -13,6 +13,11 @@ cutup's implementation:
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
   covariance, not by running the same solver as cutup.
+* Long-only minimum variance: support enumeration. Every subset of assets gets its own
+  closed-form minimum variance portfolio, and the lowest-variance one with no negative
+  weights is the optimum, since each candidate is feasible and the optimum is one of them.
+  This uses neither KKT multipliers nor an iterative solver, unlike cutup's active-set
+  method. Only covariances that aren't singular are used, where the optimum is unique.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -94,6 +99,20 @@ def min_variance(cov: np.ndarray) -> np.ndarray:
         inv_ones = np.linalg.solve(cov, ones)
         return inv_ones / inv_ones.sum()
     return kkt_min_norm(cov, np.zeros(n), ones[:, None], np.array([1.0]))
+
+
+def long_only_min_variance(cov: np.ndarray) -> np.ndarray:
+    n = cov.shape[0]
+    best, best_variance = None, np.inf
+    for mask in range(1, 2**n):
+        support = [i for i in range(n) if mask >> i & 1]
+        inv_ones = np.linalg.solve(cov[np.ix_(support, support)], np.ones(len(support)))
+        candidate = np.zeros(n)
+        candidate[support] = inv_ones / inv_ones.sum()
+        variance = candidate @ cov @ candidate
+        if candidate.min() >= 0.0 and variance < best_variance:
+            best, best_variance = candidate, variance
+    return best
 
 
 def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray | str:
@@ -214,6 +233,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return raw / raw.sum()
         case "min_variance":
             return min_variance(adjusted)
+        case "long_only_min_variance":
+            return long_only_min_variance(adjusted)
         case "mean_variance" if "risk_aversion" in params:
             return risk_aversion(adjusted, mu, params["risk_aversion"])
         case "mean_variance":
@@ -246,6 +267,15 @@ def cases(datasets: dict) -> list[dict]:
 
     for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
         out.append({"dataset": name, "method": "min_variance", "params": {"shrinkage": 0.3}, "tolerance": solver})
+
+    # The long-only optimum is unique only when Σ isn't singular, so the singular datasets
+    # are used with shrinkage.
+    for name in ["orthogonal3", "two_asset", "two_blocks5", "prices10x60", "near_singular4"]:
+        out.append({"dataset": name, "method": "long_only_min_variance", "tolerance": solver})
+    for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6", "collinear2"]:
+        out.append({"dataset": name, "method": "long_only_min_variance", "params": {"shrinkage": 0.3}, "tolerance": solver})
+    for name in ["prices10x60", "near_singular4"]:
+        out.append({"dataset": name, "method": "long_only_min_variance", "params": {"regularization": 1e-5}, "tolerance": solver})
     for name in ["prices10x60", "near_singular4"]:
         out.append({"dataset": name, "method": "min_variance", "params": {"regularization": 1e-5}, "tolerance": solver})
     out.append({
@@ -375,7 +405,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "mean_variance", "max_sharpe"):
+        if case["method"] in ("min_variance", "long_only_min_variance", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
