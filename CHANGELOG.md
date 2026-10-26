@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `PortfolioAllocator::long_only_min_variance_allocation` and
+  `long_only_min_variance_allocation_with_config`: the minimum variance portfolio with no
+  short positions, with optional covariance adjustments. Solved exactly by a primal
+  active-set method, written for cutup so it adds no dependencies.
+- Reference cases against support enumeration, and property tests: the weights satisfy the
+  KKT conditions and have the lowest variance of any long-only method.
+
+### Fixed
+
+- Min variance, mean-variance and max Sharpe could return `SingularCovariance` for a
+  well-conditioned covariance, such as one heavily shrunk. nalgebra's SVD with a convergence
+  tolerance of exactly machine epsilon can return a decomposition that doesn't reconstruct
+  the matrix. It now uses nalgebra's default tolerance, and KKT solutions are refined
+  against the exact system.
+
 ## [0.2.3] - 2026-10-23
 
 ### Added

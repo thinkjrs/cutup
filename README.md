@@ -12,7 +12,7 @@ It's designed to be efficient and easy to use.
 
 Here are some of the allocation methods included in this library:
 
-- **Minimum Variance (GMV)**
+- **Minimum Variance (GMV)**, unconstrained or long-only
 - **Mean-Variance Optimization (MVO)**
 - **Maximum Sharpe Ratio (tangency portfolio)**
 - **Equal Weight Allocation (EW)**
@@ -26,6 +26,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 ## Features
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
+- **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **EW Allocation**: Assigns equal weights to all assets.
@@ -43,13 +44,14 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 | `inverse_volatility_allocation` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
 | `inverse_variance_allocation` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
 | `min_variance_allocation` | covariance | ❌ | The lowest-variance fully invested portfolio. Sensitive to estimation error, so consider shrinkage. |
+| `long_only_min_variance_allocation` | covariance | ✅ | The lowest-variance portfolio without shorting. Usually concentrates in a few low-risk assets and holds none of the rest. |
 | `mean_variance_allocation` | covariance, expected returns | ❌ | Markowitz, for a risk aversion or a target return. Most sensitive to the expected returns you supply. |
 | `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
 | `risk_parity_allocation` | covariance | ✅ | Every asset contributes the same risk. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `hrp_allocation` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
 | `herc_allocation` | covariance, correlations | ✅ | Like HRP, but splits where the clustering tree branches and groups similar assets, so the result doesn't depend on column order. |
 
-Long-only methods never return negative weights. The others can, since there is no long-only constraint yet. To see every method on the same data:
+Long-only methods never return negative weights. The others can. To see every method on the same data:
 
 ```bash
 cargo run --example compare
@@ -68,7 +70,7 @@ cutup = "0.2.3"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
-Minimum variance and mean-variance weights can be negative (short positions); there is no long-only constraint yet.
+Minimum variance, mean-variance and max Sharpe weights can be negative (short positions). For minimum variance without shorting, use `long_only_min_variance_allocation`.
 
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
@@ -133,7 +135,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 
