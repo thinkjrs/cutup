@@ -109,6 +109,10 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
         ),
     ];
     out.push((
+        "long-only min variance".to_string(),
+        allocator.long_only_min_variance_allocation().unwrap(),
+    ));
+    out.push((
         "risk parity".to_string(),
         allocator.risk_parity_allocation().unwrap(),
     ));
@@ -139,6 +143,16 @@ fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
             "min variance (shrinkage)".to_string(),
             allocator
                 .min_variance_allocation_with_config(&shrunk)
+                .unwrap(),
+        ),
+        (
+            "long-only min variance".to_string(),
+            allocator.long_only_min_variance_allocation().unwrap(),
+        ),
+        (
+            "long-only min variance (shrinkage)".to_string(),
+            allocator
+                .long_only_min_variance_allocation_with_config(&shrunk)
                 .unwrap(),
         ),
         (
@@ -176,8 +190,11 @@ proptest! {
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         for (name, weights) in all_methods(&allocator, mean) {
             prop_assert!(weights.iter().all(|w| w.is_finite()), "{name}: {weights:?}");
+            // Relative to the largest position, since long-short weights can be in the
+            // thousands when expected returns are nearly equal.
             let total: f64 = weights.iter().sum();
-            prop_assert!((total - 1.0).abs() < 1e-9, "{name} sums to {total}");
+            let size = weights.iter().fold(1.0f64, |m, w| m.max(w.abs()));
+            prop_assert!((total - 1.0).abs() < 1e-9 * size, "{name} sums to {total}");
         }
     }
 
@@ -189,6 +206,7 @@ proptest! {
             allocator.ew_allocation(),
             allocator.inverse_volatility_allocation().unwrap(),
             allocator.inverse_variance_allocation().unwrap(),
+            allocator.long_only_min_variance_allocation().unwrap(),
             allocator.risk_parity_allocation().unwrap(),
         ];
         long_only.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
@@ -208,6 +226,69 @@ proptest! {
         for (name, weights) in all_methods(&allocator, mean) {
             let other = variance(&cov, &weights);
             prop_assert!(minimum <= other * (1.0 + 1e-9), "{name}: {other} < {minimum}");
+        }
+    }
+
+    #[test]
+    fn long_only_min_variance_satisfies_kkt(
+        returns in returns(),
+        shrinkage in prop::option::of(0.0f64..1.0),
+    ) {
+        // w minimizes wᵀΣw over long-only portfolios exactly when every asset's marginal
+        // variance (Σw)ᵢ is at least the portfolio's variance wᵀΣw, with equality wherever
+        // wᵢ > 0: then no shift of weight between assets lowers the variance.
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let mut config = CovarianceConfig::default();
+        let mut cov = covariance(&returns);
+        if let Some(lambda) = shrinkage {
+            config = config.with_shrinkage(lambda);
+            let average = cov.trace() / n as f64;
+            cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
+        }
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let weights = allocator.long_only_min_variance_allocation_with_config(&config).unwrap();
+        prop_assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        let w = DVector::from_column_slice(weights.as_slice());
+        let marginal = &cov * &w;
+        let v = w.dot(&marginal);
+        let tolerance = 1e-8 * marginal.amax();
+        for i in 0..n {
+            prop_assert!(marginal[i] >= v - tolerance, "asset {i}: {} < {v}", marginal[i]);
+            prop_assert!(w[i] * (marginal[i] - v).abs() <= tolerance, "asset {i}: {weights:?}");
+        }
+    }
+
+    #[test]
+    fn long_only_min_variance_is_lowest_among_long_only(returns in returns()) {
+        prop_assume!(well_posed(&returns));
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let unconstrained = allocator.min_variance_allocation().unwrap();
+        let long_only = allocator.long_only_min_variance_allocation().unwrap();
+        let minimum = variance(&cov, &long_only);
+        prop_assert!(minimum >= variance(&cov, &unconstrained) * (1.0 - 1e-9));
+
+        // When the unconstrained portfolio is already long-only, the two are the same.
+        if unconstrained.iter().all(|&w| w >= 0.0) {
+            for (a, b) in unconstrained.iter().zip(&long_only) {
+                prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
+            }
+        }
+
+        let mut others = vec![
+            allocator.ew_allocation(),
+            allocator.inverse_volatility_allocation().unwrap(),
+            allocator.inverse_variance_allocation().unwrap(),
+            allocator.risk_parity_allocation().unwrap(),
+        ];
+        others.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
+        others.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
+        for weights in others {
+            let other = variance(&cov, &weights);
+            prop_assert!(minimum <= other * (1.0 + 1e-9), "{weights:?}: {other} < {minimum}");
         }
     }
 
