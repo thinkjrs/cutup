@@ -47,6 +47,10 @@ fn main() -> Result<(), CutupError> {
             allocator.min_variance_allocation_with_config(&shrunk)?,
         ),
         (
+            "Long-only min variance",
+            allocator.long_only_min_variance_allocation()?,
+        ),
+        (
             "Mean-variance, γ = 100",
             allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
         ),
