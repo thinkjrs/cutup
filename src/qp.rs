@@ -27,6 +27,18 @@ pub(crate) fn solve_kkt(
     e: &DMatrix<f64>,
     b: &DVector<f64>,
 ) -> Result<Option<Solution>, CutupError> {
+    solve_noisy_kkt(k, c, e, b, 0.0)
+}
+
+/// [`solve_kkt`] for a `c` computed from terms of size up to `noise`, which may have cancelled
+/// to rounding error. A residual at that rounding level isn't taken as inconsistency.
+fn solve_noisy_kkt(
+    k: &DMatrix<f64>,
+    c: &DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+    noise: f64,
+) -> Result<Option<Solution>, CutupError> {
     // nalgebra's SVD never converges on NaN, so check first and cap the iterations below.
     if k.iter().chain(c.iter()).any(|x| !x.is_finite()) {
         return Err(CutupError::NonFiniteCovariance);
@@ -66,7 +78,7 @@ pub(crate) fn solve_kkt(
     }
 
     let residual = (&kkt * &solution - &rhs).norm();
-    if residual > 1e-8 * (kkt.norm() * solution.norm() + rhs.norm()) {
+    if residual > 1e-8 * (kkt.norm() * solution.norm() + rhs.norm() + noise / k_scale) {
         return Ok(None);
     }
     let x = solution.rows(0, n).into_owned();
@@ -116,8 +128,9 @@ fn column_scale(e: &DMatrix<f64>, j: usize) -> f64 {
 ///
 /// * [`CutupError::Unbounded`] if the objective decreases without limit.
 /// * [`CutupError::SingularCovariance`] if the linear algebra fails.
-/// * [`CutupError::NotConverged`] if the iteration cap is reached, which only rounding
-///   trouble on extreme inputs should cause.
+/// * [`CutupError::NotConverged`] if the iteration cap is reached, or a variable that would
+///   lower the objective can't enter without the solver cycling. Only rounding trouble on
+///   extreme inputs should cause either.
 pub(crate) fn solve_nonnegative(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
@@ -140,7 +153,20 @@ pub(crate) fn solve_nonnegative(
         let e_free = e.select_rows(&indices);
         let x_free = x.select_rows(&indices);
 
-        let Some((target, multipliers)) = solve_kkt(&q_free, &c_free, &e_free, b)? else {
+        // Solve for the step from x rather than for the new point, so that when Q is singular
+        // and the free problem has many minima, the target is the one closest to x. The
+        // minimum-norm one could put a just-released variable below zero, blocking it at once.
+        let gradient_free = &c_free - &q_free * &x_free;
+        let residual = b - e_free.transpose() * &x_free;
+        let noise = q_free.amax() * x_free.amax() + c_free.amax();
+        let Some((delta, multipliers)) =
+            solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
+        else {
+            // Without a linear term the objective is bounded below and the free problem has a
+            // minimum, so the solve failed numerically.
+            if c_free.iter().all(|&v| v == 0.0) {
+                return Err(CutupError::SingularCovariance);
+            }
             // No minimum on the free variables: move along a direction of zero curvature
             // until a variable reaches zero.
             let direction = descent_ray(&q_free, &c_free, &e_free)?;
@@ -160,6 +186,8 @@ pub(crate) fn solve_nonnegative(
             continue;
         };
 
+        let target = &x_free + delta;
+
         // Step toward the target, stopping where the first variable reaches zero. Entries
         // within rounding of zero don't block, and are clamped to zero instead.
         let tolerance = 1e-12 * target.amax().max(x_free.amax());
@@ -175,28 +203,39 @@ pub(crate) fn solve_nonnegative(
             released = None;
             continue;
         }
+        let mut moved = false;
         for (k, &i) in indices.iter().enumerate() {
-            x[i] = target[k].max(0.0);
+            let next = target[k].max(0.0);
+            moved |= (next - x[i]).abs() > tolerance;
+            x[i] = next;
         }
-        if released.is_some() {
+        if moved {
             refused.fill(false);
         }
 
-        // Release the active variable with the most negative multiplier, if any.
+        // Release the active variable with the most negative multiplier, if any. A refused
+        // variable with a negative multiplier means x isn't optimal, but the solver can't
+        // make progress on it.
         let gradient = q * &x - c;
         let pushback = e * &multipliers;
-        let scale = gradient.amax().max(c.amax()).max(pushback.amax());
-        let entering = (0..n)
-            .filter(|&i| !free[i] && !refused[i])
+        // Like the step, the multipliers are differences of terms up to this size.
+        let scale = (q.amax() * x.amax() + c.amax()).max(pushback.amax());
+        let negative: Vec<(f64, usize)> = (0..n)
+            .filter(|&i| !free[i])
             .map(|i| (gradient[i] + pushback[i], i))
             .filter(|&(nu, _)| nu < -1e-9 * scale)
+            .collect();
+        let entering = negative
+            .iter()
+            .filter(|&&(_, i)| !refused[i])
             .min_by(|a, b| a.0.total_cmp(&b.0));
         match entering {
-            Some((_, i)) => {
+            Some(&(_, i)) => {
                 free[i] = true;
                 released = Some(i);
             }
-            None => return Ok(x),
+            None if negative.is_empty() => return Ok(x),
+            None => return Err(CutupError::NotConverged),
         }
     }
     Err(CutupError::NotConverged)
@@ -222,10 +261,12 @@ fn block(
 }
 
 /// The largest step `t ≤ ∞` keeping `x + t·d ≥ 0`, and the variable that reaches zero there,
-/// or `None` if no variable decreases.
+/// or `None` if no variable decreases. Components of `d` within rounding of zero don't count
+/// as decreasing.
 fn ratio_test(x: &DVector<f64>, d: &DVector<f64>) -> Option<(f64, usize)> {
+    let tolerance = 1e-12 * d.amax();
     (0..x.len())
-        .filter(|&k| d[k] < 0.0)
+        .filter(|&k| d[k] < -tolerance)
         .map(|k| (x[k] / -d[k], k))
         .min_by(|a, b| a.0.total_cmp(&b.0))
 }
@@ -328,6 +369,13 @@ mod tests {
         let (e, b) = budget(4);
         let x = solve_nonnegative(&q, &c, &e, &b, DVector::from_element(4, 0.25)).unwrap();
         assert_close(&x, &dvector![0.0, 1.0, 0.0, 0.0], 1e-15);
+    }
+
+    #[test]
+    fn ratio_test_ignores_rounding_noise() {
+        let x = dvector![1.0, 1.0, 1.0];
+        assert_eq!(ratio_test(&x, &dvector![1.0, -1e-20, 0.5]), None);
+        assert_eq!(ratio_test(&x, &dvector![1.0, -1e-20, -0.5]), Some((2.0, 2)));
     }
 
     #[test]
