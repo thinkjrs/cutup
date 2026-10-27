@@ -19,18 +19,24 @@ fixtures in `tests/fixtures/`.
 | Equal weight | `1 / n` |
 | Inverse volatility, inverse variance | `1 / σ` and `1 / σ²` from `np.var(ddof=1)`, normalized |
 | Minimum variance | NumPy closed form `Σ⁻¹1 / 1ᵀΣ⁻¹1`; minimum-norm KKT solution from `numpy.linalg.lstsq` when Σ is singular |
-| Long-only minimum variance and mean-variance | Support enumeration: the KKT solution on every subset of assets with the rest held at zero, keeping the best feasible one with no negative weights. Unlike cutup's active-set solver, it never checks multipliers' signs or iterates. Singular covariances are used only with shrinkage, since their optimum needn't be unique. A target return outside the assets' expected returns is an expected error. |
+| Long-only minimum variance and mean-variance | Support enumeration: the KKT solution on every subset of assets with the rest held at zero, keeping the best feasible one with no negative weights. Each subset's system is solved through the Schur complement of the covariance block, which stays accurate when the constraints' entries are many orders of magnitude apart. Unlike cutup's active-set solver, it never checks multipliers' signs or iterates. Singular covariances are used only with shrinkage, since their optimum needn't be unique. A target return outside the assets' expected returns is an expected error. |
 | Mean-variance | NumPy closed forms for risk aversion and target return (Merton, 1972); minimum-norm KKT solution when Σ is singular. Expected errors are decided from the null space of Σ. |
 | Long-only max Sharpe | The same support enumeration, after the change of variables `y = w / (μ − r_f)ᵀw` that makes it minimizing `yᵀΣy` subject to `(μ − r_f)ᵀy = 1` and `y ≥ 0`. An unbounded Sharpe ratio is decided by `scipy.optimize.linprog` finding a long-only portfolio with zero variance and positive excess return. |
-| Max diversification | The same support enumeration and linear program as long-only max Sharpe, on the correlation matrix with a vector of ones, then divided by the volatilities. The ratio doesn't depend on each asset's units, so `scales4`, with volatilities from 1e-2 to 1e-10, checks that. An unbounded ratio is the expected `SingularCovariance`. Min variance and risk parity skip `scales4`, since they solve in raw units, where its covariance is numerically singular. |
+| Max diversification | The same support enumeration and linear program as long-only max Sharpe, with the volatilities in place of the excess returns. An unbounded ratio is the expected `SingularCovariance`. |
 | Max Sharpe | NumPy closed form `Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f)`, or `numpy.linalg.pinv` when Σ is singular. Expected errors are decided from the minimum variance portfolio's own variance and return, and the null space of Σ. |
-| Risk parity | Cyclical coordinate descent (Griveau-Billion et al., 2013) run to convergence, unlike cutup's Newton iteration, with equal and custom risk budgets. The expected error is decided by `scipy.optimize.nnls` finding a long-only portfolio with zero variance. |
+| Risk parity | Cyclical coordinate descent (Griveau-Billion et al., 2013) on the correlation matrix, run to convergence, unlike cutup's Newton iteration, with equal and custom risk budgets. The expected error is decided by `scipy.optimize.nnls` finding a long-only portfolio with zero variance. |
 | HRP | PyPortfolioOpt `HRPOpt`, for each linkage |
 | HERC | riskfolio-lib `HCPortfolio.optimization(model="HERC", rm="MV")`, for each linkage and for fixed numbers of clusters. Datasets with two assets are skipped, because riskfolio-lib's gap statistic can't choose a number of clusters for them. |
 
+Every covariance-based reference works in correlation units `u = diag(σ)w`, as cutup
+does: with `Σ = diag(σ) C diag(σ)`, linear solves, pseudo-inverses, null spaces and
+minimum norms are those of the correlation matrix `C`. Then nothing depends on each
+asset's units, and the `scales4` dataset, with volatilities from about 1e-2 to 1e-10,
+checks that every method stays accurate.
+
 Each case's tolerance is relative to the size of the weight. Ill-conditioned
-covariances get a looser tolerance in proportion to their condition number, which is
-recorded in the case. Numerically singular ones keep the tight tolerance, because both
+correlation matrices get a looser tolerance in proportion to their condition number, which
+is recorded in the case. Numerically singular ones keep the tight tolerance, because both
 sides truncate the null space and agree on the minimum-norm solution.
 
 `--check` fails if a weight moves by more than a tenth of its tolerance (a NaN counts as

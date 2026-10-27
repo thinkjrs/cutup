@@ -39,6 +39,32 @@ All notable changes to this project are documented here. The format follows
   weights satisfy the KKT conditions, have the highest diversification ratio of any
   long-only method, and don't depend on column order, return scale or any one asset's
   units.
+- Reference cases on a dataset with volatilities eight orders of magnitude apart for every
+  covariance-based method, with the Python references also working in correlation units,
+  and property tests: rescaling one asset's returns only rescales its weight in max
+  diversification, risk parity and long-only max Sharpe, and risk parity has no answer on a
+  rank-one covariance exactly when max diversification has none.
+
+### Changed
+
+- On a singular covariance, min variance, mean-variance and max Sharpe return the
+  minimum-norm optimum in correlation units `diag(σ)w` instead of in the weights, so which
+  of the tied portfolios is returned doesn't depend on each asset's units. Weights on
+  singular covariances can differ from 0.2.4's.
+
+### Fixed
+
+- Min variance, mean-variance, max Sharpe, their long-only versions and risk parity work in
+  correlation units, so assets whose volatilities are many orders of magnitude apart stay
+  accurate. At a gap of about 1e8, they gave wrong weights, or returned `SingularCovariance`,
+  `Unbounded` or `RiskFreeRateTooHigh` where an answer exists. Singular cutoffs use the
+  correlation matrix, so they don't depend on units either.
+- Max Sharpe's tolerance for a risk-free rate at the minimum variance return is relative to
+  that portfolio's terms `wᵢμᵢ`, which don't depend on units, instead of the largest expected
+  return.
+- Risk parity checks its result before returning, against the budgets and with max
+  diversification's null-space cutoff, so rounding on a covariance with a zero-variance
+  long-only portfolio can't give weights instead of `SingularCovariance`.
 
 ## [0.2.4] - 2026-10-26
 
