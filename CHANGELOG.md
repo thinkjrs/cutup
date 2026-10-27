@@ -31,11 +31,14 @@ All notable changes to this project are documented here. The format follows
   `max_diversification_allocation_with_config`: the maximum diversification portfolio
   (Choueifaty and Coignard, 2008), which maximizes the ratio of weighted average volatility
   to portfolio volatility, with optional covariance adjustments. Long-only by definition,
-  and solved like long-only max Sharpe with the volatilities in place of the excess
-  returns. Returns `SingularCovariance` when some long-only portfolio has no variance.
-- Reference cases for max diversification against the same support enumeration, and
-  property tests: the weights satisfy the KKT conditions, have the highest diversification
-  ratio of any long-only method, and don't depend on column order or return scale.
+  and solved like long-only max Sharpe on the correlation matrix, so assets whose
+  volatilities differ by many orders of magnitude stay accurate. Returns
+  `SingularCovariance` when some long-only portfolio has no variance.
+- Reference cases for max diversification against the same support enumeration, including
+  a dataset with volatilities eight orders of magnitude apart, and property tests: the
+  weights satisfy the KKT conditions, have the highest diversification ratio of any
+  long-only method, and don't depend on column order, return scale or any one asset's
+  units.
 
 ## [0.2.4] - 2026-10-26
 
