@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-27
+
 ### Added
 
 - Per-asset weight bounds for long-only min variance and mean-variance:
@@ -16,7 +18,8 @@ All notable changes to this project are documented here. The format follows
   active-set solver now holds each variable at its lower bound, its upper bound, or
   between them, so the results are exact, as without bounds.
 - `CutupError::InfeasibleBounds`, returned when the floors sum to more than 1 or the caps
-  to less.
+  to less, by more than `1e-12`. Bounds within that of the budget, such as ten caps of 0.1,
+  are rescaled to sum to 1, which moves each by at most `1e-12` of itself.
 - Reference cases with bounds, against support enumeration over each asset at its floor,
   at its cap, or free, and cross-checked against PyPortfolioOpt. Property tests: bounded
   weights satisfy the KKT conditions for min variance and both mean-variance objectives,
@@ -283,7 +286,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.5...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.6...HEAD
+[0.2.6]: https://github.com/thinkjrs/cutup/compare/0.2.5...0.2.6
 [0.2.5]: https://github.com/thinkjrs/cutup/compare/0.2.4...0.2.5
 [0.2.4]: https://github.com/thinkjrs/cutup/compare/0.2.3...0.2.4
 [0.2.3]: https://github.com/thinkjrs/cutup/compare/0.2.2...0.2.3
