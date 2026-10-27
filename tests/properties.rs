@@ -282,11 +282,15 @@ proptest! {
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         for (name, weights) in all_methods(&allocator, mean) {
             prop_assert!(weights.iter().all(|w| w.is_finite()), "{name}: {weights:?}");
-            // Relative to the largest position, since long-short weights can be in the
-            // thousands when expected returns are nearly equal.
+            // Long-short weights can be in the thousands when expected returns are nearly
+            // equal, so their sum is checked relative to the largest position.
             let total: f64 = weights.iter().sum();
-            let size = weights.iter().fold(1.0f64, |m, w| m.max(w.abs()));
-            prop_assert!((total - 1.0).abs() < 1e-9 * size, "{name} sums to {total}");
+            let tolerance = if name == "min variance" || name.starts_with("mean-variance") {
+                1e-9 * weights.iter().fold(1.0f64, |m, w| m.max(w.abs()))
+            } else {
+                1e-12
+            };
+            prop_assert!((total - 1.0).abs() < tolerance, "{name} sums to {total}");
         }
     }
 
