@@ -1478,34 +1478,119 @@ impl PortfolioAllocator {
             });
         }
         let cov = self.adjusted_covariance(&config.covariance)?;
-        let n = cov.ncols();
+        // Scaled so that the best asset's excess return is 1.
+        long_only_max_ratio(&cov, &(&excess / excess[best]), best)
+    }
 
-        // The constraint is scaled so that the best asset's excess return is 1, and holding
-        // one unit of it is feasible.
-        let mut start = DVector::zeros(n);
-        start[best] = 1.0;
-        let weights = long_only_weights(
-            &cov,
-            &DVector::zeros(n),
-            &DMatrix::from_column_slice(n, 1, (&excess / excess[best]).as_slice()),
-            &DVector::from_element(1, 1.0),
-            start,
-        )?;
+    /// Computes the maximum diversification portfolio (Choueifaty and Coignard, 2008):
+    /// maximize the diversification ratio `σᵀw / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and
+    /// `w ≥ 0`, where `σ` holds the assets' volatilities.
+    ///
+    /// The ratio is the weighted average volatility over the portfolio's volatility, which
+    /// is at least 1, and is 1 only when the held assets are perfectly correlated. It is
+    /// long-only by definition. This is the long-only max Sharpe problem with `σ` in place of
+    /// the excess returns, solved the same way: with `y = w / σᵀw`, minimize `yᵀΣy` subject to
+    /// `σᵀy = 1` and `y ≥ 0`, then `w = y / 1ᵀy`. For uncorrelated assets it is inverse
+    /// volatility weighting.
+    ///
+    /// When Σ is singular, several portfolios can share the maximum, and which one is
+    /// returned depends on the solver's path. Use
+    /// [`PortfolioAllocator::max_diversification_allocation_with_config`] with shrinkage for a
+    /// unique answer.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, nonnegative and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has no variance (in
+    ///   Σ's null space, with the cutoff of [`PortfolioAllocator::max_sharpe_allocation`]),
+    ///   so the ratio has no upper bound, or no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Uncorrelated assets, with volatilities in the ratio 1 : 2 : 4.
+    /// let returns = dmatrix![
+    ///      0.01,  0.02,  0.04;
+    ///     -0.01,  0.02, -0.04;
+    ///      0.01, -0.02, -0.04;
+    ///     -0.01, -0.02,  0.04
+    /// ];
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let weights = allocator.max_diversification_allocation()?;
+    ///
+    /// // Inverse volatility: 4 : 2 : 1.
+    /// for (w, expected) in weights.iter().zip([4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]) {
+    ///     assert!((w - expected).abs() < 1e-12);
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn max_diversification_allocation(&self) -> Result<Weights, CutupError> {
+        self.max_diversification_allocation_with_config(&CovarianceConfig::default())
+    }
 
-        // Its excess return is positive, so if it lies in Σ's null space the Sharpe ratio is
-        // unbounded. That is the cutoff max_sharpe_allocation uses: a Rayleigh quotient within
-        // n·ε of the largest eigenvalue. The trace bounds that eigenvalue, so the
-        // decomposition is only needed near the cutoff.
-        let w = DVector::from_column_slice(weights.as_slice());
-        let quotient = w.dot(&(&cov * &w)) / w.norm_squared();
-        let cutoff = |largest: f64| quotient <= n as f64 * f64::EPSILON * largest;
-        if cutoff(cov.trace()) {
-            let eigen = SymmetricEigen::new(&cov).ok_or(CutupError::SingularCovariance)?;
-            if cutoff(eigen.values.amax()) {
-                return Err(CutupError::Unbounded);
-            }
+    /// Computes the maximum diversification portfolio after applying shrinkage and/or
+    /// regularization to the covariance matrix. The volatilities are those of the adjusted
+    /// covariance. See [`PortfolioAllocator::max_diversification_allocation`].
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Adjustments applied to the covariance matrix.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, nonnegative and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
+    ///   `shrinkage` is outside `[0, 1]`.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
+    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has no variance, so
+    ///   the ratio has no upper bound, or no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, PortfolioAllocator};
+    /// use nalgebra::dmatrix;
+    ///
+    /// // Fewer observations than assets: some long-only portfolio has no variance.
+    /// let returns = dmatrix![
+    ///      0.01, -0.02,  0.03;
+    ///     -0.01,  0.02, -0.03
+    /// ];
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// assert!(allocator.max_diversification_allocation().is_err());
+    ///
+    /// let config = CovarianceConfig::default().with_shrinkage(0.3);
+    /// let weights = allocator.max_diversification_allocation_with_config(&config)?;
+    /// assert!(weights.iter().all(|&w| w >= 0.0));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn max_diversification_allocation_with_config(
+        &self,
+        config: &CovarianceConfig,
+    ) -> Result<Weights, CutupError> {
+        let cov = self.adjusted_covariance(config)?;
+        let volatilities = cov.diagonal().map(f64::sqrt);
+        let (best, highest) = volatilities.argmax();
+        match long_only_max_ratio(&cov, &(volatilities / highest), best) {
+            Err(CutupError::Unbounded) => Err(CutupError::SingularCovariance),
+            result => result,
         }
-        Ok(weights)
     }
 
     /// Computes Equal Weight (EW) portfolio allocation.
@@ -2287,6 +2372,42 @@ fn long_only_weights(
     let weights = qp::solve_nonnegative(q, c, e, b, start)?;
     let total = weights.sum();
     Ok(Weights(weights.iter().map(|w| w / total).collect()))
+}
+
+/// Maximizes `aᵀw / sqrt(wᵀΣw)` over long-only portfolios summing to 1, for `a` with its
+/// largest entry `a[best] = 1`. With `y = w / aᵀw` this is minimizing `yᵀΣy` subject to
+/// `aᵀy = 1` and `y ≥ 0`, from one unit of `best`, then `w = y / 1ᵀy`.
+///
+/// Returns [`CutupError::Unbounded`] if the optimum lies in Σ's null space, where the ratio
+/// has no upper bound. That is the cutoff max_sharpe_allocation uses: a Rayleigh quotient
+/// within n·ε of the largest eigenvalue. The trace bounds that eigenvalue, so the
+/// decomposition is only needed near the cutoff.
+fn long_only_max_ratio(
+    cov: &DMatrix<f64>,
+    a: &DVector<f64>,
+    best: usize,
+) -> Result<Weights, CutupError> {
+    let n = cov.ncols();
+    let mut start = DVector::zeros(n);
+    start[best] = 1.0;
+    let weights = long_only_weights(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_column_slice(n, 1, a.as_slice()),
+        &DVector::from_element(1, 1.0),
+        start,
+    )?;
+
+    let w = DVector::from_column_slice(weights.as_slice());
+    let quotient = w.dot(&(cov * &w)) / w.norm_squared();
+    let cutoff = |largest: f64| quotient <= n as f64 * f64::EPSILON * largest;
+    if cutoff(cov.trace()) {
+        let eigen = SymmetricEigen::new(cov).ok_or(CutupError::SingularCovariance)?;
+        if cutoff(eigen.values.amax()) {
+            return Err(CutupError::Unbounded);
+        }
+    }
+    Ok(weights)
 }
 
 /// Returns `target` if some long-only portfolio reaches it: one within rounding of the
@@ -3494,6 +3615,68 @@ mod tests {
             at(0.0, DVector::zeros(3)),
             Err(CutupError::NoPositiveExcessReturn { .. })
         ));
+    }
+
+    #[test]
+    fn test_max_diversification_is_inverse_volatility_when_uncorrelated() {
+        // With no correlations, maximizing σᵀw / sqrt(wᵀΣw) gives w ∝ 1 / σ.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_weights_close(
+            &allocator.max_diversification_allocation().unwrap(),
+            &allocator.inverse_volatility_allocation().unwrap(),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_max_diversification_on_singular_covariance() {
+        // [4/7, 0, 3/7] is long-only with zero variance, so the ratio has no upper bound.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        assert_eq!(
+            allocator.max_diversification_allocation(),
+            Err(CutupError::SingularCovariance)
+        );
+
+        // Shrinkage gives every portfolio some variance.
+        let config = CovarianceConfig::default().with_shrinkage(0.3);
+        let weights = allocator
+            .max_diversification_allocation_with_config(&config)
+            .unwrap();
+        assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        // The collinear pair's zero-variance hedge shorts one asset, so long-only the ratio
+        // is bounded: every mix of perfectly correlated assets has a ratio of 1.
+        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let weights = allocator.max_diversification_allocation().unwrap();
+        assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+    }
+
+    #[test]
+    fn test_max_diversification_rejects_bad_input() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = CovarianceConfig::default().with_shrinkage(1.5);
+        assert_eq!(
+            allocator.max_diversification_allocation_with_config(&config),
+            Err(CutupError::InvalidConfig {
+                field: "shrinkage",
+                value: 1.5
+            })
+        );
+
+        let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_eq!(
+            allocator.max_diversification_allocation(),
+            Err(CutupError::ZeroVariance { asset: 1 })
+        );
     }
 
     #[test]
