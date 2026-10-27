@@ -62,9 +62,9 @@ All notable changes to this project are documented here. The format follows
 - Max Sharpe's tolerance for a risk-free rate at the minimum variance return is relative to
   that portfolio's terms `wᵢμᵢ`, which don't depend on units, instead of the largest expected
   return.
-- Risk parity checks its result before returning, against the budgets and with max
-  diversification's null-space cutoff, so rounding on a covariance with a zero-variance
-  long-only portfolio can't give weights instead of `SingularCovariance`.
+- Risk parity checks its result against max diversification's null-space cutoff before
+  returning, so rounding on a covariance with a zero-variance long-only portfolio can't
+  give weights instead of `SingularCovariance`.
 
 ## [0.2.4] - 2026-10-26
 
