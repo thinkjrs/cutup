@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The sum-to-one property test checks long-only methods to `1e-12`. Only the long-short
+  methods, whose weights can be in the thousands, are checked relative to their largest
+  position.
+
+### Fixed
+
+- The `compare` example's method column fits its longest label, so every row's weights line
+  up.
+
 ## [0.2.5] - 2026-10-27
 
 ### Added
