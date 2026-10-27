@@ -113,6 +113,12 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
         allocator.long_only_min_variance_allocation().unwrap(),
     ));
     out.push((
+        "long-only mean-variance".to_string(),
+        allocator
+            .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+            .unwrap(),
+    ));
+    out.push((
         "risk parity".to_string(),
         allocator.risk_parity_allocation().unwrap(),
     ));
@@ -207,6 +213,9 @@ proptest! {
             allocator.inverse_volatility_allocation().unwrap(),
             allocator.inverse_variance_allocation().unwrap(),
             allocator.long_only_min_variance_allocation().unwrap(),
+            allocator
+                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+                .unwrap(),
             allocator.risk_parity_allocation().unwrap(),
         ];
         long_only.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
@@ -399,6 +408,85 @@ proptest! {
         let gradient = &mu - &cov * &w * gamma;
         let spread = gradient.max() - gradient.min();
         prop_assert!(spread < 1e-9 * (1.0 + mu.amax()), "spread {spread}");
+    }
+
+    #[test]
+    fn long_only_mean_variance_satisfies_kkt(
+        returns in returns(),
+        gamma in 0.1f64..500.0,
+        fraction in 0.05f64..0.95,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+
+        // For a risk aversion, the gradient g = μ − γΣw of the utility is the same on every
+        // held asset and no higher on the others: no shift of weight between assets adds
+        // utility.
+        let averse = allocator
+            .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(gamma))
+            .unwrap();
+        let w = DVector::from_column_slice(averse.as_slice());
+        prop_assert!(w.iter().all(|&x| x >= 0.0), "{averse:?}");
+        prop_assert!((w.sum() - 1.0).abs() < 1e-12);
+        let risk = &cov * &w * gamma;
+        let gradient = &mu - &risk;
+        let level = w.dot(&gradient);
+        let tolerance = 1e-8 * (mu.amax() + risk.amax());
+        for i in 0..n {
+            prop_assert!(gradient[i] <= level + tolerance, "asset {i}: {averse:?}");
+            prop_assert!(w[i] * (gradient[i] - level).abs() <= tolerance, "asset {i}: {averse:?}");
+        }
+
+        // For a target return, the marginal variance Σw is λ₁ + λ₂μᵢ on every held asset and
+        // no lower on the others, for some multipliers λ.
+        let target = mu.min() + fraction * (mu.max() - mu.min());
+        let targeted = allocator
+            .long_only_mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .unwrap();
+        let w = DVector::from_column_slice(targeted.as_slice());
+        prop_assert!(w.iter().all(|&x| x >= 0.0), "{targeted:?}");
+        prop_assert!((w.sum() - 1.0).abs() < 1e-12);
+        prop_assert!((w.dot(&mu) - target).abs() < 1e-12 * mu.amax(), "{targeted:?}");
+        let marginal = &cov * &w;
+        let held: Vec<usize> = (0..n).filter(|&i| w[i] > 1e-9).collect();
+        let basis = DMatrix::from_fn(held.len(), 2, |k, j| if j == 0 { 1.0 } else { mu[held[k]] / mu.amax() });
+        let lambda = basis
+            .svd(true, true)
+            .solve(&DVector::from_fn(held.len(), |k, _| marginal[held[k]]), 1e-12)
+            .unwrap();
+        let tolerance = 1e-8 * marginal.amax();
+        for i in 0..n {
+            let residual = marginal[i] - lambda[0] - lambda[1] * mu[i] / mu.amax();
+            prop_assert!(residual >= -tolerance, "asset {i}: {targeted:?}");
+            prop_assert!(w[i] * residual.abs() <= tolerance, "asset {i}: {targeted:?}");
+        }
+    }
+
+    #[test]
+    fn long_only_mean_variance_matches_unconstrained_when_long(
+        returns in returns(),
+        gamma in 1.0f64..500.0,
+        fraction in 0.05f64..0.95,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        let target = mu.min() + fraction * (mu.max() - mu.min());
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        for config in [
+            MeanVarianceConfig::risk_aversion(gamma),
+            MeanVarianceConfig::target_return(target),
+        ] {
+            let unconstrained = allocator.mean_variance_allocation(&config).unwrap();
+            let long_only = allocator.long_only_mean_variance_allocation(&config).unwrap();
+            if unconstrained.iter().all(|&w| w >= 0.0) {
+                for (a, b) in unconstrained.iter().zip(&long_only) {
+                    prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
+                }
+            }
+        }
     }
 
     #[test]

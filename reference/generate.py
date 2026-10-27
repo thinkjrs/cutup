@@ -13,11 +13,13 @@ cutup's implementation:
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
   covariance, not by running the same solver as cutup.
-* Long-only minimum variance: support enumeration. Every subset of assets gets its own
-  closed-form minimum variance portfolio, and the lowest-variance one with no negative
-  weights is the optimum, since each candidate is feasible and the optimum is one of them.
-  This uses neither KKT multipliers nor an iterative solver, unlike cutup's active-set
-  method. Only covariances that aren't singular are used, where the optimum is unique.
+* Long-only minimum variance and mean-variance: support enumeration. On every subset of
+  assets, the KKT system with the others held at zero gives that subset's optimum, if it
+  is feasible. Among the candidates with no negative weights, the best objective is the
+  long-only optimum, since each candidate is feasible and the optimum is one of them. This
+  checks neither the multipliers' signs nor uses an iterative solver, unlike cutup's
+  active-set method. Only covariances that aren't singular are used, where the optimum is
+  unique. A target return outside the assets' expected returns is an error.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -101,18 +103,39 @@ def min_variance(cov: np.ndarray) -> np.ndarray:
     return kkt_min_norm(cov, np.zeros(n), ones[:, None], np.array([1.0]))
 
 
-def long_only_min_variance(cov: np.ndarray) -> np.ndarray:
-    n = cov.shape[0]
-    best, best_variance = None, np.inf
+def long_only(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and w ≥ 0 by support enumeration."""
+    n, m = e.shape
+    best, best_value = None, np.inf
     for mask in range(1, 2**n):
         support = [i for i in range(n) if mask >> i & 1]
-        inv_ones = np.linalg.solve(cov[np.ix_(support, support)], np.ones(len(support)))
+        kkt = np.block([[k[np.ix_(support, support)], e[support]], [e[support].T, np.zeros((m, m))]])
+        rhs = np.concatenate([c[support], b])
+        solution, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
+        # No feasible point on this support, such as a single asset away from the target.
+        if np.abs(kkt @ solution - rhs).max() > 1e-9 * (np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()):
+            continue
         candidate = np.zeros(n)
-        candidate[support] = inv_ones / inv_ones.sum()
-        variance = candidate @ cov @ candidate
-        if candidate.min() >= 0.0 and variance < best_variance:
-            best, best_variance = candidate, variance
+        candidate[support] = solution[: len(support)]
+        value = 0.5 * candidate @ k @ candidate - c @ candidate
+        if candidate.min() >= 0.0 and value < best_value:
+            best, best_value = candidate, value
     return best
+
+
+def long_only_min_variance(cov: np.ndarray) -> np.ndarray:
+    n = cov.shape[0]
+    return long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]))
+
+
+def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np.ndarray | str:
+    n = cov.shape[0]
+    if "risk_aversion" in params:
+        return long_only(params["risk_aversion"] * cov, mu, np.ones((n, 1)), np.array([1.0]))
+    target = params["target_return"]
+    if not mu.min() <= target <= mu.max():
+        return "TargetReturnOutOfRange"
+    return long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]))
 
 
 def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray | str:
@@ -235,6 +258,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return min_variance(adjusted)
         case "long_only_min_variance":
             return long_only_min_variance(adjusted)
+        case "long_only_mean_variance":
+            return long_only_mean_variance(adjusted, mu, params)
         case "mean_variance" if "risk_aversion" in params:
             return risk_aversion(adjusted, mu, params["risk_aversion"])
         case "mean_variance":
@@ -278,6 +303,43 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": name, "method": "long_only_min_variance", "params": {"regularization": 1e-5}, "tolerance": solver})
     for name in ["prices10x60", "near_singular4"]:
         out.append({"dataset": name, "method": "min_variance", "params": {"regularization": 1e-5}, "tolerance": solver})
+
+    # Long-only mean-variance, like long-only min variance, only on covariances that aren't
+    # singular. Low risk aversions and targets near the highest return make the constraint bind.
+    for name, gamma in [("orthogonal3", 50.0), ("two_asset", 50.0), ("two_blocks5", 100.0),
+                        ("prices10x60", 100.0), ("prices10x60", 5.0), ("near_singular4", 100.0)]:
+        out.append({"dataset": name, "method": "long_only_mean_variance", "params": {"risk_aversion": gamma}, "tolerance": solver})
+    for name in ["rank_deficient6", "collinear2"]:
+        out.append({
+            "dataset": name,
+            "method": "long_only_mean_variance",
+            "params": {"risk_aversion": 100.0, "shrinkage": 0.3},
+            "tolerance": solver,
+        })
+    out.append({
+        "dataset": "prices10x60",
+        "method": "long_only_mean_variance",
+        "params": {
+            "risk_aversion": 100.0,
+            "expected_returns": [0.0010, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        },
+        "tolerance": solver,
+    })
+    for name, fraction in [("two_asset", 0.5), ("two_blocks5", 0.75), ("prices10x60", 0.5),
+                           ("prices10x60", 0.9), ("near_singular4", 0.75)]:
+        mu = load_returns(datasets[name]).mean(axis=0)
+        target = round(float(mu.min() + fraction * (mu.max() - mu.min())), 6)
+        out.append({"dataset": name, "method": "long_only_mean_variance", "params": {"target_return": target}, "tolerance": solver})
+    out.append({
+        "dataset": "rank_deficient6",
+        "method": "long_only_mean_variance",
+        "params": {"target_return": 0.005, "shrinkage": 0.3},
+        "tolerance": solver,
+    })
+    # Every expected return is zero, so only zero can be targeted.
+    out.append({"dataset": "orthogonal3", "method": "long_only_mean_variance", "params": {"target_return": 0.0}, "tolerance": solver})
+    out.append({"dataset": "orthogonal3", "method": "long_only_mean_variance", "params": {"target_return": 0.01}, "tolerance": solver})
+    out.append({"dataset": "prices10x60", "method": "long_only_mean_variance", "params": {"target_return": 0.01}, "tolerance": solver})
     out.append({
         "dataset": "near_singular4",
         "method": "min_variance",
@@ -405,7 +467,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "long_only_min_variance", "mean_variance", "max_sharpe"):
+        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.

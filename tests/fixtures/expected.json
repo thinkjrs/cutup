@@ -500,35 +500,35 @@
       "dataset": "orthogonal3",
       "method": "long_only_min_variance",
       "tolerance": 1e-09,
-      "weights": [0.7619047619047619, 0.19047619047619047, 0.047619047619047616],
+      "weights": [0.7619047619049547, 0.1904761904760373, 0.04761904761900866],
       "condition_number": 16.0
     },
     {
       "dataset": "two_asset",
       "method": "long_only_min_variance",
       "tolerance": 1e-09,
-      "weights": [0.261156186612576, 0.7388438133874239],
+      "weights": [0.2611561866129193, 0.7388438133870817],
       "condition_number": 4.196
     },
     {
       "dataset": "two_blocks5",
       "method": "long_only_min_variance",
       "tolerance": 1e-09,
-      "weights": [0.0, 0.08609666503447477, 0.10432886101120081, 0.3390059098630847, 0.47056856409123976],
+      "weights": [0.0, 0.08609666503429156, 0.10432886101107915, 0.33900590986338086, 0.4705685640912484],
       "condition_number": 74.99
     },
     {
       "dataset": "prices10x60",
       "method": "long_only_min_variance",
       "tolerance": 1e-09,
-      "weights": [0.11444497568914778, 0.12635158145944306, 0.0, 0.0, 0.3010809984173048, 0.14149421574389276, 0.15670800504368226, 0.0, 0.0, 0.15992022364652933],
+      "weights": [0.11444497568857094, 0.12635158145950884, 0.0, 0.0, 0.3010809984174186, 0.141494215744015, 0.15670800504381194, 0.0, 0.0, 0.15992022364667405],
       "condition_number": 19.41
     },
     {
       "dataset": "near_singular4",
       "method": "long_only_min_variance",
       "tolerance": 8.1e-08,
-      "weights": [0.26033668445185754, 0.6133546099073913, 0.0, 0.12630870564075117],
+      "weights": [0.2603366844523265, 0.6133546099072915, 0.0, 0.12630870564038246],
       "condition_number": 8061000.0
     },
     {
@@ -538,7 +538,7 @@
         "shrinkage": 0.3
       },
       "tolerance": 1e-09,
-      "weights": [0.12314543597764673, 0.20064155763697433, 0.21276866663224756, 0.2184745339699238, 0.2449698057832075],
+      "weights": [0.12314543597778108, 0.20064155763696634, 0.21276866663218977, 0.2184745339699142, 0.24496980578314806],
       "condition_number": 6.996
     },
     {
@@ -548,7 +548,7 @@
         "shrinkage": 0.3
       },
       "tolerance": 1e-09,
-      "weights": [0.12335375860801247, 0.14576260443427944, 0.04874456972333753, 0.02541073354556331, 0.23660420096763524, 0.10556146470357083, 0.1303777073380747, 0.0, 0.04229577563928492, 0.14188918504024164],
+      "weights": [0.12335375860740572, 0.14576260443428068, 0.04874456972340511, 0.025410733545639594, 0.2366042009677092, 0.10556146470365627, 0.13037770733824006, 0.0, 0.042295775639346354, 0.14188918504031703],
       "condition_number": 7.24
     },
     {
@@ -558,7 +558,7 @@
         "shrinkage": 0.3
       },
       "tolerance": 1e-09,
-      "weights": [0.26012327989185025, 0.5082034733134467, 0.11570085169817607, 0.11597239509652695],
+      "weights": [0.2601232798922864, 0.5082034733132748, 0.11570085169805072, 0.1159723950963885],
       "condition_number": 7.325
     },
     {
@@ -568,7 +568,7 @@
         "shrinkage": 0.3
       },
       "tolerance": 1e-09,
-      "weights": [0.13454882214704547, 0.17995952425726328, 0.0266432083747208, 0.1609351511689929, 0.1888865850059184, 0.3090267090460592],
+      "weights": [0.13454882214694264, 0.17995952425732095, 0.026643208374849327, 0.16093515116893575, 0.18888658500587172, 0.3090267090460806],
       "condition_number": 12.16
     },
     {
@@ -578,7 +578,7 @@
         "shrinkage": 0.3
       },
       "tolerance": 1e-09,
-      "weights": [0.9772727272727272, 0.022727272727272846],
+      "weights": [0.9772727272730212, 0.022727272726979254],
       "condition_number": 5.667
     },
     {
@@ -588,7 +588,7 @@
         "regularization": 1e-05
       },
       "tolerance": 1e-09,
-      "weights": [0.11993311934731511, 0.13117268636328572, 0.0097388288732727, 0.0, 0.2918446559730604, 0.13685863372951945, 0.1517559521427036, 0.0, 0.0, 0.15869612357084315],
+      "weights": [0.11993311934713198, 0.1311726863634438, 0.009738828873339224, 0.0, 0.29184465597307574, 0.13685863372949122, 0.15175595214264753, 0.0, 0.0, 0.15869612357087023],
       "condition_number": 15.97
     },
     {
@@ -598,7 +598,7 @@
         "regularization": 1e-05
       },
       "tolerance": 1e-09,
-      "weights": [0.26054690438579475, 0.5941679333123683, 0.07165861871757022, 0.07362654358426676],
+      "weights": [0.26054690438404476, 0.5941679333129829, 0.0716586187181391, 0.07362654358483331],
       "condition_number": 47.22
     },
     {
@@ -620,6 +620,190 @@
       "tolerance": 1e-09,
       "weights": [0.26054690438579475, 0.5941679333123683, 0.07165861871757022, 0.07362654358426676],
       "condition_number": 47.22
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 50.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7619047619047663, 0.19047619047618702, 0.04761904761904657],
+      "condition_number": 16.0
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 50.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4741379310344705, 0.5258620689655296],
+      "condition_number": 4.196
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.48962349902590174, 0.04191075053182389, 0.011793529809919929, 0.4566722206323544],
+      "condition_number": 74.99
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.07546509252008282, 0.11074295029142066, 0.005475311279147394, 0.0, 0.24124802493105788, 0.2636273216507526, 0.22114667846483882, 0.0, 0.08229462086269979, 0.0],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 5.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.0, 0.0, 0.0, 0.977349474505892, 0.0, 0.0, 0.02265052549410797, 0.0],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0
+      },
+      "tolerance": 8.1e-08,
+      "weights": [0.18367152834436923, 0.7283020729678359, 0.0, 0.08802639868779545],
+      "condition_number": 8061000.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0,
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.10063568394611566, 0.0, 0.27240997811940365, 0.6269543379344807, 0.0],
+      "condition_number": 12.16
+    },
+    {
+      "dataset": "collinear2",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0,
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9281326781326761, 0.07186732186732384],
+      "condition_number": 5.667
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0,
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.16025601918094207, 0.10542616233716681, 0.010163848763505628, 0.0, 0.3281359296974555, 0.12558733870316094, 0.08470755440878618, 0.0, 0.0, 0.1857231469089826],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.002125
+      },
+      "tolerance": 1e-09,
+      "weights": [0.5000000000000007, 0.5000000000000001],
+      "condition_number": 4.196
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.000754
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.6409216811850186, 0.0, 0.0, 0.3590783188149813],
+      "condition_number": 74.99
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.001888
+      },
+      "tolerance": 1e-09,
+      "weights": [0.11196142245270348, 0.12617715445074965, 0.005822718650470002, 0.0, 0.3003033878206452, 0.16635867093291362, 0.17578285114523667, 0.0, 0.0, 0.11359379454728155],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.004516
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.010678360445206436, 0.0, 0.0, 0.0, 0.5316198672925031, 0.1688090323772837, 0.0, 0.2888927398850055, 0.0],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.002476
+      },
+      "tolerance": 8.1e-08,
+      "weights": [0.17924093304596248, 0.7349450606723864, 0.0, 0.08581400628165178],
+      "condition_number": 8061000.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.005,
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1227876115920801, 0.178961374698288, 0.006982509133929797, 0.1710537857317357, 0.23560640501643693, 0.28460831382752955],
+      "condition_number": 12.16
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7619047619049547, 0.1904761904760373, 0.04761904761900866],
+      "condition_number": 16.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.01
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 16.0
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.01
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 19.41
     },
     {
       "dataset": "near_singular4",
