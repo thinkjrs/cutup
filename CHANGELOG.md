@@ -17,11 +17,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Min variance, mean-variance and max Sharpe could return `SingularCovariance` for a
-  well-conditioned covariance, such as one heavily shrunk. nalgebra's SVD with a convergence
-  tolerance of exactly machine epsilon can return a decomposition that doesn't reconstruct
-  the matrix. It now uses nalgebra's default tolerance, and KKT solutions are refined
-  against the exact system.
+- Min variance, mean-variance and max Sharpe could return `SingularCovariance`, or slightly
+  inaccurate weights, on valid input: a heavily shrunk covariance, or a rank-deficient one
+  from fewer observations than assets. nalgebra's SVD can return factors that don't
+  reconstruct the matrix, by up to 1e-2. cutup no longer uses it. Equality-constrained
+  problems are solved by the null-space method, with the reduced system and max Sharpe's
+  covariance decomposed by Jacobi rotations, which are accurate to rounding. Results are
+  unchanged up to rounding, including the minimum-norm weights on a singular covariance.
 
 ## [0.2.3] - 2026-10-23
 
