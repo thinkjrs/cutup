@@ -1892,18 +1892,12 @@ impl PortfolioAllocator {
                 CutupError::NotConverged
             }
         };
-        // Rounding can stall the iteration on a direction of almost no variance, where the
-        // risk contributions are nothing like the budgets, or let it converge on the rounding
-        // left in a singular C. So y is checked before it's returned, with max
-        // diversification's null-space cutoff.
+        // When a long-only portfolio has zero variance, rounding can stall the iteration on
+        // that direction, or let it converge on the rounding left in a singular C. So y is
+        // checked with max diversification's null-space cutoff before it's returned.
         let finish = |u: &DVector<f64>| {
             if in_null_space(&sigma, u)? {
                 return Err(CutupError::SingularCovariance);
-            }
-            let marginal = &sigma * u;
-            let shares = u.component_mul(&marginal) / u.dot(&marginal);
-            if (shares - &b).amax() > 1e-8 {
-                return Err(failed(u));
             }
             let w = u.component_div(&volatilities);
             Ok(&w / w.sum())
@@ -2445,6 +2439,8 @@ fn long_only_max_ratio(
     best: usize,
 ) -> Result<Option<Weights>, CutupError> {
     let n = cov.ncols();
+    // Before the solve, so that correlations that can't be computed are reported as such.
+    let (correlation, volatilities) = correlation(cov)?;
     let mut start = DVector::zeros(n);
     start[best] = 1.0;
     let weights = long_only_weights(
@@ -2455,7 +2451,6 @@ fn long_only_max_ratio(
         start,
     )?;
 
-    let (correlation, volatilities) = correlation(cov)?;
     let u = DVector::from_column_slice(weights.as_slice()).component_mul(&volatilities);
     if in_null_space(&correlation, &u)? {
         return Ok(None);
