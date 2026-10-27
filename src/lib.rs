@@ -787,8 +787,9 @@ impl PortfolioAllocator {
     /// accounts for expected returns, use [`PortfolioAllocator::mean_variance_allocation`].
     ///
     /// When Σ is singular (no more rows of returns than assets, or perfectly collinear assets),
-    /// many portfolios share the minimum variance and the one with the smallest norm is
-    /// returned. That minimum is often zero, an artifact of fitting too little data. Add
+    /// many portfolios share the minimum variance and the one with the smallest norm in
+    /// correlation units, `diag(σ)w`, is returned, so the choice doesn't depend on each asset's
+    /// units. That minimum is often zero, an artifact of fitting too little data. Add
     /// shrinkage with [`PortfolioAllocator::min_variance_allocation_with_config`] for a unique,
     /// better-conditioned answer.
     ///
@@ -1257,8 +1258,8 @@ impl PortfolioAllocator {
     /// The maximum exists only when the risk-free rate is below the expected return of the
     /// minimum variance portfolio, `r_mvp = 1ᵀΣ⁻¹μ / 1ᵀΣ⁻¹1`. At or above it, the formula
     /// would give the portfolio with the *lowest* Sharpe ratio, so an error is returned
-    /// instead. A rate within `1e-10 · (|r_mvp| + max |μᵢ|)` of `r_mvp` counts as at it: the
-    /// weights there are pure leverage on rounding noise.
+    /// instead. A rate within `1e-10 · Σ |wᵢμᵢ|` of `r_mvp`, for the minimum variance weights
+    /// `w`, counts as at it: the weights there are pure leverage on rounding noise.
     ///
     /// When Σ is singular, its null space (portfolio changes that add no variance) decides
     /// the outcome:
@@ -1270,7 +1271,11 @@ impl PortfolioAllocator {
     ///   rate, it is the minimum variance portfolio and the rate isn't below its return:
     ///   [`CutupError::RiskFreeRateTooHigh`].
     /// * Otherwise the weights above are computed with the pseudo-inverse, and are the
-    ///   minimum-norm optimum, as with [`PortfolioAllocator::min_variance_allocation`].
+    ///   minimum-norm optimum in correlation units, as with
+    ///   [`PortfolioAllocator::min_variance_allocation`].
+    ///
+    /// The null space is that of the correlation matrix `C`, with `Σ = diag(σ) C diag(σ)`, so
+    /// the outcome doesn't depend on each asset's units.
     ///
     /// # Arguments
     ///
@@ -1333,27 +1338,27 @@ impl PortfolioAllocator {
             min_variance_return,
         };
 
-        // Decompose Σ (scaled to unit average variance; the weights don't depend on the
-        // scale) into its range and its null space, with numpy.linalg.pinv's cutoff.
-        let scale = cov.trace() / n as f64;
-        if !(scale.is_finite() && scale > 0.0) {
-            return Err(CutupError::SingularCovariance);
-        }
-        // Σ is positive semidefinite, so its eigenvalues are its singular values.
-        let eigen = SymmetricEigen::new(&(cov / scale)).ok_or(CutupError::SingularCovariance)?;
+        // Decompose the correlation matrix C into its range and its null space, with
+        // numpy.linalg.pinv's cutoff. In units u = Dw, with D = diag(σ), the variance is uᵀCu,
+        // the budget (D⁻¹1)ᵀu and the excess return (D⁻¹(μ − r_f))ᵀu.
+        let (correlation, volatilities) = correlation(&cov)?;
+        // C is positive semidefinite, so its eigenvalues are its singular values.
+        let eigen = SymmetricEigen::new(&correlation).ok_or(CutupError::SingularCovariance)?;
         let (range, null) = eigen.split(eigen.values.amax() * n as f64 * f64::EPSILON);
+        let budget = ones.component_div(&volatilities);
+        let earned = excess.component_div(&volatilities);
 
         if !null.is_empty() {
-            // Coordinates of 1 and of the excess returns in the null space.
-            let a = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&ones)));
-            let b = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&excess)));
-            let noise = 1e-9 * excess.norm().max(f64::MIN_POSITIVE);
-            if a.norm() > 1e-9 * (n as f64).sqrt() {
-                // A fully invested zero-variance portfolio exists, w0 ∝ Σ aₖvₖ, earning
+            // Coordinates of the budget and the excess returns in the null space.
+            let a = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&budget)));
+            let b = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&earned)));
+            let noise = 1e-9 * earned.norm().max(f64::MIN_POSITIVE);
+            if a.norm() > 1e-9 * budget.norm() {
+                // A fully invested zero-variance portfolio exists, w0 ∝ D⁻¹ Σ aₖvₖ, earning
                 // excess return b·a / a·a. Any part of b not along a is a budget-neutral,
                 // variance-free change that adds return.
                 let along = b.dot(&a) / a.dot(&a);
-                if (&b - &a * along).norm() > noise || along > noise {
+                if (&b - &a * along).norm() > noise || along * a.norm() > noise {
                     return Err(CutupError::Unbounded);
                 }
                 return Err(too_high(risk_free_rate + along));
@@ -1363,15 +1368,22 @@ impl PortfolioAllocator {
             }
         }
 
-        // Σ⁺x restricted to the range, where every remaining solution lives.
+        // Σ⁺x = D⁻¹C⁺D⁻¹x restricted to the range, where every remaining solution lives.
         let pinv = |x: &DVector<f64>| {
-            range.iter().fold(DVector::zeros(n), |acc, (sigma, v)| {
-                acc + v * (v.dot(x) / sigma)
-            })
+            let x = x.component_div(&volatilities);
+            range
+                .iter()
+                .fold(DVector::zeros(n), |acc, (sigma, v)| {
+                    acc + v * (v.dot(&x) / sigma)
+                })
+                .component_div(&volatilities)
         };
         let inv_ones = pinv(&ones);
         let min_variance_return = inv_ones.dot(&mu) / inv_ones.sum();
-        let tolerance = 1e-10 * (min_variance_return.abs() + mu.amax());
+        // The rounding in r_mvp comes from its terms wᵢμᵢ, which don't change when an asset is
+        // rescaled.
+        let terms = inv_ones.component_mul(&mu).abs().sum() / inv_ones.sum().abs();
+        let tolerance = 1e-10 * terms;
         if risk_free_rate >= min_variance_return - tolerance {
             return Err(too_high(min_variance_return));
         }
@@ -1395,8 +1407,9 @@ impl PortfolioAllocator {
     /// A long-only portfolio has a positive Sharpe ratio only if some asset's expected
     /// return is above the risk-free rate, so this needs the rate to be below the highest
     /// expected return, not below the minimum variance portfolio's return as
-    /// [`PortfolioAllocator::max_sharpe_allocation`] does. A rate within
-    /// `1e-10 · max(|r_f|, max |μᵢ|)` of the highest expected return counts as at it. When Σ is
+    /// [`PortfolioAllocator::max_sharpe_allocation`] does. An expected return within
+    /// `1e-10 · max(|r_f|, |μᵢ|)` of the rate counts as at it, a tolerance in each asset's own
+    /// units. When Σ is
     /// invertible and [`PortfolioAllocator::max_sharpe_allocation`] returns weights with no
     /// short positions, the two agree.
     ///
@@ -1470,8 +1483,11 @@ impl PortfolioAllocator {
         let (best, highest_return) = mu.argmax();
         let scale = risk_free_rate.abs().max(mu.amax());
         let excess = mu.map(|m| m / scale - risk_free_rate / scale);
-        // A zero scale means every return and the rate are zero.
-        if scale == 0.0 || excess[best] <= 1e-10 {
+        // An excess return counts only beyond the rounding of its own terms, so that rescaling
+        // one asset's returns doesn't change whether it has one. A zero scale means every
+        // return and the rate are zero.
+        let positive = |i: usize| excess[i] > 1e-10 * risk_free_rate.abs().max(mu[i].abs()) / scale;
+        if scale == 0.0 || !(0..mu.len()).any(positive) {
             return Err(CutupError::NoPositiveExcessReturn {
                 risk_free_rate,
                 highest_return,
@@ -1489,11 +1505,11 @@ impl PortfolioAllocator {
     /// The ratio is the weighted average volatility over the portfolio's volatility, which
     /// is at least 1, and is 1 only when the held assets are perfectly correlated. It is
     /// long-only by definition. This is the long-only max Sharpe problem with `σ` in place of
-    /// the excess returns. Rescaling an asset doesn't change the ratio, so it is solved on the
-    /// correlation matrix `C`: with `v = diag(σ)·w / σᵀw`, minimize `vᵀCv` subject to
-    /// `1ᵀv = 1` and `v ≥ 0`, then `w ∝ v / σ`. That keeps assets whose volatilities differ by
-    /// many orders of magnitude accurate. For uncorrelated assets it is inverse volatility
-    /// weighting.
+    /// the excess returns, solved the same way: with `y = w / σᵀw`, minimize `yᵀΣy` subject to
+    /// `σᵀy = 1` and `y ≥ 0`, then `w = y / 1ᵀy`. The solver works in correlation units
+    /// `diag(σ)·y`, where that is minimizing `vᵀCv` for the correlation matrix `C` subject to
+    /// `1ᵀv = 1`, so assets whose volatilities differ by many orders of magnitude stay
+    /// accurate. For uncorrelated assets it is inverse volatility weighting.
     ///
     /// When Σ is singular, several portfolios can share the maximum, and which one is
     /// returned depends on the solver's path. Use
@@ -1589,20 +1605,9 @@ impl PortfolioAllocator {
     ) -> Result<Weights, CutupError> {
         let cov = self.adjusted_covariance(config)?;
         let volatilities = cov.diagonal().map(f64::sqrt);
-        // With v = diag(σ)·w the ratio is 1ᵀv / sqrt(vᵀCv), for the correlation matrix C. It
-        // doesn't depend on each asset's units, so solving on C keeps a tiny volatility from
-        // swamping the solver and the null-space cutoff.
-        let correlation = DMatrix::from_fn(cov.nrows(), cov.ncols(), |i, j| {
-            cov[(i, j)] / (volatilities[i] * volatilities[j])
-        });
-        if !correlation.iter().all(|c| c.is_finite()) {
-            return Err(CutupError::SingularCovariance);
-        }
-        let v = long_only_max_ratio(&correlation, &DVector::from_element(cov.ncols(), 1.0), 0)?
-            .ok_or(CutupError::SingularCovariance)?;
-        let w: Vec<f64> = v.iter().zip(&volatilities).map(|(v, s)| v / s).collect();
-        let total: f64 = w.iter().sum();
-        Ok(Weights(w.iter().map(|w| w / total).collect()))
+        let (best, highest) = volatilities.argmax();
+        long_only_max_ratio(&cov, &(volatilities / highest), best)?
+            .ok_or(CutupError::SingularCovariance)
     }
 
     /// Computes Equal Weight (EW) portfolio allocation.
@@ -1859,15 +1864,19 @@ impl PortfolioAllocator {
     /// long-only `d` has `dᵀΣd = 0`: then `y` grows along `d`, and the normalized `y`
     /// approaches that zero-variance portfolio until the iteration breaks down. A failed
     /// iteration is classified by the variance of its last normalized `y`.
+    ///
+    /// The iteration runs on the correlation matrix `C`, in units `u = diag(σ)y`, where the
+    /// risk contributions `uᵢ(Cu)ᵢ = yᵢ(Σy)ᵢ` are the same. The weights are then `u / σ`,
+    /// normalized. That makes the tolerances independent of each asset's units.
     fn risk_budget_weights(
         cov: &DMatrix<f64>,
         budgets: &DVector<f64>,
     ) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
-        // Scaling Σ to an average variance of 1 and b to a sum of 1 makes the tolerances
-        // below independent of the input's scale. Neither changes the normalized solution.
-        // Dividing b by its largest entry first keeps the sum from overflowing.
-        let sigma = cov / (cov.trace() / n as f64);
+        let (sigma, volatilities) = correlation(cov)?;
+        // Scaling b to a sum of 1 makes the tolerances below independent of its scale, and
+        // doesn't change the normalized solution. Dividing b by its largest entry first keeps
+        // the sum from overflowing.
         let b = budgets / budgets.max();
         let b = &b / b.sum();
         let smallest_budget = b.min();
@@ -1882,6 +1891,22 @@ impl PortfolioAllocator {
             } else {
                 CutupError::NotConverged
             }
+        };
+        // Rounding can stall the iteration on a direction of almost no variance, where the
+        // risk contributions are nothing like the budgets, or let it converge on the rounding
+        // left in a singular C. So y is checked before it's returned, with max
+        // diversification's null-space cutoff.
+        let finish = |u: &DVector<f64>| {
+            if in_null_space(&sigma, u)? {
+                return Err(CutupError::SingularCovariance);
+            }
+            let marginal = &sigma * u;
+            let shares = u.component_mul(&marginal) / u.dot(&marginal);
+            if (shares - &b).amax() > 1e-8 {
+                return Err(failed(u));
+            }
+            let w = u.component_div(&volatilities);
+            Ok(&w / w.sum())
         };
 
         // Start from inverse volatility, scaled so that yᵀΣy = 1 as at the solution.
@@ -1916,11 +1941,11 @@ impl PortfolioAllocator {
                 // A line search would only see rounding in f from here on.
                 if scaled >= previous {
                     // Rounding noise: y is as close as it gets.
-                    return Ok(&y / y.sum());
+                    return finish(&y);
                 }
                 y -= step;
                 if scaled < 1e-20 {
-                    return Ok(&y / y.sum());
+                    return finish(&y);
                 }
                 previous = scaled;
                 continue;
@@ -2371,6 +2396,27 @@ pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> Result<Weights, CutupEr
     PortfolioAllocator::from_prices(prices)?.min_variance_allocation()
 }
 
+/// Splits a covariance into the correlation matrix `C` and the volatilities `σ`, with
+/// `Σ = diag(σ) C diag(σ)`. Working on `C` in units `u = diag(σ)w` keeps assets whose
+/// volatilities are many orders of magnitude apart accurate, and makes cutoffs independent of
+/// each asset's units.
+///
+/// Returns [`CutupError::SingularCovariance`] if some variance isn't positive or a
+/// correlation isn't finite.
+fn correlation(cov: &DMatrix<f64>) -> Result<(DMatrix<f64>, DVector<f64>), CutupError> {
+    let volatilities = cov.diagonal().map(f64::sqrt);
+    // Dividing by each volatility in turn, so that tiny volatilities' product can't underflow.
+    let correlation = DMatrix::from_fn(cov.nrows(), cov.ncols(), |i, j| {
+        cov[(i, j)] / volatilities[i] / volatilities[j]
+    });
+    if volatilities.iter().any(|&s| s.is_nan() || s <= 0.0)
+        || correlation.iter().any(|c| !c.is_finite())
+    {
+        return Err(CutupError::SingularCovariance);
+    }
+    Ok((correlation, volatilities))
+}
+
 /// Solves `minimize ½ wᵀQw − cᵀw subject to Eᵀw = b and w ≥ 0` from the feasible `start`,
 /// and rescales the solution to sum to 1. With a budget constraint `1ᵀw = 1`, that only
 /// removes the rounding left by clamping at zero; for max Sharpe it maps `y` back to `w`.
@@ -2390,10 +2436,9 @@ fn long_only_weights(
 /// largest entry `a[best] = 1`. With `y = w / aᵀw` this is minimizing `yᵀΣy` subject to
 /// `aᵀy = 1` and `y ≥ 0`, from one unit of `best`, then `w = y / 1ᵀy`.
 ///
-/// Returns `None` if the optimum lies in Σ's null space, where the ratio has no upper bound,
-/// so each caller can name its own error. That is the cutoff max_sharpe_allocation uses: a
-/// Rayleigh quotient within n·ε of the largest eigenvalue. The trace bounds that eigenvalue,
-/// so the decomposition is only needed near the cutoff.
+/// Returns `None` if the optimum, in correlation units `u = diag(σ)w`, lies in the
+/// correlation matrix's null space (see [`in_null_space`]), where the ratio has no upper
+/// bound, so each caller can name its own error.
 fn long_only_max_ratio(
     cov: &DMatrix<f64>,
     a: &DVector<f64>,
@@ -2410,16 +2455,27 @@ fn long_only_max_ratio(
         start,
     )?;
 
-    let w = DVector::from_column_slice(weights.as_slice());
-    let quotient = w.dot(&(cov * &w)) / w.norm_squared();
-    let cutoff = |largest: f64| quotient <= n as f64 * f64::EPSILON * largest;
-    if cutoff(cov.trace()) {
-        let eigen = SymmetricEigen::new(cov).ok_or(CutupError::SingularCovariance)?;
-        if cutoff(eigen.values.amax()) {
-            return Ok(None);
-        }
+    let (correlation, volatilities) = correlation(cov)?;
+    let u = DVector::from_column_slice(weights.as_slice()).component_mul(&volatilities);
+    if in_null_space(&correlation, &u)? {
+        return Ok(None);
     }
     Ok(Some(weights))
+}
+
+/// Whether `u` lies in the null space of the correlation matrix `c`, with the cutoff
+/// max_sharpe_allocation uses: a Rayleigh quotient `uᵀCu / uᵀu` within n·ε of the largest
+/// eigenvalue. The trace, n, bounds that eigenvalue, so the decomposition is only needed near
+/// the cutoff.
+fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, CutupError> {
+    let n = c.ncols() as f64;
+    let quotient = u.dot(&(c * u)) / u.norm_squared();
+    let cutoff = |largest: f64| quotient <= n * f64::EPSILON * largest;
+    if !cutoff(n) {
+        return Ok(false);
+    }
+    let eigen = SymmetricEigen::new(c).ok_or(CutupError::SingularCovariance)?;
+    Ok(cutoff(eigen.values.amax()))
 }
 
 /// Returns `target` if some long-only portfolio reaches it: one within rounding of the
@@ -3283,8 +3339,9 @@ mod tests {
             ],
         );
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        // numpy.linalg.pinv's minimum-norm solution of the same KKT system.
-        let expected = Weights(vec![0.230123253, 0.270499312, 0.278914760, 0.220462675]);
+        // numpy.linalg.pinv's minimum-norm solution of the same KKT system, in correlation
+        // units u = diag(σ)w.
+        let expected = Weights(vec![0.275093649, 0.331571165, 0.219203116, 0.174132070]);
         assert_weights_close(
             &allocator.min_variance_allocation().unwrap(),
             &expected,
@@ -3662,20 +3719,67 @@ mod tests {
     }
 
     #[test]
-    fn test_max_diversification_with_volatilities_far_apart() {
-        // Two uncorrelated assets are inverse volatility however far apart their volatilities
-        // are. Solving on Σ in raw units gave [1, 0] here, with a ratio of 1 instead of √2.
-        for s in [1e-4, 1e-8, 1e-12] {
-            let returns = dmatrix![1.0, s; -1.0, s; 1.0, -s; -1.0, -s];
-            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-            let weights = allocator.max_diversification_allocation().unwrap();
-            let expected = allocator.inverse_volatility_allocation().unwrap();
+    fn test_volatilities_far_apart() {
+        // Two uncorrelated assets have closed forms however far apart their volatilities are:
+        // inverse volatility for max diversification and risk parity, inverse variance for
+        // min variance, and (μᵢ / σᵢ²)-weighting for max Sharpe. Solving on Σ in raw units
+        // got these wrong, or returned errors, at a gap of 1e8. The unit-free methods are
+        // accurate relative to each weight. Min variance's weights are about 1 and s², so only
+        // absolute accuracy means anything for the small one.
+        let close = |weights: &Weights, expected: &Weights, s: f64| {
             for (w, e) in weights.iter().zip(expected.iter()) {
                 assert!(
                     (w - e).abs() <= 1e-12 * e,
                     "s = {s}: {weights:?} vs {expected:?}"
                 );
             }
+        };
+        let absolute = |weights: &Weights, expected: &Weights, s: f64| {
+            for (w, e) in weights.iter().zip(expected.iter()) {
+                assert!(
+                    (w - e).abs() <= 1e-15,
+                    "s = {s}: {weights:?} vs {expected:?}"
+                );
+            }
+        };
+        for s in [1e-4, 1e-8, 1e-12] {
+            let returns = dmatrix![1.0, s; -1.0, s; 1.0, -s; -1.0, -s];
+            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            let inverse_volatility = allocator.inverse_volatility_allocation().unwrap();
+            let inverse_variance = allocator.inverse_variance_allocation().unwrap();
+            close(
+                &allocator.max_diversification_allocation().unwrap(),
+                &inverse_volatility,
+                s,
+            );
+            close(
+                &allocator.risk_parity_allocation().unwrap(),
+                &inverse_volatility,
+                s,
+            );
+            absolute(
+                &allocator.min_variance_allocation().unwrap(),
+                &inverse_variance,
+                s,
+            );
+            absolute(
+                &allocator.long_only_min_variance_allocation().unwrap(),
+                &inverse_variance,
+                s,
+            );
+
+            // Equal Sharpe ratios: μᵢ ∝ σᵢ gives weights ∝ 1 / σᵢ.
+            let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.1, 0.1 * s]);
+            close(
+                &allocator.max_sharpe_allocation(&config).unwrap(),
+                &inverse_volatility,
+                s,
+            );
+            close(
+                &allocator.long_only_max_sharpe_allocation(&config).unwrap(),
+                &inverse_volatility,
+                s,
+            );
         }
     }
 

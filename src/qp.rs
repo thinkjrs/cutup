@@ -17,7 +17,12 @@ type Solution = (DVector<f64>, DVector<f64>);
 /// quadratic in `v` with the positive semidefinite Hessian `ZᵀKZ`, solved with its
 /// pseudo-inverse (eigenvalues below `size · ε` of the largest count as zero, matching
 /// `numpy.linalg.pinv`). Since `Y` and `Z` are orthogonal, a singular `K` still gives an exact
-/// optimum, the one with the smallest norm.
+/// optimum, the one with the smallest norm in the rescaled variables below.
+///
+/// The variables are first rescaled to `u = Dx`, with `D = diag(sqrt(Kᵢᵢ))`, so that `K` has
+/// a unit diagonal: a covariance becomes the correlation matrix. Then neither the solution
+/// nor the cutoffs depend on each variable's units, and variables whose variances are many
+/// orders of magnitude apart don't lose accuracy.
 ///
 /// The solution is then checked against the KKT system. If it doesn't satisfy it, the problem
 /// has no optimum, either because the objective is unbounded or because the constraints are
@@ -28,7 +33,67 @@ pub(crate) fn solve_kkt(
     e: &DMatrix<f64>,
     b: &DVector<f64>,
 ) -> Result<Option<Solution>, CutupError> {
-    solve_noisy_kkt(k, c, e, b, 0.0)
+    let units = Units::new(k, c, e, b);
+    Ok(
+        solve_noisy_kkt(&units.k, &units.c, &units.e, &units.b, 0.0)?
+            .map(|(u, multipliers)| (units.original(&u), units.original_multipliers(&multipliers))),
+    )
+}
+
+/// A problem in `x` restated in `u = Dx`, with `D = diag(sqrt(Kᵢᵢ))`: `K` becomes
+/// `D⁻¹KD⁻¹`, with a unit diagonal, and `c` and the rows of `E` are divided by `D`. The
+/// solution's `x ≥ 0` is unchanged. Each column of `E` and its entry of `b` are also divided
+/// by the column's largest entry first, so that the division by `D` can't overflow; that
+/// scales the multipliers, which are scaled back. A zero or non-finite `Kᵢᵢ` keeps its
+/// variable's scale, so a linear objective's free block or a bad input passes through.
+struct Units {
+    k: DMatrix<f64>,
+    c: DVector<f64>,
+    e: DMatrix<f64>,
+    b: DVector<f64>,
+    scales: DVector<f64>,
+    column_scales: Vec<f64>,
+}
+
+impl Units {
+    fn new(k: &DMatrix<f64>, c: &DVector<f64>, e: &DMatrix<f64>, b: &DVector<f64>) -> Self {
+        let scales = k.diagonal().map(|v| match v.sqrt() {
+            s if s.is_finite() && s > 0.0 => s,
+            _ => 1.0,
+        });
+        let column_scales: Vec<f64> = e
+            .column_iter()
+            .map(|column| match column.amax() {
+                s if s.is_finite() && s > 0.0 => s,
+                _ => 1.0,
+            })
+            .collect();
+        // Dividing by each scale in turn, so that tiny scales' product can't underflow.
+        Units {
+            k: DMatrix::from_fn(k.nrows(), k.ncols(), |i, j| {
+                k[(i, j)] / scales[i] / scales[j]
+            }),
+            c: c.component_div(&scales),
+            e: DMatrix::from_fn(e.nrows(), e.ncols(), |i, j| {
+                e[(i, j)] / column_scales[j] / scales[i]
+            }),
+            b: DVector::from_fn(b.len(), |j, _| b[j] / column_scales[j]),
+            scales,
+            column_scales,
+        }
+    }
+
+    /// `x = D⁻¹u`.
+    fn original(&self, u: &DVector<f64>) -> DVector<f64> {
+        u.component_div(&self.scales)
+    }
+
+    /// The multipliers of the original constraints.
+    fn original_multipliers(&self, multipliers: &DVector<f64>) -> DVector<f64> {
+        DVector::from_fn(multipliers.len(), |j, _| {
+            multipliers[j] / self.column_scales[j]
+        })
+    }
 }
 
 /// [`solve_kkt`] for a `c` computed from terms of size up to `noise`, which may have cancelled
@@ -263,6 +328,21 @@ impl Constraints {
 ///   lower the objective can't enter without the solver cycling. Only rounding trouble on
 ///   extreme inputs should cause either.
 pub(crate) fn solve_nonnegative(
+    q: &DMatrix<f64>,
+    c: &DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+    start: DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    // In the units of [`solve_kkt`], so that the tolerances below compare like with like.
+    let units = Units::new(q, c, e, b);
+    let start = start.component_mul(&units.scales);
+    let u = solve_nonnegative_in_units(&units.k, &units.c, &units.e, &units.b, start)?;
+    Ok(units.original(&u))
+}
+
+/// [`solve_nonnegative`] for a problem already in [`Units`].
+fn solve_nonnegative_in_units(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
