@@ -1,8 +1,8 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    CovarianceConfig, HercConfig, HrpConfig, Linkage, MaxSharpeConfig, MeanVarianceConfig,
-    PortfolioAllocator, RiskParityConfig, Weights,
+    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
+    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -114,6 +114,66 @@ fn unit_free_methods(returns: &DMatrix<f64>) -> Vec<(String, Weights)> {
                 .unwrap(),
         ),
     ]
+}
+
+/// Random feasible bounds for up to six assets, as fractions: each floor is up to 90% of
+/// `1/n`, and each cap is at least `1/n`, or absent. So the floors sum to at most 0.9 and the
+/// caps to at least 1.
+fn bounds() -> impl Strategy<Value = Vec<(f64, f64, bool)>> {
+    prop::collection::vec(
+        (
+            prop_oneof![Just(0.0), 0.0f64..0.9],
+            0.0f64..1.0,
+            prop::bool::weighted(0.8),
+        ),
+        6,
+    )
+}
+
+/// The bounds for `n` assets from the fractions [`bounds`] draws.
+fn weight_bounds(fractions: &[(f64, f64, bool)], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let even = 1.0 / n as f64;
+    fractions[..n]
+        .iter()
+        .map(|&(floor, cap, capped)| {
+            let upper = if capped {
+                even + cap * (1.0 - even)
+            } else {
+                f64::INFINITY
+            };
+            (floor * even, upper)
+        })
+        .unzip()
+}
+
+/// Checks that `w` is within the bounds, sums to 1, and minimizes an objective with gradient
+/// `gradient` over them: no asset that can grow has a lower marginal cost than any asset that
+/// can shrink, since moving weight between them would lower the objective.
+fn assert_bounded_optimum(
+    w: &DVector<f64>,
+    gradient: &DVector<f64>,
+    (lower, upper): (&[f64], &[f64]),
+    tolerance: f64,
+) -> Result<(), TestCaseError> {
+    let n = w.len();
+    for i in 0..n {
+        prop_assert!(
+            w[i] >= lower[i] - 1e-15 && w[i] <= upper[i] + 1e-15,
+            "asset {i}: {w:?}"
+        );
+    }
+    prop_assert!((w.sum() - 1.0).abs() < 1e-12, "sums to {}", w.sum());
+    let can_shrink = (0..n).filter(|&i| w[i] > lower[i] + 1e-9);
+    let can_grow: Vec<usize> = (0..n).filter(|&i| w[i] < upper[i] - 1e-9).collect();
+    for j in can_shrink {
+        for &i in &can_grow {
+            prop_assert!(
+                gradient[j] <= gradient[i] + tolerance,
+                "moving weight from {j} to {i} lowers the objective: {w:?}"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Every long-only method's weights, to compare an optimum against.
@@ -796,5 +856,159 @@ proptest! {
             prop_assert!((base[j] - flipped[n - 1 - j]).abs() < tolerance, "{base:?} vs {flipped:?}");
             prop_assert!((base[j] - scaled[j]).abs() < tolerance, "{base:?} vs {scaled:?}");
         }
+    }
+    #[test]
+    fn bounded_long_only_weights_satisfy_kkt(
+        returns in returns(),
+        fractions in bounds(),
+        gamma in prop::option::of(1.0f64..500.0),
+        shrinkage in prop::option::of(0.0f64..1.0),
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let bounds = WeightBounds::per_asset(lower.clone(), upper.clone());
+        let mu = returns.row_mean().transpose();
+        let mut config = CovarianceConfig::default();
+        let mut cov = covariance(&returns);
+        if let Some(lambda) = shrinkage {
+            config = config.with_shrinkage(lambda);
+            let average = cov.trace() / n as f64;
+            cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
+        }
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+
+        // Min variance has gradient Σw, and risk aversion γΣw − μ.
+        let weights = match gamma {
+            None => allocator.long_only_min_variance_allocation_with_bounds(&config, &bounds),
+            Some(gamma) => allocator.long_only_mean_variance_allocation_with_bounds(
+                &MeanVarianceConfig::risk_aversion(gamma).with_covariance(config),
+                &bounds,
+            ),
+        }
+        .unwrap();
+        let w = DVector::from_column_slice(weights.as_slice());
+        let (gradient, linear) = match gamma {
+            None => (&cov * &w, 0.0),
+            Some(gamma) => (&cov * &w * gamma - &mu, mu.amax()),
+        };
+        let tolerance = 1e-8 * gradient.amax().max(linear);
+        assert_bounded_optimum(&w, &gradient, (&lower, &upper), tolerance)?;
+    }
+
+    #[test]
+    fn bounded_target_returns_satisfy_kkt(
+        returns in returns(),
+        fractions in bounds(),
+        fraction in 0.0f64..=1.0,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let bounds = WeightBounds::per_asset(lower.clone(), upper.clone());
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+
+        // An unreachable target reports the reachable range.
+        let Err(CutupError::TargetReturnOutOfRange { lowest, highest, .. }) = allocator
+            .long_only_mean_variance_allocation_with_bounds(
+                &MeanVarianceConfig::target_return(1.0),
+                &bounds,
+            )
+        else {
+            panic!("a target return of 1 is out of range");
+        };
+        prop_assert!(lowest <= highest);
+        let target = if fraction == 1.0 { highest } else { lowest + fraction * (highest - lowest) };
+        let weights = allocator
+            .long_only_mean_variance_allocation_with_bounds(
+                &MeanVarianceConfig::target_return(target),
+                &bounds,
+            )
+            .unwrap();
+        let w = DVector::from_column_slice(weights.as_slice());
+        prop_assert!((w.dot(&mu) - target).abs() < 1e-12 * mu.amax(), "{weights:?}");
+
+        // The marginal variance Σw is λ₁ + λ₂μᵢ on every asset strictly inside its bounds, at
+        // least that on assets at their floor, and at most on assets at their cap. Fitting λ
+        // needs two such assets with expected returns that differ by more than rounding.
+        for i in 0..n {
+            prop_assert!(w[i] >= lower[i] - 1e-15 && w[i] <= upper[i] + 1e-15, "asset {i}: {w:?}");
+        }
+        prop_assert!((w.sum() - 1.0).abs() < 1e-12, "sums to {}", w.sum());
+        let marginal = &cov * &w;
+        let inside: Vec<usize> = (0..n)
+            .filter(|&i| w[i] > lower[i] + 1e-9 && w[i] < upper[i] - 1e-9)
+            .collect();
+        let spread = inside.iter().map(|&i| mu[i]).fold(f64::NEG_INFINITY, f64::max)
+            - inside.iter().map(|&i| mu[i]).fold(f64::INFINITY, f64::min);
+        prop_assume!(inside.len() >= 2 && spread > 1e-6);
+        let basis = DMatrix::from_fn(inside.len(), 2, |k, j| if j == 0 { 1.0 } else { mu[inside[k]] / mu.amax() });
+        let lambda = basis
+            .svd(true, true)
+            .solve(&DVector::from_fn(inside.len(), |k, _| marginal[inside[k]]), 1e-12)
+            .unwrap();
+        let tolerance = 1e-8 * marginal.amax();
+        for i in 0..n {
+            let residual = marginal[i] - lambda[0] - lambda[1] * mu[i] / mu.amax();
+            if w[i] > lower[i] + 1e-9 {
+                prop_assert!(residual <= tolerance, "asset {i} could shrink: {weights:?}");
+            }
+            if w[i] < upper[i] - 1e-9 {
+                prop_assert!(residual >= -tolerance, "asset {i} could grow: {weights:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tightening_a_cap_never_lowers_variance(
+        returns in returns(),
+        fractions in bounds(),
+        asset in 0usize..6,
+        squeeze in 0.0f64..1.0,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let asset = asset % n;
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = CovarianceConfig::default();
+        let solve = |upper: Vec<f64>| {
+            allocator.long_only_min_variance_allocation_with_bounds(
+                &config,
+                &WeightBounds::per_asset(lower.clone(), upper),
+            )
+        };
+        let loose = solve(upper.clone()).unwrap();
+
+        // Lower the asset's cap below its weight, toward its floor, but no further than the
+        // other caps allow, so the caps can still sum to 1. That limit is at most the weight,
+        // since the other weights are within their caps.
+        let others: f64 = (0..n).filter(|&j| j != asset).map(|j| upper[j]).sum();
+        let mut tight = upper.clone();
+        tight[asset] = (lower[asset] + squeeze * (loose[asset] - lower[asset]).max(0.0))
+            .max(1.0 - others);
+        let tight = solve(tight).unwrap();
+        let (v_loose, v_tight) = (variance(&cov, &loose), variance(&cov, &tight));
+        prop_assert!(v_tight >= v_loose * (1.0 - 1e-12), "{v_tight} < {v_loose}");
+    }
+
+    #[test]
+    fn bounds_that_never_bind_change_nothing(returns in returns(), gamma in 1.0f64..500.0) {
+        prop_assume!(well_posed(&returns));
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let loose = WeightBounds::uniform(0.0, 1.0);
+        let config = CovarianceConfig::default();
+        prop_assert_eq!(
+            allocator.long_only_min_variance_allocation_with_bounds(&config, &loose).unwrap(),
+            allocator.long_only_min_variance_allocation_with_config(&config).unwrap()
+        );
+        let config = MeanVarianceConfig::risk_aversion(gamma);
+        prop_assert_eq!(
+            allocator.long_only_mean_variance_allocation_with_bounds(&config, &loose).unwrap(),
+            allocator.long_only_mean_variance_allocation(&config).unwrap()
+        );
     }
 }
