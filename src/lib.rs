@@ -2,9 +2,12 @@
 #![warn(missing_docs)]
 
 mod cluster;
+mod eigen;
 mod qp;
 
 pub use cluster::Linkage;
+
+use eigen::SymmetricEigen;
 
 use nalgebra::{DMatrix, DVector};
 use std::collections::HashMap;
@@ -1188,18 +1191,14 @@ impl PortfolioAllocator {
         if !(scale.is_finite() && scale > 0.0) {
             return Err(CutupError::SingularCovariance);
         }
-        // nalgebra's SVD never converges on NaN, which the check above rules out; the
-        // iteration cap is a backstop.
-        let svd = (cov / scale)
-            .try_svd(false, true, qp::SVD_EPSILON, 10_000)
-            .ok_or(CutupError::SingularCovariance)?;
-        let v_t = svd.v_t.as_ref().ok_or(CutupError::SingularCovariance)?;
-        let cutoff = svd.singular_values.max() * n as f64 * f64::EPSILON;
+        // Σ is symmetric, so its eigenvalues' magnitudes are its singular values.
+        let eigen = SymmetricEigen::new(&(cov / scale))?;
+        let cutoff = eigen.values.amax() * n as f64 * f64::EPSILON;
         let (mut range, mut null) = (Vec::new(), Vec::new());
-        for k in 0..n {
-            let direction = v_t.row(k).transpose();
-            if svd.singular_values[k] > cutoff {
-                range.push((svd.singular_values[k], direction));
+        for (k, &value) in eigen.values.iter().enumerate() {
+            let direction = eigen.vectors.column(k).into_owned();
+            if value.abs() > cutoff {
+                range.push((value, direction));
             } else {
                 null.push(direction);
             }
@@ -2794,6 +2793,41 @@ mod tests {
         ] {
             assert_eq!(result, Err(CutupError::SingularCovariance));
         }
+    }
+
+    #[test]
+    fn test_min_variance_on_rank_deficient_kkt() {
+        // Three rows for four assets give Σ rank 2, and its KKT matrix a zero singular value.
+        // nalgebra's SVD left a residual of about 4e-7 here, so the solve was rejected as
+        // inconsistent; NumPy's solves it to rounding.
+        let returns = DMatrix::from_vec(
+            3,
+            4,
+            vec![
+                0.03923072979353582,
+                -0.027034431663761255,
+                -0.02017662174798146,
+                -0.030105448299475653,
+                0.02262405031858968,
+                0.01653614746213769,
+                -0.009248234151376263,
+                0.02095233950501841,
+                -0.049975234461268725,
+                -0.010174824524215684,
+                -0.043910804533156975,
+                0.04613336884944048,
+            ],
+        );
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        // numpy.linalg.pinv's minimum-norm solution of the same KKT system.
+        let expected = Weights(vec![0.230123253, 0.270499312, 0.278914760, 0.220462675]);
+        assert_weights_close(
+            &allocator.min_variance_allocation().unwrap(),
+            &expected,
+            1e-9,
+        );
+        let weights = allocator.long_only_min_variance_allocation().unwrap();
+        assert!(portfolio_variance(&allocator, &weights) < 1e-18);
     }
 
     #[test]
