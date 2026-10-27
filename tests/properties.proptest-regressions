@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6b64b39ceb8cfe71e6aedf35baef1c6083dd7c531d80556be921062dfc0f01ee # shrinks to returns = VecStorage { data: [0.012203289972368848, 0.011876639980246285, -0.0023875165015001523, 0.01810187891023054, -0.03960800878798632, 0.0, 0.0, -0.041778734117592115, -0.04869887520572753, 0.0], nrows: Dyn(5), ncols: Dyn(2) }, asset = 2, exponent = -7.925060344577226
+cc 52ccb3907fd7dffc5cd92857c072a26592cc16b183ca542bfd539fc0d655c57f # shrinks to returns = VecStorage { data: [-0.02356218463379961, 0.048848836742852356, -0.0435494709395343, -0.04678443244641611, -0.03863631617206421, 0.04202727055317406], nrows: Dyn(2), ncols: Dyn(3) }
+cc d601506ca371248615dbef37d6a50bda0d4fa5f03812bceb3ed5260105c2a058 # shrinks to returns = VecStorage { data: [0.008148009450909101, -0.025620914475442406, -0.029133245790723447, -0.036989888500856334, -0.017718494555798388, 0.012804917819859138], nrows: Dyn(2), ncols: Dyn(3) }

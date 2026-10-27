@@ -13,6 +13,12 @@ cutup's implementation:
   conditioned, otherwise the minimum-norm solution of the KKT system from
   numpy.linalg.lstsq. Expected errors are decided from the null space of the
   covariance, not by running the same solver as cutup.
+
+  Every covariance-based reference works in correlation units u = diag(σ)w, as cutup
+  does: Σ = diag(σ) C diag(σ), linear solves and pseudo-inverses go through the
+  correlation matrix C, minimum norms are of u, and null spaces and condition numbers are
+  C's. Then nothing depends on each asset's units, and assets whose volatilities are many
+  orders of magnitude apart stay accurate.
 * Long-only minimum variance and mean-variance: support enumeration. On every subset of
   assets, the KKT system with the others held at zero gives that subset's optimum, if it
   is feasible. Among the candidates with no negative weights, the best objective is the
@@ -23,11 +29,10 @@ cutup's implementation:
 * Long-only max Sharpe: the same support enumeration, on the change of variables
   y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
-  long-only portfolio in Σ's null space (eigenvalues within n·ε of the largest, from
-  numpy.linalg.eigh) with positive excess return.
+  long-only portfolio in the correlation matrix's null space (eigenvalues within n·ε of
+  the largest, from numpy.linalg.eigh) with positive excess return.
 * Max diversification: the same support enumeration and linear program as long-only max
-  Sharpe, on the correlation matrix with a vector of ones, since the ratio doesn't depend
-  on each asset's units; the result is divided by the volatilities.
+  Sharpe, with the volatilities in place of the excess returns.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -80,23 +85,64 @@ def adjust(cov: np.ndarray, shrinkage: float | None, regularization: float | Non
     return cov
 
 
+def correlation(cov: np.ndarray) -> np.ndarray:
+    volatilities = np.sqrt(np.diag(cov))
+    return cov / volatilities[:, None] / volatilities[None, :]
+
+
+def unit_scales(k: np.ndarray) -> np.ndarray:
+    """sqrt(diag K), or 1 where that isn't positive: u = Dx gives K a unit diagonal."""
+    scales = np.sqrt(np.clip(np.diag(k), 0.0, None))
+    return np.where(scales > 0.0, scales, 1.0)
+
+
 def well_conditioned(cov: np.ndarray) -> bool:
-    return np.linalg.cond(cov) < WELL_CONDITIONED
+    return np.linalg.cond(correlation(cov)) < WELL_CONDITIONED
+
+
+def solve(cov: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Σ⁻¹x = D⁻¹C⁻¹D⁻¹x."""
+    d = np.sqrt(np.diag(cov))
+    return np.linalg.solve(correlation(cov), x / d) / d
+
+
+def pinv(cov: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """D⁻¹C⁺D⁻¹x, the minimum-norm solution in correlation units."""
+    d = np.sqrt(np.diag(cov))
+    return np.linalg.pinv(correlation(cov)) @ (x / d) / d
 
 
 def kkt_min_norm(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Minimum-norm solution of [K E; Eᵀ 0][w; λ] = [c; b]."""
+    """Minimum-norm solution of [K E; Eᵀ 0][w; λ] = [c; b], in units u = Dw with
+    D = diag(sqrt(Kᵢᵢ)). Each column of E is first divided by its largest entry, with b."""
     n, m = e.shape
+    d = unit_scales(k)
+    k, c, e, b = in_units(k, c, e, b, d)
     kkt = np.block([[k, e], [e.T, np.zeros((m, m))]])
     solution, *_ = np.linalg.lstsq(kkt, np.concatenate([c, b]), rcond=None)
-    return solution[:n]
+    return solution[:n] / d
 
 
-def free_directions(cov: np.ndarray) -> np.ndarray:
-    """Orthonormal basis of {d : Σd = 0, 1ᵀd = 0}: changes to a fully invested
-    portfolio that add no variance."""
-    n = cov.shape[0]
-    stacked = np.vstack([cov / np.abs(cov).max(), np.ones((1, n))])
+def in_units(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray, d: np.ndarray):
+    """The problem in u = Dx, with each column of E and its entry of b divided by the
+    column's largest entry."""
+    columns = np.abs(e).max(axis=0)
+    columns = np.where(columns > 0.0, columns, 1.0)
+    return k / d[:, None] / d[None, :], c / d, e / columns / d[:, None], b / columns
+
+
+def free_fraction(cov: np.ndarray, v: np.ndarray) -> float:
+    """How much of v, relative to its size, a change to a fully invested portfolio that
+    adds no variance can pick up: in correlation units, the norm of D⁻¹v's projection onto
+    {f : Cf = 0, (D⁻¹1)ᵀf = 0} over the norm of D⁻¹v."""
+    d = np.sqrt(np.diag(cov))
+    free = free_directions(correlation(cov), 1.0 / d)
+    return float(np.linalg.norm(free.T @ (v / d)) / np.linalg.norm(v / d))
+
+
+def free_directions(corr: np.ndarray, budget: np.ndarray) -> np.ndarray:
+    """Orthonormal basis of {f : Cf = 0, budgetᵀf = 0}."""
+    stacked = np.vstack([corr, budget / np.abs(budget).max()])
     _, singular, vt = np.linalg.svd(stacked)
     rank = int((singular > singular.max() * max(stacked.shape) * np.finfo(float).eps).sum())
     return vt[rank:].T
@@ -106,29 +152,44 @@ def min_variance(cov: np.ndarray) -> np.ndarray:
     n = cov.shape[0]
     ones = np.ones(n)
     if well_conditioned(cov):
-        inv_ones = np.linalg.solve(cov, ones)
+        inv_ones = solve(cov, ones)
         return inv_ones / inv_ones.sum()
     return kkt_min_norm(cov, np.zeros(n), ones[:, None], np.array([1.0]))
 
 
 def long_only(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and w ≥ 0 by support enumeration."""
+    """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and w ≥ 0 by support enumeration, in units
+    u = Dw with D = diag(sqrt(Kᵢᵢ)), which change neither the objective nor u ≥ 0."""
     n, m = e.shape
+    d = unit_scales(k)
+    k, c, e, b = in_units(k, c, e, b, d)
     best, best_value = None, np.inf
     for mask in range(1, 2**n):
         support = [i for i in range(n) if mask >> i & 1]
-        kkt = np.block([[k[np.ix_(support, support)], e[support]], [e[support].T, np.zeros((m, m))]])
-        rhs = np.concatenate([c[support], b])
-        solution, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
+        k_s, e_s, c_s = k[np.ix_(support, support)], e[support], c[support]
+        if np.linalg.cond(k_s) < WELL_CONDITIONED:
+            # Kx = c − Eλ, so the multipliers solve (EᵀK⁻¹E)λ = EᵀK⁻¹c − b. Unlike a least-squares
+            # solve of the whole KKT matrix, this stays accurate when E's entries are many
+            # orders of magnitude apart.
+            k_e, k_c = np.linalg.solve(k_s, e_s), np.linalg.solve(k_s, c_s)
+            lam, *_ = np.linalg.lstsq(e_s.T @ k_e, e_s.T @ k_c - b, rcond=None)
+            x = k_c - k_e @ lam
+            residual, size = e_s.T @ x - b, np.abs(e_s).max() * np.abs(x).max() + np.abs(b).max()
+        else:
+            kkt = np.block([[k_s, e_s], [e_s.T, np.zeros((m, m))]])
+            rhs = np.concatenate([c_s, b])
+            solution, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
+            x = solution[: len(support)]
+            residual, size = kkt @ solution - rhs, np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()
         # No feasible point on this support, such as a single asset away from the target.
-        if np.abs(kkt @ solution - rhs).max() > 1e-9 * (np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()):
+        if np.abs(residual).max() > 1e-9 * size:
             continue
         candidate = np.zeros(n)
-        candidate[support] = solution[: len(support)]
+        candidate[support] = x
         value = 0.5 * candidate @ k @ candidate - c @ candidate
         if candidate.min() >= 0.0 and value < best_value:
             best, best_value = candidate, value
-    return best
+    return best / d
 
 
 def long_only_min_variance(cov: np.ndarray) -> np.ndarray:
@@ -150,13 +211,13 @@ def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray |
     n = cov.shape[0]
     ones = np.ones(n)
     if well_conditioned(cov):
-        inv_ones = np.linalg.solve(cov, ones)
-        inv_mu = np.linalg.solve(cov, mu)
+        inv_ones = solve(cov, ones)
+        inv_mu = solve(cov, mu)
         a, b = ones @ inv_ones, ones @ inv_mu
         eta = (b - gamma) / a
         return (inv_mu - eta * inv_ones) / gamma
     # Unbounded when some variance-free change to the portfolio raises expected return.
-    if np.linalg.norm(free_directions(cov).T @ mu) > 1e-9 * np.linalg.norm(mu):
+    if free_fraction(cov, mu) > 1e-9:
         return "Unbounded"
     return kkt_min_norm(gamma * cov, mu, ones[:, None], np.array([1.0]))
 
@@ -170,8 +231,8 @@ def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray 
     if np.ptp(mu) <= 1e-12 * scale and abs(target - mu.mean()) > 1e-12 * max(scale, abs(target)):
         return "DegenerateExpectedReturns"
     if well_conditioned(cov):
-        inv_ones = np.linalg.solve(cov, ones)
-        inv_mu = np.linalg.solve(cov, mu)
+        inv_ones = solve(cov, ones)
+        inv_mu = solve(cov, mu)
         a, b, c = ones @ inv_ones, ones @ inv_mu, mu @ inv_mu
         d = a * c - b * b
         return ((c - b * target) * inv_ones + (a * target - b) * inv_mu) / d
@@ -189,17 +250,17 @@ def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.nda
     excess = mu - risk_free_rate
     w_mvp = min_variance(cov)
     r_mvp = float(w_mvp @ mu)
-    scale = np.trace(cov) / n
+    u_mvp = np.sqrt(np.diag(cov)) * w_mvp
 
     # A fully invested portfolio with zero variance is the minimum variance portfolio.
-    if w_mvp @ cov @ w_mvp <= 1e-12 * scale:
+    if u_mvp @ correlation(cov) @ u_mvp <= 1e-12 * (u_mvp @ u_mvp):
         return "Unbounded" if r_mvp > risk_free_rate else "RiskFreeRateTooHigh"
     # A variance-free, budget-neutral change that adds expected return.
-    if np.linalg.norm(free_directions(cov).T @ excess) > 1e-9 * np.linalg.norm(excess):
+    if free_fraction(cov, excess) > 1e-9:
         return "Unbounded"
-    if risk_free_rate >= r_mvp - 1e-10 * (abs(r_mvp) + np.abs(mu).max()):
+    if risk_free_rate >= r_mvp - 1e-10 * np.abs(w_mvp * mu).sum():
         return "RiskFreeRateTooHigh"
-    z = np.linalg.solve(cov, excess) if well_conditioned(cov) else np.linalg.pinv(cov) @ excess
+    z = solve(cov, excess) if well_conditioned(cov) else pinv(cov, excess)
     return z / z.sum()
 
 
@@ -207,47 +268,43 @@ def long_only_max_ratio(cov: np.ndarray, a: np.ndarray) -> np.ndarray | None:
     """Maximizes aᵀw / sqrt(wᵀΣw) over long-only w summing to 1, for a with a positive
     entry, or None when the ratio is unbounded."""
     n = cov.shape[0]
-    # The highest aᵀw of a long-only portfolio w = Nz in the null space N of Σ.
-    values, vectors = np.linalg.eigh(cov)
+    # The highest aᵀw of a long-only portfolio w = D⁻¹Nz, for N the null space of the
+    # correlation matrix: in correlation units u = Dw, the objective is (D⁻¹a)ᵀu and the
+    # budget (D⁻¹1)ᵀu, each divided by its largest entry.
+    d = np.sqrt(np.diag(cov))
+    values, vectors = np.linalg.eigh(correlation(cov))
     null = vectors[:, values <= n * np.finfo(float).eps * values.max()]
     if null.shape[1] > 0:
+        earned, budget = a / d, 1.0 / d
         zero_variance = linprog(
-            -(a @ null),
+            -(earned / np.abs(earned).max()) @ null,
             A_ub=-null,
             b_ub=np.zeros(n),
-            A_eq=(np.ones(n) @ null)[None, :],
+            A_eq=((budget / budget.max()) @ null)[None, :],
             b_eq=[1.0],
             bounds=(None, None),
         )
         if zero_variance.status not in (0, 2):
             raise ValueError(f"linprog failed: {zero_variance.message}")
-        if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(a).max():
-            return None
+        if zero_variance.status == 0:
+            w = null @ zero_variance.x / d
+            if a @ (w / w.sum()) > 1e-9 * np.abs(a).max():
+                return None
     y = long_only(cov, np.zeros(n), a[:, None], np.array([1.0]))
     return y / y.sum()
 
 
 def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
     excess = mu - risk_free_rate
-    if excess.max() <= 1e-10 * max(abs(risk_free_rate), np.abs(mu).max()):
+    if np.all(excess <= 1e-10 * np.maximum(abs(risk_free_rate), np.abs(mu))):
         return "NoPositiveExcessReturn"
     weights = long_only_max_ratio(cov, excess)
     return "Unbounded" if weights is None else weights
 
 
-def correlation(cov: np.ndarray) -> np.ndarray:
-    volatilities = np.sqrt(np.diag(cov))
-    return cov / np.outer(volatilities, volatilities)
-
-
 def max_diversification(cov: np.ndarray) -> np.ndarray | str:
-    # With v = diag(σ)w, the ratio is 1ᵀv / sqrt(vᵀCv) for the correlation matrix C, which
-    # doesn't depend on each asset's units.
-    v = long_only_max_ratio(correlation(cov), np.ones(cov.shape[0]))
-    if v is None:
-        return "SingularCovariance"
-    weights = v / np.sqrt(np.diag(cov))
-    return weights / weights.sum()
+    weights = long_only_max_ratio(cov, np.sqrt(np.diag(cov)))
+    return "SingularCovariance" if weights is None else weights
 
 
 def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
@@ -265,9 +322,13 @@ def risk_parity(cov: np.ndarray, budgets: np.ndarray) -> np.ndarray | str:
     Each coordinate step solves Σᵢᵢ yᵢ² + (Σy − Σᵢᵢ yᵢ)ᵢ yᵢ − bᵢ = 0 for yᵢ > 0, which
     minimizes ½ yᵀΣy − bᵀ ln y in that coordinate. When a long-only portfolio has zero
     variance there is no minimum.
+
+    It runs on the correlation matrix in units u = diag(σ)y, where the risk contributions
+    are the same, and divides by the volatilities at the end.
     """
     n = cov.shape[0]
-    cov = cov / (np.trace(cov) / n)
+    volatilities = np.sqrt(np.diag(cov))
+    cov = correlation(cov)
     budgets = budgets / budgets.sum()
     # min dᵀΣd over long-only d summing to 1, as a least-squares problem in Σ's square root.
     values, vectors = np.linalg.eigh(cov)
@@ -285,7 +346,8 @@ def risk_parity(cov: np.ndarray, budgets: np.ndarray) -> np.ndarray | str:
             c = cov[i] @ y - cov[i, i] * y[i]
             y[i] = (-c + np.sqrt(c * c + 4.0 * cov[i, i] * budgets[i])) / (2.0 * cov[i, i])
         if np.max(np.abs(y - previous) / y) < 1e-14:
-            return y / y.sum()
+            w = y / volatilities
+            return w / w.sum()
     raise ValueError("coordinate descent didn't converge")
 
 
@@ -340,13 +402,9 @@ def cases(datasets: dict) -> list[dict]:
     exact, solver, clustering = 0.0, 1e-9, 1e-12
     out = []
     for name in datasets:
-        # Min variance and risk parity solve on Σ in raw units, where scales4's volatilities
-        # make Σ numerically singular, so both sides give wrong answers there.
-        if name != "scales4":
-            out.append({"dataset": name, "method": "risk_parity", "tolerance": solver})
+        out.append({"dataset": name, "method": "risk_parity", "tolerance": solver})
         out.append({"dataset": name, "method": "equal_weight", "tolerance": exact})
-        if name != "scales4":
-            out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
+        out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
         out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_volatility", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_variance", "tolerance": clustering})
@@ -496,8 +554,18 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": name, "method": "max_diversification", "params": {"shrinkage": 0.3}, "tolerance": solver})
     out.append({"dataset": "near_singular4", "method": "max_diversification", "params": {"regularization": 1e-5}, "tolerance": solver})
     out.append({"dataset": "rank_deficient6", "method": "max_diversification", "tolerance": solver})
-    # Volatilities eight orders of magnitude apart.
+    # Volatilities eight orders of magnitude apart, with expected returns in proportion to
+    # them, so that every asset matters.
     out.append({"dataset": "scales4", "method": "max_diversification", "tolerance": solver})
+    out.append({"dataset": "scales4", "method": "long_only_min_variance", "tolerance": solver})
+    scaled_mu = [3.471e-04, 7.583e-07, 6.112e-10, 1.783e-12]
+    for gamma in [1e6, 1e10]:
+        for method in ["mean_variance", "long_only_mean_variance"]:
+            out.append({"dataset": "scales4", "method": method, "params": {"risk_aversion": gamma, "expected_returns": scaled_mu}, "tolerance": solver})
+    for method in ["mean_variance", "long_only_mean_variance"]:
+        out.append({"dataset": "scales4", "method": method, "params": {"target_return": 6.942e-06, "expected_returns": scaled_mu}, "tolerance": solver})
+    for method in ["max_sharpe", "long_only_max_sharpe"]:
+        out.append({"dataset": "scales4", "method": method, "params": {"expected_returns": scaled_mu}, "tolerance": solver})
 
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.
@@ -572,10 +640,9 @@ def main() -> None:
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
-            # Max diversification is solved on the correlation matrix, and its accuracy
-            # doesn't depend on each asset's units.
-            solved = correlation(adjusted) if case["method"] == "max_diversification" else adjusted
-            condition = float(np.linalg.cond(solved))
+            # Every solve is in correlation units, so its accuracy depends on the
+            # correlation matrix's conditioning, not on each asset's units.
+            condition = float(np.linalg.cond(correlation(adjusted)))
             case["condition_number"] = float(f"{condition:.3e}")
             singular = condition > 1.0 / (adjusted.shape[0] * np.finfo(float).eps)
             if not singular:

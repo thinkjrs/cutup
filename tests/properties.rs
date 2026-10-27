@@ -92,6 +92,31 @@ fn sharpe(cov: &DMatrix<f64>, excess: &DVector<f64>, weights: &Weights) -> f64 {
 }
 
 /// Every method that returns fully invested weights, by name.
+/// Methods whose objective doesn't depend on each asset's units: rescaling one asset's
+/// returns only rescales its weight. Long-only max Sharpe gets each asset's mean absolute
+/// return as its expected return, which is positive and rescales with the asset.
+fn unit_free_methods(returns: &DMatrix<f64>) -> Vec<(String, Weights)> {
+    let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+    let mean_absolute = returns.abs().row_mean().transpose();
+    let zero_rate = MaxSharpeConfig::default().with_expected_returns(mean_absolute);
+    vec![
+        (
+            "max diversification".into(),
+            allocator.max_diversification_allocation().unwrap(),
+        ),
+        (
+            "risk parity".into(),
+            allocator.risk_parity_allocation().unwrap(),
+        ),
+        (
+            "long-only max Sharpe".into(),
+            allocator
+                .long_only_max_sharpe_allocation(&zero_rate)
+                .unwrap(),
+        ),
+    ]
+}
+
 /// Every long-only method's weights, to compare an optimum against.
 fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
     let mut methods = vec![
@@ -649,34 +674,52 @@ proptest! {
     }
 
     #[test]
-    fn max_diversification_ignores_each_asset_scale(
+    fn risk_parity_and_max_diversification_agree_on_singular_covariances(
+        returns in (3usize..=6).prop_flat_map(|assets| {
+            prop::collection::vec(-0.05f64..0.05, 2 * assets)
+                .prop_map(move |values| DMatrix::from_vec(2, assets, values))
+        }),
+    ) {
+        // With two periods, the covariance has rank 1. Both methods have no answer exactly
+        // when some long-only portfolio has zero variance.
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let risk_parity = allocator.risk_parity_allocation();
+        let max_diversification = allocator.max_diversification_allocation();
+        prop_assert_eq!(
+            risk_parity.as_ref().err(),
+            max_diversification.as_ref().err(),
+            "{:?} vs {:?}",
+            risk_parity,
+            max_diversification
+        );
+    }
+
+    #[test]
+    fn unit_free_methods_ignore_each_asset_scale(
         returns in returns(),
         asset in 0usize..6,
-        exponent in -6.0f64..6.0,
+        exponent in -8.0f64..8.0,
     ) {
-        // The ratio doesn't change when one asset is rescaled by k, so neither does the
-        // optimum, measured in that asset's new units: its weight is divided by k.
+        // These objectives don't change when one asset's returns are rescaled by k, so
+        // neither does the optimum, measured in that asset's new units: its weight is divided
+        // by k, and the weights are renormalized.
         prop_assume!(well_posed(&returns));
         let (asset, k) = (asset % returns.ncols(), 10f64.powf(exponent));
         let mut scaled = returns.clone();
         scaled.column_mut(asset).scale_mut(k);
-        let base = PortfolioAllocator::from_returns(returns)
-            .unwrap()
-            .max_diversification_allocation()
-            .unwrap();
-        let weights = PortfolioAllocator::from_returns(scaled)
-            .unwrap()
-            .max_diversification_allocation()
-            .unwrap();
+        let base = unit_free_methods(&returns);
+        let rescaled = unit_free_methods(&scaled);
 
-        let mut expected = DVector::from_column_slice(base.as_slice());
-        expected[asset] /= k;
-        let expected = &expected / expected.sum();
-        for (w, e) in weights.iter().zip(&expected) {
-            prop_assert!(
-                (w - e).abs() <= 1e-8 * w.max(*e) + 1e-14,
-                "asset {asset} scaled by {k}: {weights:?} vs {expected}"
-            );
+        for ((name, base), (_, weights)) in base.iter().zip(&rescaled) {
+            let mut expected = DVector::from_column_slice(base.as_slice());
+            expected[asset] /= k;
+            let expected = &expected / expected.sum();
+            for (w, e) in weights.iter().zip(&expected) {
+                prop_assert!(
+                    (w - e).abs() <= 1e-8 * w.max(*e) + 1e-14,
+                    "{name}, asset {asset} scaled by {k}: {weights:?} vs {expected}"
+                );
+            }
         }
     }
 
