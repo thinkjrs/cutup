@@ -17,6 +17,7 @@ Here are some of the allocation methods included in this library:
 - **Maximum Sharpe Ratio (tangency portfolio)**, unconstrained or long-only
 - **Equal Weight Allocation (EW)**
 - **Inverse Volatility and Inverse Variance**
+- **Maximum Diversification**
 - **Risk Parity (Equal Risk Contribution) and Risk Budgeting**
 - **Hierarchical Risk Parity (HRP)**
 - **Hierarchical Equal Risk Contribution (HERC)**
@@ -33,6 +34,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
 - **EW Allocation**: Assigns equal weights to all assets.
 - **Inverse Volatility / Inverse Variance**: Weights each asset by `1 / σ` or `1 / σ²`, ignoring correlations. Simple risk-based weights that are always positive.
+- **Maximum Diversification**: The long-only portfolio with the highest ratio of weighted average volatility to portfolio volatility, using only the covariance matrix.
 - **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
@@ -51,6 +53,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 | `long_only_mean_variance_allocation` | covariance, expected returns | ✅ | Markowitz without shorting. A target return must lie between the lowest and highest expected return. Low risk aversion concentrates in the highest expected returns. |
 | `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
 | `long_only_max_sharpe_allocation` | covariance, expected returns, risk-free rate | ✅ | The highest Sharpe ratio without shorting. Only needs some asset's expected return above the risk-free rate. |
+| `max_diversification_allocation` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `risk_parity_allocation` | covariance | ✅ | Every asset contributes the same risk. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `hrp_allocation` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
 | `herc_allocation` | covariance, correlations | ✅ | Like HRP, but splits where the clustering tree branches and groups similar assets, so the result doesn't depend on column order. |
@@ -139,7 +142,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 

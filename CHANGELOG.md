@@ -27,6 +27,15 @@ All notable changes to this project are documented here. The format follows
 - Reference cases for long-only max Sharpe against support enumeration, with unbounded
   cases decided by linear programming, and property tests: the weights satisfy the KKT
   conditions and have the highest Sharpe ratio of any long-only method.
+- `PortfolioAllocator::max_diversification_allocation` and
+  `max_diversification_allocation_with_config`: the maximum diversification portfolio
+  (Choueifaty and Coignard, 2008), which maximizes the ratio of weighted average volatility
+  to portfolio volatility, with optional covariance adjustments. Long-only by definition,
+  and solved like long-only max Sharpe with the volatilities in place of the excess
+  returns. Returns `SingularCovariance` when some long-only portfolio has no variance.
+- Reference cases for max diversification against the same support enumeration, and
+  property tests: the weights satisfy the KKT conditions, have the highest diversification
+  ratio of any long-only method, and don't depend on column order or return scale.
 
 ## [0.2.4] - 2026-10-26
 
