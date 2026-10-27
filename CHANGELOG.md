@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `PortfolioAllocator::long_only_mean_variance_allocation`: mean-variance with no short
+  positions, for a risk aversion or a target return, taking the same `MeanVarianceConfig`
+  as `mean_variance_allocation`. Solved exactly by the active-set method behind long-only
+  min variance. A risk aversion always has an optimum, even on a singular covariance.
+- `CutupError::TargetReturnOutOfRange`, returned when a long-only target return is below
+  the lowest or above the highest expected return of any asset.
+- Reference cases against support enumeration, now shared with long-only min variance, and
+  property tests: the weights satisfy the KKT conditions for both objectives, and match
+  unconstrained mean-variance when it has no short positions.
+
 ## [0.2.4] - 2026-10-26
 
 ### Added
@@ -189,6 +203,7 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.4...HEAD
 [0.2.4]: https://github.com/thinkjrs/cutup/compare/0.2.3...0.2.4
 [0.2.3]: https://github.com/thinkjrs/cutup/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/thinkjrs/cutup/compare/0.2.1...0.2.2

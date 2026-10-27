@@ -19,7 +19,7 @@ fixtures in `tests/fixtures/`.
 | Equal weight | `1 / n` |
 | Inverse volatility, inverse variance | `1 / σ` and `1 / σ²` from `np.var(ddof=1)`, normalized |
 | Minimum variance | NumPy closed form `Σ⁻¹1 / 1ᵀΣ⁻¹1`; minimum-norm KKT solution from `numpy.linalg.lstsq` when Σ is singular |
-| Long-only minimum variance | Support enumeration: the closed-form minimum variance portfolio on every subset of assets, keeping the lowest-variance one with no negative weights. Unlike cutup's active-set solver, it uses no multipliers or iteration. Singular covariances are used only with shrinkage, since their optimum needn't be unique. |
+| Long-only minimum variance and mean-variance | Support enumeration: the KKT solution on every subset of assets with the rest held at zero, keeping the best feasible one with no negative weights. Unlike cutup's active-set solver, it never checks multipliers' signs or iterates. Singular covariances are used only with shrinkage, since their optimum needn't be unique. A target return outside the assets' expected returns is an expected error. |
 | Mean-variance | NumPy closed forms for risk aversion and target return (Merton, 1972); minimum-norm KKT solution when Σ is singular. Expected errors are decided from the null space of Σ. |
 | Max Sharpe | NumPy closed form `Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f)`, or `numpy.linalg.pinv` when Σ is singular. Expected errors are decided from the minimum variance portfolio's own variance and return, and the null space of Σ. |
 | Risk parity | Cyclical coordinate descent (Griveau-Billion et al., 2013) run to convergence, unlike cutup's Newton iteration, with equal and custom risk budgets. The expected error is decided by `scipy.optimize.nnls` finding a long-only portfolio with zero variance. |
