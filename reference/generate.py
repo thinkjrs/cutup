@@ -189,7 +189,8 @@ def long_only(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.
         value = 0.5 * candidate @ k @ candidate - c @ candidate
         if candidate.min() >= 0.0 and value < best_value:
             best, best_value = candidate, value
-    return best / d
+    # None when no support is feasible, such as an unreachable target return.
+    return None if best is None else best / d
 
 
 def long_only_min_variance(cov: np.ndarray) -> np.ndarray:

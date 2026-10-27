@@ -91,7 +91,6 @@ fn sharpe(cov: &DMatrix<f64>, excess: &DVector<f64>, weights: &Weights) -> f64 {
     excess.dot(&w) / variance(cov, weights).sqrt()
 }
 
-/// Every method that returns fully invested weights, by name.
 /// Methods whose objective doesn't depend on each asset's units: rescaling one asset's
 /// returns only rescales its weight. Long-only max Sharpe gets each asset's mean absolute
 /// return as its expected return, which is positive and rescales with the asset.
@@ -146,6 +145,7 @@ fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
     methods
 }
 
+/// Every method that returns fully invested weights, by name.
 fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
         ("equal weight".to_string(), allocator.ew_allocation()),
