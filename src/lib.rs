@@ -93,7 +93,7 @@ pub enum CutupError {
         /// The highest expected return of any asset.
         highest: f64,
     },
-    /// No asset's expected return is above (or beyond rounding of) the risk-free rate, so no
+    /// No asset's expected return is above the risk-free rate by more than rounding, so no
     /// long-only portfolio has a positive Sharpe ratio.
     NoPositiveExcessReturn {
         /// The risk-free rate supplied.
@@ -1396,7 +1396,7 @@ impl PortfolioAllocator {
     /// return is above the risk-free rate, so this needs the rate to be below the highest
     /// expected return, not below the minimum variance portfolio's return as
     /// [`PortfolioAllocator::max_sharpe_allocation`] does. A rate within
-    /// `1e-10 · (|r_f| + max |μᵢ|)` of the highest expected return counts as at it. When Σ is
+    /// `1e-10 · max(|r_f|, max |μᵢ|)` of the highest expected return counts as at it. When Σ is
     /// invertible and [`PortfolioAllocator::max_sharpe_allocation`] returns weights with no
     /// short positions, the two agree.
     ///
@@ -1421,7 +1421,8 @@ impl PortfolioAllocator {
     /// * [`CutupError::NoPositiveExcessReturn`] if the risk-free rate is at or above the highest
     ///   expected return.
     /// * [`CutupError::Unbounded`] when Σ is singular and some long-only portfolio with a
-    ///   positive excess return has no variance, so the Sharpe ratio has no upper bound.
+    ///   positive excess return lies in its null space (with the cutoff of
+    ///   [`PortfolioAllocator::max_sharpe_allocation`]), so the Sharpe ratio has no upper bound.
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
     /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
@@ -1464,9 +1465,13 @@ impl PortfolioAllocator {
             });
         }
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        // Excess returns relative to the largest magnitude, so that neither they nor the
+        // tolerance can overflow.
         let (best, highest_return) = mu.argmax();
-        let tolerance = 1e-10 * (risk_free_rate.abs() + mu.amax());
-        if highest_return <= risk_free_rate + tolerance {
+        let scale = risk_free_rate.abs().max(mu.amax());
+        let excess = mu.map(|m| m / scale - risk_free_rate / scale);
+        // A zero scale means every return and the rate are zero.
+        if scale == 0.0 || excess[best] <= 1e-10 {
             return Err(CutupError::NoPositiveExcessReturn {
                 risk_free_rate,
                 highest_return,
@@ -1474,24 +1479,31 @@ impl PortfolioAllocator {
         }
         let cov = self.adjusted_covariance(&config.covariance)?;
         let n = cov.ncols();
-        let excess = mu.add_scalar(-risk_free_rate);
 
-        // Holding only the asset with the highest expected return is feasible.
+        // The constraint is scaled so that the best asset's excess return is 1, and holding
+        // one unit of it is feasible.
         let mut start = DVector::zeros(n);
-        start[best] = 1.0 / excess[best];
+        start[best] = 1.0;
         let weights = long_only_weights(
             &cov,
             &DVector::zeros(n),
-            &DMatrix::from_column_slice(n, 1, excess.as_slice()),
+            &DMatrix::from_column_slice(n, 1, (&excess / excess[best]).as_slice()),
             &DVector::from_element(1, 1.0),
             start,
         )?;
 
-        // Its excess return is positive, so with no variance beyond rounding (n·ε, as in
-        // max_sharpe_allocation's cutoff), the Sharpe ratio is unbounded.
+        // Its excess return is positive, so if it lies in Σ's null space the Sharpe ratio is
+        // unbounded. That is the cutoff max_sharpe_allocation uses: a Rayleigh quotient within
+        // n·ε of the largest eigenvalue. The trace bounds that eigenvalue, so the
+        // decomposition is only needed near the cutoff.
         let w = DVector::from_column_slice(weights.as_slice());
-        if w.dot(&(&cov * &w)) <= n as f64 * f64::EPSILON * cov.amax() {
-            return Err(CutupError::Unbounded);
+        let quotient = w.dot(&(&cov * &w)) / w.norm_squared();
+        let cutoff = |largest: f64| quotient <= n as f64 * f64::EPSILON * largest;
+        if cutoff(cov.trace()) {
+            let eigen = SymmetricEigen::new(&cov).ok_or(CutupError::SingularCovariance)?;
+            if cutoff(eigen.values.amax()) {
+                return Err(CutupError::Unbounded);
+            }
         }
         Ok(weights)
     }
@@ -3452,6 +3464,36 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn test_long_only_max_sharpe_extreme_returns() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let at = |rate: f64, expected: DVector<f64>| {
+            let config = MaxSharpeConfig::default()
+                .with_risk_free_rate(rate)
+                .with_expected_returns(expected);
+            allocator.long_only_max_sharpe_allocation(&config)
+        };
+
+        // A subnormal excess return mustn't make the starting point infinite. With a zero
+        // rate the weights don't depend on the scale of μ.
+        assert_weights_close(
+            &at(0.0, dvector![1e-310, 0.0, 0.0]).unwrap(),
+            &at(0.0, dvector![1e-3, 0.0, 0.0]).unwrap(),
+            1e-12,
+        );
+
+        // Neither the tolerance nor the excess returns may overflow.
+        let weights = at(-1.7e308, dvector![1.7e308, 1.0, 1.0]).unwrap();
+        assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        // Every return and the rate zero: no excess return at all.
+        assert!(matches!(
+            at(0.0, DVector::zeros(3)),
+            Err(CutupError::NoPositiveExcessReturn { .. })
+        ));
     }
 
     #[test]

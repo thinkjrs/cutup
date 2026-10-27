@@ -23,7 +23,8 @@ cutup's implementation:
 * Long-only max Sharpe: the same support enumeration, on the change of variables
   y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
-  long-only portfolio with zero variance and positive excess return.
+  long-only portfolio in Σ's null space (eigenvalues within n·ε of the largest, from
+  numpy.linalg.eigh) with positive excess return.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -202,17 +203,24 @@ def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.nda
 def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
     n = cov.shape[0]
     excess = mu - risk_free_rate
-    if excess.max() <= 1e-10 * (abs(risk_free_rate) + np.abs(mu).max()):
+    if excess.max() <= 1e-10 * max(abs(risk_free_rate), np.abs(mu).max()):
         return "NoPositiveExcessReturn"
-    # The highest excess return of a long-only portfolio with Σw = 0.
-    zero_variance = linprog(
-        -excess,
-        A_eq=np.vstack([cov / (np.trace(cov) / n), np.ones(n)]),
-        b_eq=np.r_[np.zeros(n), 1.0],
-        bounds=(0, None),
-    )
-    if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(excess).max():
-        return "Unbounded"
+    # The highest excess return of a long-only portfolio w = Nz in the null space N of Σ.
+    values, vectors = np.linalg.eigh(cov)
+    null = vectors[:, values <= n * np.finfo(float).eps * values.max()]
+    if null.shape[1] > 0:
+        zero_variance = linprog(
+            -(excess @ null),
+            A_ub=-null,
+            b_ub=np.zeros(n),
+            A_eq=(np.ones(n) @ null)[None, :],
+            b_eq=[1.0],
+            bounds=(None, None),
+        )
+        if zero_variance.status not in (0, 2):
+            raise ValueError(f"linprog failed: {zero_variance.message}")
+        if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(excess).max():
+            return "Unbounded"
     y = long_only(cov, np.zeros(n), excess[:, None], np.array([1.0]))
     return y / y.sum()
 
@@ -422,8 +430,10 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0, "shrinkage": 0.3}, "tolerance": solver})
 
-    # Long-only max Sharpe from a rate below every expected return to one between the
-    # minimum variance return and the highest, where only the long-only maximum exists.
+    # Long-only max Sharpe at rates below every expected return and at the middle of their
+    # range. On two_asset and prices10x60 the middle, like 0.004 on prices10x60, is between
+    # the minimum variance return and the highest expected return, where only the long-only
+    # maximum exists.
     for name in ["two_asset", "two_blocks5", "prices10x60", "near_singular4"]:
         mu = load_returns(datasets[name]).mean(axis=0)
         for fraction in [-0.5, 0.5]:
