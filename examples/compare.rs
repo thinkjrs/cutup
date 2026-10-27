@@ -86,12 +86,19 @@ fn main() -> Result<(), CutupError> {
         ),
     ];
 
+    // Padding counts characters, so the widest label sets the column.
+    let width = methods
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
     println!(
-        "{:<30}{:>9}{:>9}{:>9}{:>9}",
+        "{:<width$}{:>9}{:>9}{:>9}{:>9}",
         "Method", "Asset 0", "Asset 1", "Asset 2", "Asset 3"
     );
     for (name, weights) in &methods {
-        print!("{name:<30}");
+        print!("{name:<width$}");
         for w in weights {
             print!("{w:>9.3}");
         }
