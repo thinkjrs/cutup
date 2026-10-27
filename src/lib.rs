@@ -93,6 +93,14 @@ pub enum CutupError {
         /// The highest expected return of any asset.
         highest: f64,
     },
+    /// No asset's expected return is above (or beyond rounding of) the risk-free rate, so no
+    /// long-only portfolio has a positive Sharpe ratio.
+    NoPositiveExcessReturn {
+        /// The risk-free rate supplied.
+        risk_free_rate: f64,
+        /// The highest expected return of any asset, which the rate must be below.
+        highest_return: f64,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -154,6 +162,14 @@ impl fmt::Display for CutupError {
                 f,
                 "target return {target_return} is outside the assets' expected returns, \
                  from {lowest} to {highest}, so no long-only portfolio reaches it"
+            ),
+            CutupError::NoPositiveExcessReturn {
+                risk_free_rate,
+                highest_return,
+            } => write!(
+                f,
+                "risk-free rate {risk_free_rate} must be below the highest expected return \
+                 {highest_return} for a long-only portfolio to have a positive Sharpe ratio"
             ),
         }
     }
@@ -367,7 +383,8 @@ impl MeanVarianceConfig {
     }
 }
 
-/// Configuration for [`PortfolioAllocator::max_sharpe_allocation`].
+/// Configuration for [`PortfolioAllocator::max_sharpe_allocation`] and
+/// [`PortfolioAllocator::long_only_max_sharpe_allocation`].
 ///
 /// The default uses a risk-free rate of 0, the sample mean of the returns as expected
 /// returns, and the unadjusted sample covariance:
@@ -1367,6 +1384,118 @@ impl PortfolioAllocator {
         Ok(Weights(weights.iter().copied().collect()))
     }
 
+    /// Computes the maximum Sharpe ratio portfolio with no short positions: maximize
+    /// `(μᵀw − r_f) / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and `w ≥ 0`.
+    ///
+    /// With `y = w / (μ − r_f·1)ᵀw`, this is the convex problem of minimizing `yᵀΣy` subject
+    /// to `(μ − r_f·1)ᵀy = 1` and `y ≥ 0` (Cornuejols and Tütüncü, 2007, §8.2), and
+    /// `w = y / 1ᵀy`. It is solved exactly by the same active-set method as
+    /// [`PortfolioAllocator::long_only_min_variance_allocation`].
+    ///
+    /// A long-only portfolio has a positive Sharpe ratio only if some asset's expected
+    /// return is above the risk-free rate, so this needs the rate to be below the highest
+    /// expected return, not below the minimum variance portfolio's return as
+    /// [`PortfolioAllocator::max_sharpe_allocation`] does. A rate within
+    /// `1e-10 · (|r_f| + max |μᵢ|)` of the highest expected return counts as at it. When Σ is
+    /// invertible and [`PortfolioAllocator::max_sharpe_allocation`] returns weights with no
+    /// short positions, the two agree.
+    ///
+    /// When Σ is singular, several long-only portfolios can share the maximum, and which one
+    /// is returned depends on the solver's path. Add shrinkage or regularization for a unique
+    /// answer.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The risk-free rate, optional expected returns (default: the sample mean of
+    ///   the returns), and covariance adjustments.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, nonnegative and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not
+    ///   finite, or the covariance config is invalid.
+    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
+    /// * [`CutupError::NoPositiveExcessReturn`] if the risk-free rate is at or above the highest
+    ///   expected return.
+    /// * [`CutupError::Unbounded`] when Σ is singular and some long-only portfolio with a
+    ///   positive excess return has no variance, so the Sharpe ratio has no upper bound.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
+    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MaxSharpeConfig, PortfolioAllocator};
+    /// use nalgebra::{dmatrix, dvector};
+    ///
+    /// // Uncorrelated assets, the second with a negative expected return.
+    /// let returns = dmatrix![
+    ///      0.01,  0.02;
+    ///     -0.01, -0.02;
+    ///      0.01, -0.02;
+    ///     -0.01,  0.02
+    /// ];
+    /// let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.002, -0.001]);
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    ///
+    /// // The tangency portfolio shorts the second asset, which long-only can't.
+    /// assert!(allocator.max_sharpe_allocation(&config)?[1] < 0.0);
+    ///
+    /// let weights = allocator.long_only_max_sharpe_allocation(&config)?;
+    /// assert!((weights[0] - 1.0).abs() < 1e-12 && weights[1] == 0.0);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn long_only_max_sharpe_allocation(
+        &self,
+        config: &MaxSharpeConfig,
+    ) -> Result<Weights, CutupError> {
+        let risk_free_rate = config.risk_free_rate;
+        if !risk_free_rate.is_finite() {
+            return Err(CutupError::InvalidConfig {
+                field: "risk_free_rate",
+                value: risk_free_rate,
+            });
+        }
+        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let (best, highest_return) = mu.argmax();
+        let tolerance = 1e-10 * (risk_free_rate.abs() + mu.amax());
+        if highest_return <= risk_free_rate + tolerance {
+            return Err(CutupError::NoPositiveExcessReturn {
+                risk_free_rate,
+                highest_return,
+            });
+        }
+        let cov = self.adjusted_covariance(&config.covariance)?;
+        let n = cov.ncols();
+        let excess = mu.add_scalar(-risk_free_rate);
+
+        // Holding only the asset with the highest expected return is feasible.
+        let mut start = DVector::zeros(n);
+        start[best] = 1.0 / excess[best];
+        let weights = long_only_weights(
+            &cov,
+            &DVector::zeros(n),
+            &DMatrix::from_column_slice(n, 1, excess.as_slice()),
+            &DVector::from_element(1, 1.0),
+            start,
+        )?;
+
+        // Its excess return is positive, so with no variance beyond rounding (n·ε, as in
+        // max_sharpe_allocation's cutoff), the Sharpe ratio is unbounded.
+        let w = DVector::from_column_slice(weights.as_slice());
+        if w.dot(&(&cov * &w)) <= n as f64 * f64::EPSILON * cov.amax() {
+            return Err(CutupError::Unbounded);
+        }
+        Ok(weights)
+    }
+
     /// Computes Equal Weight (EW) portfolio allocation.
     ///
     /// # Returns
@@ -2134,8 +2263,8 @@ pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> Result<Weights, CutupEr
 }
 
 /// Solves `minimize ½ wᵀQw − cᵀw subject to Eᵀw = b and w ≥ 0` from the feasible `start`,
-/// where the first constraint is the budget `1ᵀw = 1`. Clamping at zero can leave the sum
-/// off by rounding, so the weights are rescaled to sum to 1.
+/// and rescales the solution to sum to 1. With a budget constraint `1ᵀw = 1`, that only
+/// removes the rounding left by clamping at zero; for max Sharpe it maps `y` back to `w`.
 fn long_only_weights(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
@@ -2365,6 +2494,15 @@ mod tests {
             .to_string(),
             "target return 0.5 is outside the assets' expected returns, from 0.1 to 0.2, so no \
              long-only portfolio reaches it"
+        );
+        assert_eq!(
+            CutupError::NoPositiveExcessReturn {
+                risk_free_rate: 0.03,
+                highest_return: 0.02
+            }
+            .to_string(),
+            "risk-free rate 0.03 must be below the highest expected return 0.02 for a long-only \
+             portfolio to have a positive Sharpe ratio"
         );
     }
 
@@ -3256,6 +3394,103 @@ mod tests {
             allocator.long_only_mean_variance_allocation(&config),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn test_long_only_max_sharpe_matches_unconstrained_when_long() {
+        // Uncorrelated assets with positive excess returns: the tangency weights,
+        // proportional to (μᵢ − r_f) / σᵢ², are all positive.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = MaxSharpeConfig::default()
+            .with_risk_free_rate(0.0005)
+            .with_expected_returns(dvector![0.001, 0.002, 0.003]);
+        let unconstrained = allocator.max_sharpe_allocation(&config).unwrap();
+        assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
+        assert_weights_close(
+            &allocator.long_only_max_sharpe_allocation(&config).unwrap(),
+            &unconstrained,
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_long_only_max_sharpe_risk_free_rate_limits() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let expected = dvector![0.001, 0.003, 0.002];
+        let at = |rate: f64| {
+            let config = MaxSharpeConfig::default()
+                .with_risk_free_rate(rate)
+                .with_expected_returns(expected.clone());
+            (
+                allocator.max_sharpe_allocation(&config),
+                allocator.long_only_max_sharpe_allocation(&config),
+            )
+        };
+
+        // Just below the highest expected return, the unconstrained maximum doesn't exist,
+        // but the long-only one does, and holds only that asset.
+        let (unconstrained, long_only) = at(0.0029);
+        assert!(matches!(
+            unconstrained,
+            Err(CutupError::RiskFreeRateTooHigh { .. })
+        ));
+        assert_weights_close(&long_only.unwrap(), &Weights(vec![0.0, 1.0, 0.0]), 1e-9);
+
+        for rate in [0.003, 0.003 * (1.0 + 1e-12), 0.01] {
+            assert!(matches!(
+                at(rate).1,
+                Err(CutupError::NoPositiveExcessReturn {
+                    highest_return: 0.003,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn test_long_only_max_sharpe_unbounded_on_singular_covariance() {
+        // [4/7, 0, 3/7] is long-only with zero variance, and with these expected returns its
+        // excess return is positive, so the Sharpe ratio grows without limit.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.01, 0.0, 0.01]);
+        assert_eq!(
+            allocator.long_only_max_sharpe_allocation(&config),
+            Err(CutupError::Unbounded)
+        );
+
+        // Shrinkage gives every portfolio some variance.
+        let config = config.with_covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let weights = allocator.long_only_max_sharpe_allocation(&config).unwrap();
+        assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_long_only_max_sharpe_rejects_bad_input() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = MaxSharpeConfig::default().with_risk_free_rate(f64::NAN);
+        assert!(matches!(
+            allocator.long_only_max_sharpe_allocation(&config),
+            Err(CutupError::InvalidConfig {
+                field: "risk_free_rate",
+                ..
+            })
+        ));
+        let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.01]);
+        assert_eq!(
+            allocator.long_only_max_sharpe_allocation(&config),
+            Err(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 1
+            })
+        );
     }
 
     #[test]

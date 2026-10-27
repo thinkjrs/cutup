@@ -63,6 +63,10 @@ fn main() -> Result<(), CutupError> {
             "Max Sharpe, r_f = 0",
             allocator.max_sharpe_allocation(&MaxSharpeConfig::default())?,
         ),
+        (
+            "Long-only max Sharpe, r_f = 0",
+            allocator.long_only_max_sharpe_allocation(&MaxSharpeConfig::default())?,
+        ),
         ("Risk parity", allocator.risk_parity_allocation()?),
         ("HRP, single linkage", allocator.hrp_allocation()?),
         (
