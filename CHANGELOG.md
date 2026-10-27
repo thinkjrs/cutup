@@ -22,7 +22,7 @@ All notable changes to this project are documented here. The format follows
   from fewer observations than assets. nalgebra's SVD can return factors that don't
   reconstruct the matrix, by up to 1e-2. cutup no longer uses it. Equality-constrained
   problems are solved by the null-space method, with the reduced system and max Sharpe's
-  covariance decomposed by Jacobi rotations, which are accurate to rounding. Results are
+  covariance decomposed by Jacobi rotations, which reconstruct it to within rounding. Results are
   unchanged up to rounding, including the minimum-norm weights on a singular covariance.
 
 ## [0.2.3] - 2026-10-23
