@@ -1191,18 +1191,9 @@ impl PortfolioAllocator {
         if !(scale.is_finite() && scale > 0.0) {
             return Err(CutupError::SingularCovariance);
         }
-        // Σ is symmetric, so its eigenvalues' magnitudes are its singular values.
-        let eigen = SymmetricEigen::new(&(cov / scale))?;
-        let cutoff = eigen.values.amax() * n as f64 * f64::EPSILON;
-        let (mut range, mut null) = (Vec::new(), Vec::new());
-        for (k, &value) in eigen.values.iter().enumerate() {
-            let direction = eigen.vectors.column(k).into_owned();
-            if value.abs() > cutoff {
-                range.push((value, direction));
-            } else {
-                null.push(direction);
-            }
-        }
+        // Σ is positive semidefinite, so its eigenvalues are its singular values.
+        let eigen = SymmetricEigen::new(&(cov / scale)).ok_or(CutupError::SingularCovariance)?;
+        let (range, null) = eigen.split(eigen.values.amax() * n as f64 * f64::EPSILON);
 
         if !null.is_empty() {
             // Coordinates of 1 and of the excess returns in the null space.

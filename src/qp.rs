@@ -53,13 +53,12 @@ fn solve_noisy_kkt(
     let z = &constraints.null;
     let gradient = z.transpose() * (&c - k * &x0);
     let (eigen, cutoff) = reduced_hessian(k, z)?;
-    let mut v = DVector::zeros(z.ncols());
-    for (i, &value) in eigen.values.iter().enumerate() {
-        if value.abs() > cutoff {
-            let w = eigen.vectors.column(i);
-            v += w * (w.dot(&gradient) / value);
-        }
-    }
+    let (range, _) = eigen.split(cutoff);
+    let v = range
+        .iter()
+        .fold(DVector::zeros(z.ncols()), |v, (value, w)| {
+            v + w * (w.dot(&gradient) / value)
+        });
     let x = x0 + z * v;
     let multipliers = constraints.multipliers(&(&c - k * &x));
 
@@ -127,7 +126,8 @@ fn reduced_hessian(
     k: &DMatrix<f64>,
     z: &DMatrix<f64>,
 ) -> Result<(SymmetricEigen, f64), CutupError> {
-    let eigen = SymmetricEigen::new(&(z.transpose() * k * z))?;
+    let eigen =
+        SymmetricEigen::new(&(z.transpose() * k * z)).ok_or(CutupError::SingularCovariance)?;
     // Relative to K as well, so that a reduced Hessian that is all rounding error is zero.
     let largest = eigen.values.amax().max(k.amax());
     let cutoff = largest * (k.nrows() + 1) as f64 * f64::EPSILON;
@@ -412,13 +412,12 @@ fn descent_ray(
     let problem = Scaled::new(q, e)?;
     let z = Constraints::new(&problem.e).null;
     let (eigen, cutoff) = reduced_hessian(&problem.k, &z)?;
-    let mut direction = DVector::zeros(q.nrows());
-    for (i, &value) in eigen.values.iter().enumerate() {
-        if value.abs() <= cutoff {
-            let v = &z * eigen.vectors.column(i);
-            direction += &v * v.dot(c);
-        }
-    }
+    let (_, null) = eigen.split(cutoff);
+    let direction = null.iter().fold(DVector::zeros(q.nrows()), |direction, w| {
+        let v = &z * w;
+        let along = v.dot(c);
+        direction + v * along
+    });
     // The KKT system was inconsistent, so such a direction exists up to rounding; without one
     // the system was too ill-conditioned to tell.
     if direction.norm() <= 1e-12 * c.norm() || direction.norm() == 0.0 {

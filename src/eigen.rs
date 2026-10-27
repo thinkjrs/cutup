@@ -2,16 +2,23 @@
 //!
 //! nalgebra's SVD and symmetric eigendecomposition can both return factors that reconstruct
 //! the matrix only to 1e-3 or worse, on ordinary covariance and KKT matrices. Jacobi rotations
-//! are accurate to rounding (Demmel and Veselić, 1992), so cutup uses them wherever it needs a
-//! pseudo-inverse or a null space. They start from nalgebra's eigenvectors, which are close
-//! enough that a sweep or two usually finishes the job.
+//! are backward stable: the factors reconstruct the matrix to within rounding of its norm, so
+//! cutup uses them wherever it needs a pseudo-inverse or a null space. They start from
+//! nalgebra's eigenvectors, which are close enough that a sweep or two usually finishes the
+//! job.
 
-use crate::CutupError;
 use nalgebra::{DMatrix, DVector};
 
 /// Sweeps allowed before giving up. Convergence is quadratic, so well under 20 are needed in
 /// practice.
 const MAX_SWEEPS: usize = 100;
+
+/// Eigenvectors spanning a range, each with its eigenvalue, and ones spanning a null space.
+type Split = (Vec<(f64, DVector<f64>)>, Vec<DVector<f64>>);
+
+/// QR iterations per row allowed for nalgebra's eigendecomposition, which only supplies the
+/// starting point, as in LAPACK. Past this, Jacobi starts from the identity instead.
+const START_ITERATIONS_PER_ROW: usize = 30;
 
 /// `A = V diag(λ) Vᵀ` for a symmetric `A`: eigenvalues `λ`, unordered, and orthonormal
 /// eigenvectors in the matching columns of `V`.
@@ -27,21 +34,26 @@ impl SymmetricEigen {
     ///
     /// The rotations apply to `VᵀAV`, where `V` is nalgebra's eigenvector matrix made exactly
     /// orthonormal by a QR decomposition, or the identity if nalgebra doesn't converge. Any
-    /// orthonormal `V` gives the same eigenvalues; a good one leaves little to rotate.
+    /// orthonormal `V` gives the same eigenvalues; a good one leaves little to rotate. `A` is
+    /// first divided by its largest entry, so the stopping test can't overflow or underflow.
     ///
-    /// # Errors
-    ///
-    /// * [`CutupError::NotConverged`] if `a` has NaN or infinite entries, or the sweeps run
-    ///   out.
-    pub(crate) fn new(a: &DMatrix<f64>) -> Result<Self, CutupError> {
+    /// Returns `None` if `a` has NaN or infinite entries, or the sweeps run out.
+    pub(crate) fn new(a: &DMatrix<f64>) -> Option<Self> {
         let n = a.nrows();
         if a.iter().any(|x| !x.is_finite()) {
-            return Err(CutupError::NotConverged);
+            return None;
         }
-        // nalgebra panics on an empty matrix.
-        let start = (n > 0)
-            .then(|| a.clone().try_symmetric_eigen(f64::EPSILON, 10_000))
-            .flatten();
+        let scale = a.amax();
+        if scale == 0.0 {
+            return Some(SymmetricEigen {
+                values: DVector::zeros(n),
+                vectors: DMatrix::identity(n, n),
+            });
+        }
+        let a = a / scale;
+        let start = a
+            .clone()
+            .try_symmetric_eigen(5.0 * f64::EPSILON, START_ITERATIONS_PER_ROW * n);
         let mut v = match start {
             Some(start) => start.eigenvectors.qr().q(),
             None => DMatrix::identity(n, n),
@@ -59,8 +71,8 @@ impl SymmetricEigen {
                 break;
             }
             if (2.0 * off_diagonal).sqrt() <= tolerance {
-                return Ok(SymmetricEigen {
-                    values: a.diagonal(),
+                return Some(SymmetricEigen {
+                    values: a.diagonal() * scale,
                     vectors: v,
                 });
             }
@@ -70,7 +82,24 @@ impl SymmetricEigen {
                 }
             }
         }
-        Err(CutupError::NotConverged)
+        None
+    }
+
+    /// For a positive semidefinite matrix, splits the eigenvectors into those of eigenvalues
+    /// above `cutoff`, paired with their eigenvalue, which span the range, and the rest, which
+    /// span the null space. Eigenvalues at or below `cutoff`, negative ones included, are
+    /// rounding error.
+    pub(crate) fn split(&self, cutoff: f64) -> Split {
+        let (mut range, mut null) = (Vec::new(), Vec::new());
+        for (k, &value) in self.values.iter().enumerate() {
+            let vector = self.vectors.column(k).into_owned();
+            if value > cutoff {
+                range.push((value, vector));
+            } else {
+                null.push(vector);
+            }
+        }
+        (range, null)
     }
 }
 
@@ -164,10 +193,32 @@ mod tests {
     #[test]
     fn rejects_non_finite_matrices() {
         let a = dmatrix![1.0, f64::NAN; f64::NAN, 1.0];
-        assert!(matches!(
-            SymmetricEigen::new(&a),
-            Err(CutupError::NotConverged)
-        ));
+        assert!(SymmetricEigen::new(&a).is_none());
+    }
+
+    #[test]
+    fn extreme_scales() {
+        // At 1e300 the squared entries overflow, and at 1e-300 they underflow, unless the
+        // matrix is scaled first.
+        let a = dmatrix![2.0, 1.0; 1.0, 2.0];
+        for scale in [1e300, 1e-300] {
+            let eigen = SymmetricEigen::new(&(&a * scale)).unwrap();
+            let mut values: Vec<f64> = eigen.values.iter().map(|v| v / scale).collect();
+            values.sort_by(f64::total_cmp);
+            assert!((values[0] - 1.0).abs() < 1e-14 && (values[1] - 3.0).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn split_puts_negative_rounding_in_the_null_space() {
+        let eigen = SymmetricEigen {
+            values: DVector::from_column_slice(&[2.0, -1e-3, 1e-16]),
+            vectors: DMatrix::identity(3, 3),
+        };
+        let (range, null) = eigen.split(1e-15);
+        assert_eq!(range.len(), 1);
+        assert_eq!(range[0].0, 2.0);
+        assert_eq!(null.len(), 2);
     }
 
     #[test]
