@@ -26,6 +26,12 @@ cutup's implementation:
   checks neither the multipliers' signs nor uses an iterative solver, unlike cutup's
   active-set method. Only covariances that aren't singular are used, where the optimum is
   unique. A target return outside the assets' expected returns is an error.
+
+  With weight bounds, each asset is held at its lower bound, at its upper bound, or left
+  free. The range of reachable target returns comes from scipy.optimize.linprog, not the
+  greedy fill cutup uses, and bounds that can't sum to 1 are an error. Each bounded result
+  is cross-checked against PyPortfolioOpt's EfficientFrontier with the same weight_bounds,
+  which uses cvxpy, to 1e-5.
 * Long-only max Sharpe: the same support enumeration, on the change of variables
   y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
@@ -50,6 +56,7 @@ because NumPy's linear algebra can differ in the last bits between platforms.
 """
 
 import importlib.metadata
+import itertools
 import json
 import platform
 import sys
@@ -57,7 +64,7 @@ import sys
 import numpy as np
 import pandas as pd
 import riskfolio
-from pypfopt import HRPOpt
+from pypfopt import EfficientFrontier, HRPOpt
 from scipy.optimize import linprog, nnls
 
 from fixtures import FIXTURES, write_json
@@ -157,55 +164,156 @@ def min_variance(cov: np.ndarray) -> np.ndarray:
     return kkt_min_norm(cov, np.zeros(n), ones[:, None], np.array([1.0]))
 
 
-def long_only(k: np.ndarray, c: np.ndarray, e: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and w ≥ 0 by support enumeration, in units
-    u = Dw with D = diag(sqrt(Kᵢᵢ)), which change neither the objective nor u ≥ 0."""
+def long_only(
+    k: np.ndarray,
+    c: np.ndarray,
+    e: np.ndarray,
+    b: np.ndarray,
+    lower: np.ndarray | None = None,
+    upper: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and l ≤ w ≤ u, by default w ≥ 0, by support
+    enumeration: every variable is held at its lower bound, at its upper bound, or left free.
+    Works in units u = Dw with D = diag(sqrt(Kᵢᵢ)), which change neither the objective nor
+    which points are within the bounds."""
     n, m = e.shape
+    lower = np.zeros(n) if lower is None else np.asarray(lower, dtype=float)
+    upper = np.full(n, np.inf) if upper is None else np.asarray(upper, dtype=float)
     d = unit_scales(k)
     k, c, e, b = in_units(k, c, e, b, d)
+    lower, upper = lower * d, upper * d
+    # 0: at the lower bound, 1: at the upper bound, 2: free.
+    choices = [
+        (0,) if upper[i] <= lower[i] else (0, 2) if np.isinf(upper[i]) else (0, 1, 2)
+        for i in range(n)
+    ]
     best, best_value = None, np.inf
-    for mask in range(1, 2**n):
-        support = [i for i in range(n) if mask >> i & 1]
-        k_s, e_s, c_s = k[np.ix_(support, support)], e[support], c[support]
-        if np.linalg.cond(k_s) < WELL_CONDITIONED:
-            # Kx = c − Eλ, so the multipliers solve (EᵀK⁻¹E)λ = EᵀK⁻¹c − b. Unlike a least-squares
-            # solve of the whole KKT matrix, this stays accurate when E's entries are many
-            # orders of magnitude apart.
-            k_e, k_c = np.linalg.solve(k_s, e_s), np.linalg.solve(k_s, c_s)
-            lam, *_ = np.linalg.lstsq(e_s.T @ k_e, e_s.T @ k_c - b, rcond=None)
-            x = k_c - k_e @ lam
-            residual, size = e_s.T @ x - b, np.abs(e_s).max() * np.abs(x).max() + np.abs(b).max()
-        else:
-            kkt = np.block([[k_s, e_s], [e_s.T, np.zeros((m, m))]])
-            rhs = np.concatenate([c_s, b])
-            solution, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
-            x = solution[: len(support)]
-            residual, size = kkt @ solution - rhs, np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()
-        # No feasible point on this support, such as a single asset away from the target.
-        if np.abs(residual).max() > 1e-9 * size:
-            continue
+    for states in itertools.product(*choices):
+        support = [i for i in range(n) if states[i] == 2]
+        held = [i for i in range(n) if states[i] != 2]
         candidate = np.zeros(n)
-        candidate[support] = x
+        for i in held:
+            candidate[i] = upper[i] if states[i] == 1 else lower[i]
+        # The free variables' problem, with the held ones moved to the right-hand side.
+        c_s = c[support] - k[np.ix_(support, held)] @ candidate[held]
+        b_s = b - e[held].T @ candidate[held]
+        if not support:
+            # No feasible point with every variable at a bound here, such as a single
+            # asset away from the target.
+            if np.abs(b_s).max() > 1e-12 * (np.abs(e).max() * np.abs(candidate).max() + np.abs(b).max()):
+                continue
+        else:
+            k_s, e_s = k[np.ix_(support, support)], e[support]
+            if np.linalg.cond(k_s) < WELL_CONDITIONED:
+                # Kx = c − Eλ, so the multipliers solve (EᵀK⁻¹E)λ = EᵀK⁻¹c − b. Unlike a
+                # least-squares solve of the whole KKT matrix, this stays accurate when E's
+                # entries are many orders of magnitude apart.
+                k_e, k_c = np.linalg.solve(k_s, e_s), np.linalg.solve(k_s, c_s)
+                lam, *_ = np.linalg.lstsq(e_s.T @ k_e, e_s.T @ k_c - b_s, rcond=None)
+                x = k_c - k_e @ lam
+                residual, size = e_s.T @ x - b_s, np.abs(e_s).max() * np.abs(x).max() + np.abs(b).max()
+            else:
+                kkt = np.block([[k_s, e_s], [e_s.T, np.zeros((m, m))]])
+                rhs = np.concatenate([c_s, b_s])
+                solution, *_ = np.linalg.lstsq(kkt, rhs, rcond=None)
+                x = solution[: len(support)]
+                residual, size = kkt @ solution - rhs, np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()
+            # No feasible point on this support, such as a single asset away from the target.
+            if np.abs(residual).max() > 1e-9 * size:
+                continue
+            if np.any(x < lower[support]) or np.any(x > upper[support]):
+                continue
+            candidate[support] = x
         value = 0.5 * candidate @ k @ candidate - c @ candidate
-        if candidate.min() >= 0.0 and value < best_value:
+        if value < best_value:
             best, best_value = candidate, value
     # None when no support is feasible, such as an unreachable target return.
     return None if best is None else best / d
 
 
-def long_only_min_variance(cov: np.ndarray) -> np.ndarray:
+def weight_bounds(params: dict, n: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """The case's weight bounds, from `bounds` for every asset or per-asset `lower_bounds` and
+    `upper_bounds`, or None."""
+    if "bounds" in params:
+        lower, upper = params["bounds"]
+        return np.full(n, float(lower)), np.full(n, float(upper))
+    if "lower_bounds" in params:
+        return np.array(params["lower_bounds"], dtype=float), np.array(params["upper_bounds"], dtype=float)
+    return None
+
+
+def infeasible(bounds: tuple[np.ndarray, np.ndarray]) -> bool:
+    lower, upper = bounds
+    return lower.sum() > 1.0 + 1e-12 or upper.sum() < 1.0 - 1e-12
+
+
+def return_range(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray]) -> tuple[float, float]:
+    """The lowest and highest expected return of a portfolio summing to 1 within the bounds,
+    from two linear programs."""
+    lower, upper = bounds
+    box = list(zip(lower, upper))
+    budget = {"A_eq": np.ones((1, len(mu))), "b_eq": [1.0], "bounds": box}
+    lowest, highest = linprog(mu, **budget), linprog(-mu, **budget)
+    if lowest.status != 0 or highest.status != 0:
+        raise ValueError(f"linprog failed: {lowest.message} / {highest.message}")
+    return float(lowest.fun), float(-highest.fun)
+
+
+def long_only_min_variance(cov: np.ndarray, params: dict) -> np.ndarray | str:
     n = cov.shape[0]
-    return long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]))
+    bounds = weight_bounds(params, n)
+    if bounds is None:
+        return long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]))
+    if infeasible(bounds):
+        return "InfeasibleBounds"
+    weights = long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *bounds)
+    cross_check(cov, None, bounds, weights, lambda frontier: frontier.min_volatility())
+    return weights
 
 
 def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np.ndarray | str:
     n = cov.shape[0]
+    bounds = weight_bounds(params, n)
+    if bounds is not None and infeasible(bounds):
+        return "InfeasibleBounds"
+    bounds_or_none = bounds or (None, None)
     if "risk_aversion" in params:
-        return long_only(params["risk_aversion"] * cov, mu, np.ones((n, 1)), np.array([1.0]))
+        gamma = params["risk_aversion"]
+        weights = long_only(gamma * cov, mu, np.ones((n, 1)), np.array([1.0]), *bounds_or_none)
+        if bounds is not None:
+            cross_check(cov, mu, bounds, weights, lambda frontier: frontier.max_quadratic_utility(gamma))
+        return weights
     target = params["target_return"]
-    if not mu.min() <= target <= mu.max():
+    lowest, highest = (mu.min(), mu.max()) if bounds is None else return_range(mu, bounds)
+    tolerance = 1e-12 * max(abs(lowest), abs(highest))
+    if not lowest - tolerance <= target <= highest + tolerance:
         return "TargetReturnOutOfRange"
-    return long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]))
+    target = min(max(target, lowest), highest)
+    weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]), *bounds_or_none)
+    # PyPortfolioOpt only accepts targets strictly inside the range.
+    if bounds is not None and lowest < target < highest:
+        cross_check(cov, mu, bounds, weights, lambda frontier: frontier.efficient_return(target))
+    return weights
+
+
+def cross_check(cov, mu, bounds, weights, optimize) -> None:
+    """Checks bounded weights against PyPortfolioOpt's EfficientFrontier with the same
+    weight bounds, which solves the problem with cvxpy. That solver is only accurate to
+    about 1e-6, so this catches a wrong reference rather than setting the fixture. It's
+    skipped when Σ itself is badly conditioned, as when volatilities are orders of
+    magnitude apart: cvxpy's absolute tolerances can't tell such variances apart."""
+    if np.linalg.cond(cov) > 1e8:
+        return
+    lower, upper = bounds
+    frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))))
+    optimize(frontier)
+    theirs = np.array(list(frontier.weights))
+    # efficient_return asks for a return of at least the target, which only matches an
+    # equality where the target is above the minimum variance portfolio's return.
+    if mu is not None and abs(theirs @ mu - weights @ mu) > 1e-9 * np.abs(mu).max():
+        return
+    if np.abs(theirs - weights).max() > 1e-5:
+        raise ValueError(f"PyPortfolioOpt disagrees: {theirs} vs {weights}")
 
 
 def risk_aversion(cov: np.ndarray, mu: np.ndarray, gamma: float) -> np.ndarray | str:
@@ -375,7 +483,7 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
         case "min_variance":
             return min_variance(adjusted)
         case "long_only_min_variance":
-            return long_only_min_variance(adjusted)
+            return long_only_min_variance(adjusted, params)
         case "long_only_mean_variance":
             return long_only_mean_variance(adjusted, mu, params)
         case "mean_variance" if "risk_aversion" in params:
@@ -567,6 +675,38 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": "scales4", "method": method, "params": {"target_return": 6.942e-06, "expected_returns": scaled_mu}, "tolerance": solver})
     for method in ["max_sharpe", "long_only_max_sharpe"]:
         out.append({"dataset": "scales4", "method": method, "params": {"expected_returns": scaled_mu}, "tolerance": solver})
+
+    # Weight bounds on long-only min variance and mean-variance: caps and floors that bind,
+    # bounds no portfolio summing to 1 meets, and targets inside, at the end of, and beyond
+    # the range of returns the bounds allow.
+    for name, params in [
+        ("orthogonal3", {"bounds": [0.0, 0.4]}),
+        ("two_blocks5", {"bounds": [0.0, 0.3]}),
+        ("prices10x60", {"bounds": [0.0, 0.15]}),
+        ("prices10x60", {"bounds": [0.05, 0.3]}),
+        ("near_singular4", {"lower_bounds": [0.1, 0.0, 0.1, 0.0], "upper_bounds": [0.5, 0.6, 1.0, 0.35]}),
+        ("scales4", {"bounds": [0.0, 0.5]}),
+        ("rank_deficient6", {"bounds": [0.0, 0.25], "shrinkage": 0.3}),
+        ("orthogonal3", {"bounds": [0.0, 0.3]}),
+        ("two_blocks5", {"bounds": [0.25, 1.0]}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_min_variance", "params": params, "tolerance": solver})
+    mu10 = [0.0010, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+    # The first two assets tie, and a cap of 40% splits the weight left at the margin between
+    # them at the highest return, 0.4 · 0.0012 + 0.6 · 0.0010.
+    tied = [0.0010, 0.0010, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+    for name, params in [
+        ("two_blocks5", {"risk_aversion": 5.0, "bounds": [0.0, 0.35]}),
+        ("prices10x60", {"risk_aversion": 5.0, "bounds": [0.0, 0.2]}),
+        ("prices10x60", {"risk_aversion": 100.0, "bounds": [0.02, 0.25], "expected_returns": mu10}),
+        # A cap of 25% allows returns from 0.00035 to 0.000975.
+        ("prices10x60", {"target_return": 0.0008, "bounds": [0.0, 0.25], "expected_returns": mu10}),
+        ("prices10x60", {"target_return": 0.000975, "bounds": [0.0, 0.25], "expected_returns": mu10}),
+        ("prices10x60", {"target_return": 0.001, "bounds": [0.0, 0.25], "expected_returns": mu10}),
+        ("prices10x60", {"target_return": 0.00108, "bounds": [0.0, 0.4], "expected_returns": tied}),
+        ("two_blocks5", {"risk_aversion": 5.0, "bounds": [0.0, 0.15]}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_mean_variance", "params": params, "tolerance": solver})
 
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.

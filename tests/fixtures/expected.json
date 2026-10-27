@@ -1504,6 +1504,191 @@
       "condition_number": 2.751
     },
     {
+      "dataset": "orthogonal3",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.4]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4, 0.4, 0.19999999999999996],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.15498639359623712, 0.27166341508551556, 0.27335019131824734, 0.3],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.15]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.15, 0.15, 0.03199736009710721, 0.024868311267553907, 0.15, 0.13898961030462417, 0.15, 0.010961221678935068, 0.04318349665177958, 0.15],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.05, 0.3]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.09686781300112463, 0.13011564824255814, 0.05, 0.05, 0.2541852707608044, 0.08199145942293908, 0.1194380483533326, 0.05, 0.05, 0.11740176021924101],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_min_variance",
+      "params": {
+        "lower_bounds": [0.1, 0.0, 0.1, 0.0],
+        "upper_bounds": [0.5, 0.6, 1.0, 0.35]
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.26654859665439157, 0.6, 0.1, 0.03345140334560848],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.5, 0.5],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.25],
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1366474669207372, 0.19172943977541534, 0.01165146671206113, 0.19460502280709926, 0.215366603784687, 0.25],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds",
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_min_variance",
+      "params": {
+        "bounds": [0.25, 1.0]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 5.0,
+        "bounds": [0.0, 0.35]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.35, 0.0, 0.35, 0.30000000000000004],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 5.0,
+        "bounds": [0.0, 0.2]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.2, 0.14412837132578826, 0.2, 0.0, 0.0, 0.2, 0.05587162867421209, 0.0, 0.2, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 100.0,
+        "bounds": [0.02, 0.25],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.17271902410175521, 0.1333332051069713, 0.02, 0.02, 0.25, 0.10106219281991258, 0.07415221974547105, 0.02, 0.02, 0.18873335822588977],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.0008,
+        "bounds": [0.0, 0.25],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.16454879064163774, 0.14321549991273141, 0.006491425280223629, 0.0, 0.25, 0.12670128240853243, 0.11311388514723382, 0.0, 0.0, 0.19592911660964105],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.000975,
+        "bounds": [0.0, 0.25],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.25, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.2499999999999994, 0.0, 0.25],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.001,
+        "bounds": [0.0, 0.25],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_return": 0.00108,
+        "bounds": [0.0, 0.4],
+        "expected_returns": [0.001, 0.001, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.35607041926536787, 0.2439295807346292, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 3.4767972274456105e-15],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "risk_aversion": 5.0,
+        "bounds": [0.0, 0.15]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds",
+      "condition_number": 82.05
+    },
+    {
       "dataset": "rank_deficient6",
       "method": "risk_parity",
       "params": {

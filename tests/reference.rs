@@ -6,7 +6,7 @@
 
 use cutup::{
     CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, Weights,
+    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -52,6 +52,21 @@ fn covariance_config(params: &Value) -> CovarianceConfig {
         config = config.with_regularization(epsilon);
     }
     config
+}
+
+/// Bounds from `bounds: [lower, upper]` for every asset, or from per-asset `lower_bounds`
+/// and `upper_bounds`, if the case has either.
+fn weight_bounds(params: &Value) -> Option<WeightBounds> {
+    if params["bounds"].is_array() {
+        let bounds = floats(&params["bounds"]);
+        return Some(WeightBounds::uniform(bounds[0], bounds[1]));
+    }
+    params["lower_bounds"].is_array().then(|| {
+        WeightBounds::per_asset(
+            floats(&params["lower_bounds"]),
+            floats(&params["upper_bounds"]),
+        )
+    })
 }
 
 fn mean_variance_config(params: &Value) -> MeanVarianceConfig {
@@ -139,12 +154,20 @@ fn run(
         "inverse_volatility" => allocator.inverse_volatility_allocation(),
         "inverse_variance" => allocator.inverse_variance_allocation(),
         "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
-        "long_only_min_variance" => {
-            allocator.long_only_min_variance_allocation_with_config(&covariance_config(params))
-        }
-        "long_only_mean_variance" => {
-            allocator.long_only_mean_variance_allocation(&mean_variance_config(params))
-        }
+        "long_only_min_variance" => match weight_bounds(params) {
+            Some(bounds) => allocator
+                .long_only_min_variance_allocation_with_bounds(&covariance_config(params), &bounds),
+            None => {
+                allocator.long_only_min_variance_allocation_with_config(&covariance_config(params))
+            }
+        },
+        "long_only_mean_variance" => match weight_bounds(params) {
+            Some(bounds) => allocator.long_only_mean_variance_allocation_with_bounds(
+                &mean_variance_config(params),
+                &bounds,
+            ),
+            None => allocator.long_only_mean_variance_allocation(&mean_variance_config(params)),
+        },
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
         "max_sharpe" => allocator.max_sharpe_allocation(&max_sharpe_config(params)),
         "long_only_max_sharpe" => {
