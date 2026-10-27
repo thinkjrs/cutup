@@ -27,9 +27,9 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 ## Features
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
-- **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver.
+- **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
-- **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver.
+- **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
 - **EW Allocation**: Assigns equal weights to all assets.
@@ -48,9 +48,9 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 | `inverse_volatility_allocation` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
 | `inverse_variance_allocation` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
 | `min_variance_allocation` | covariance | ❌ | The lowest-variance fully invested portfolio. Sensitive to estimation error, so consider shrinkage. |
-| `long_only_min_variance_allocation` | covariance | ✅ | The lowest-variance portfolio without shorting. Usually concentrates in a few low-risk assets and holds none of the rest. |
+| `long_only_min_variance_allocation` | covariance | ✅ | The lowest-variance portfolio without shorting. Usually concentrates in a few low-risk assets and holds none of the rest; `_with_bounds` caps or floors each asset. |
 | `mean_variance_allocation` | covariance, expected returns | ❌ | Markowitz, for a risk aversion or a target return. Most sensitive to the expected returns you supply. |
-| `long_only_mean_variance_allocation` | covariance, expected returns | ✅ | Markowitz without shorting. A target return must lie between the lowest and highest expected return. Low risk aversion concentrates in the highest expected returns. |
+| `long_only_mean_variance_allocation` | covariance, expected returns | ✅ | Markowitz without shorting. A target return must lie between the lowest and highest expected return. Low risk aversion concentrates in the highest expected returns; `_with_bounds` caps or floors each asset. |
 | `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
 | `long_only_max_sharpe_allocation` | covariance, expected returns, risk-free rate | ✅ | The highest Sharpe ratio without shorting. Only needs some asset's expected return above the risk-free rate. |
 | `max_diversification_allocation` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
@@ -142,7 +142,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification, coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 

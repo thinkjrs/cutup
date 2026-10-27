@@ -6,8 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Per-asset weight bounds for long-only min variance and mean-variance:
+  `PortfolioAllocator::long_only_min_variance_allocation_with_bounds` and
+  `PortfolioAllocator::long_only_mean_variance_allocation_with_bounds`, taking a
+  `WeightBounds` built with `WeightBounds::uniform` or `WeightBounds::per_asset`. Each
+  asset's weight stays between its floor and its cap; `f64::INFINITY` means no cap. The
+  active-set solver now holds each variable at its lower bound, its upper bound, or
+  between them, so the results are exact, as without bounds.
+- `CutupError::InfeasibleBounds`, returned when the floors sum to more than 1 or the caps
+  to less.
+- Reference cases with bounds, against support enumeration over each asset at its floor,
+  at its cap, or free, and cross-checked against PyPortfolioOpt. Property tests: bounded
+  weights satisfy the KKT conditions for min variance and both mean-variance objectives,
+  tightening a cap never lowers the variance, and bounds that never bind change nothing.
+
 ### Changed
 
+- `CutupError::TargetReturnOutOfRange` reports the lowest and highest return reachable
+  within the bounds. Without bounds those are still the lowest and highest expected return
+  of any asset.
 - The sum-to-one property test checks long-only methods to `1e-12`. Only the long-short
   methods, whose weights can be in the thousands, are checked relative to their largest
   position.
