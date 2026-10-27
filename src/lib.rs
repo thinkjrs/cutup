@@ -407,6 +407,10 @@ impl MeanVarianceConfig {
 /// An upper bound of `f64::INFINITY` means no cap. The default, `0 ≤ w` with no cap, is the
 /// plain long-only constraint.
 ///
+/// Caps that sum to just under 1, or floors to just over, by at most `1e-12`, are taken as
+/// rounding: ten caps of 0.1 sum to 0.9999999999999999. No portfolio meets such bounds
+/// exactly, so they're rescaled to sum to 1, which moves each by at most `1e-12` of itself.
+///
 /// ```
 /// use cutup::WeightBounds;
 ///
@@ -495,6 +499,18 @@ impl WeightBounds {
                 upper_sum,
             });
         }
+        // Within rounding but short of the budget, no portfolio meets the bounds exactly, so
+        // they're rescaled onto it, which moves each by at most 1e-12 of itself.
+        let (lower, lower_sum) = if lower_sum > 1.0 {
+            (lower / lower_sum, 1.0)
+        } else {
+            (lower, lower_sum)
+        };
+        let upper = if upper_sum < 1.0 {
+            upper / upper_sum
+        } else {
+            upper
+        };
         let upper = DVector::from_fn(n, |i, _| upper[i].min(1.0 - (lower_sum - lower[i])));
         Ok(qp::Bounds { lower, upper })
     }
@@ -1445,66 +1461,64 @@ impl PortfolioAllocator {
         check_objective(config.objective)?;
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
         let bounds = bounds.resolve(mu.len())?;
-        // An unreachable target is rejected before the covariance is built.
-        let range = ReturnRange::new(&mu, &bounds);
-        let objective = match config.objective {
-            MeanVarianceObjective::TargetReturn(target) => {
-                MeanVarianceObjective::TargetReturn(range.reachable(target)?)
-            }
-            objective => objective,
+        let budget = |n: usize| {
+            (
+                DMatrix::from_element(n, 1, 1.0),
+                DVector::from_element(1, 1.0),
+            )
         };
-        let cov = self.adjusted_covariance(&config.covariance)?;
-        let n = cov.ncols();
-        let budget = (
-            DMatrix::from_element(n, 1, 1.0),
-            DVector::from_element(1, 1.0),
-        );
-
-        match objective {
-            MeanVarianceObjective::RiskAversion(gamma) => long_only_weights(
-                &(cov * gamma),
-                &mu,
-                &budget.0,
-                &budget.1,
-                &bounds,
-                interior_start(&bounds),
-            ),
-            MeanVarianceObjective::TargetReturn(target)
-                if target == range.lowest || target == range.highest =>
-            {
-                // Only the portfolios that fill the bounds in order of expected return reach
-                // an end of the range, so every asset but those tied at the margin is fixed,
-                // and the target needs no constraint of its own.
-                let bounds = range.face(&mu, &bounds, target == range.highest);
-                long_only_weights(
-                    &cov,
-                    &DVector::zeros(n),
-                    &budget.0,
-                    &budget.1,
+        let target = match config.objective {
+            MeanVarianceObjective::RiskAversion(gamma) => {
+                let cov = self.adjusted_covariance(&config.covariance)?;
+                let (e, b) = budget(cov.ncols());
+                return long_only_weights(
+                    &(cov * gamma),
+                    &mu,
+                    &e,
+                    &b,
                     &bounds,
                     interior_start(&bounds),
-                )
+                );
             }
-            MeanVarianceObjective::TargetReturn(target) => {
-                // Mixing the lowest and highest return portfolios reaches any target in
-                // between. Dividing by the larger in magnitude first keeps the differences
-                // from overflowing.
-                let scale = range.lowest.abs().max(range.highest.abs());
-                let t = ((target / scale - range.lowest / scale)
-                    / (range.highest / scale - range.lowest / scale))
-                    .clamp(0.0, 1.0);
-                let start = &range.lowest_weights * (1.0 - t) + &range.highest_weights * t;
-                let ones = DVector::from_element(n, 1.0);
-                long_only_weights(
-                    &cov,
-                    &DVector::zeros(n),
-                    &DMatrix::from_columns(&[ones, mu]),
-                    &DVector::from_vec(vec![1.0, target]),
-                    &bounds,
-                    start,
-                )
-            }
+            MeanVarianceObjective::TargetReturn(target) => target,
+        };
+        // An unreachable target is rejected before the covariance is built.
+        let range = ReturnRange::new(&mu, &bounds);
+        let target = range.reachable(target)?;
+        let cov = self.adjusted_covariance(&config.covariance)?;
+        let n = cov.ncols();
+
+        if target == range.lowest || target == range.highest {
+            // Only the portfolios that fill the bounds in order of expected return reach an
+            // end of the range, so every asset but those tied at the margin is fixed, and the
+            // target needs no constraint of its own.
+            let bounds = range.face(&mu, &bounds, target == range.highest);
+            let (e, b) = budget(n);
+            return long_only_weights(
+                &cov,
+                &DVector::zeros(n),
+                &e,
+                &b,
+                &bounds,
+                interior_start(&bounds),
+            );
         }
+        // Mixing the lowest and highest return portfolios reaches any target in between.
+        // Dividing by the larger in magnitude first keeps the differences from overflowing.
+        let scale = range.lowest.abs().max(range.highest.abs());
+        let t = ((target / scale - range.lowest / scale)
+            / (range.highest / scale - range.lowest / scale))
+            .clamp(0.0, 1.0);
+        let start = &range.lowest_weights * (1.0 - t) + &range.highest_weights * t;
+        let ones = DVector::from_element(n, 1.0);
+        long_only_weights(
+            &cov,
+            &DVector::zeros(n),
+            &DMatrix::from_columns(&[ones, mu]),
+            &DVector::from_vec(vec![1.0, target]),
+            &bounds,
+            start,
+        )
     }
 
     /// Returns `given` after checking it, or the sample mean of the returns when it's `None`.
@@ -2837,29 +2851,12 @@ impl ReturnRange {
         } else {
             (&self.lowest_weights, self.margins.0)
         };
-        let tied = |i: usize| margin == Some(mu[i]);
-        qp::Bounds {
-            lower: DVector::from_fn(
-                mu.len(),
-                |i, _| {
-                    if tied(i) {
-                        bounds.lower[i]
-                    } else {
-                        weights[i]
-                    }
-                },
-            ),
-            upper: DVector::from_fn(
-                mu.len(),
-                |i, _| {
-                    if tied(i) {
-                        bounds.upper[i]
-                    } else {
-                        weights[i]
-                    }
-                },
-            ),
+        let mut face = bounds.clone();
+        for i in (0..mu.len()).filter(|&i| margin != Some(mu[i])) {
+            face.lower[i] = weights[i];
+            face.upper[i] = weights[i];
         }
+        face
     }
 }
 
@@ -4115,6 +4112,23 @@ mod tests {
                 actual: n + 1
             })
         );
+
+        // Caps or floors short of the budget by less than 1e-12 are rescaled onto it, giving
+        // equal weights within 1e-12 of each bound.
+        for (lower, upper) in [
+            (0.0, (1.0 - 5e-13) / n as f64),
+            (0.0, (1.0 - 9e-13) / n as f64),
+            ((1.0 + 9e-13) / n as f64, 1.0),
+        ] {
+            let weights = solve(WeightBounds::uniform(lower, upper)).unwrap();
+            assert_weights_close(&weights, &Weights(vec![1.0 / n as f64; n]), 1e-15);
+            for &w in &weights {
+                assert!(
+                    w >= lower * (1.0 - 1e-12) && w <= upper * (1.0 + 1e-12),
+                    "{w}"
+                );
+            }
+        }
 
         // Within rounding of a budget of 1 is feasible: ten caps of 0.1 sum to just under it.
         let ten = PortfolioAllocator::from_returns(DMatrix::from_fn(12, 10, |i, j| {

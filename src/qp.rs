@@ -404,15 +404,25 @@ fn solve_bounded_in_units(
     // again would loop, so they stay in the active set until x moves.
     let mut refused = vec![false; n];
     let mut released = None;
+    // Where every variable was last freed at once, so that returning there without x moving
+    // stops instead of looping.
+    let mut freed_at: Option<DVector<f64>> = None;
 
     for _ in 0..100 + 20 * n {
         let indices: Vec<usize> = (0..n).filter(|&i| state[i] == State::Free).collect();
         // Every variable is at a bound, as when starting from a vertex. Freeing all of them
-        // lets the steps below block back the ones that belong at a bound, one per step.
+        // lets the steps below block back the ones that belong at a bound, one per step; at
+        // an optimal vertex they block back onto it without x moving. Steps never block the
+        // last free variable, so getting here again at the same x means the solver can't make
+        // progress.
         if indices.is_empty() {
             if fixed.iter().all(|&f| f) {
                 return Ok(x);
             }
+            if freed_at.as_ref() == Some(&x) {
+                return Err(CutupError::NotConverged);
+            }
+            freed_at = Some(x.clone());
             for i in (0..n).filter(|&i| !fixed[i]) {
                 state[i] = State::Free;
             }
@@ -422,32 +432,29 @@ fn solve_bounded_in_units(
         let c_free = c.select_rows(&indices);
         let e_free = e.select_rows(&indices);
         let x_free = x.select_rows(&indices);
-        // The free problem's linear term, including the pull of variables held at a nonzero
-        // bound.
-        let mut x_held = x.clone();
-        for &i in &indices {
-            x_held[i] = 0.0;
-        }
         let q_rows = q.select_rows(&indices);
-        let linear = &c_free - &q_rows * &x_held;
 
         // Solve for the step from x rather than for the new point, so that when Q is singular
         // and the free problem has many minima, the target is the one closest to x. The
         // minimum-norm one could put a just-released variable outside its bounds, blocking it
-        // at once.
-        let gradient_free = &linear - &q_free * &x_free;
+        // at once. The rows of Q over all of x include the pull of variables held at a
+        // nonzero bound.
+        let gradient_free = &c_free - &q_rows * &x;
         let residual = b - e.transpose() * &x;
         let noise = q_rows.amax() * x.amax() + c_free.amax();
         let Some((delta, multipliers)) =
             solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
         else {
-            // Without a linear term the objective is bounded below and the free problem has a
-            // minimum, so the solve failed numerically.
-            if c.iter().all(|&v| v == 0.0) {
+            // Without a linear term on the free variables the free problem is bounded below:
+            // the held variables only add Q_fh·x_h, which for a positive semidefinite Q lies in
+            // the range of Q_ff. So it has a minimum, and the solve failed numerically.
+            if c_free.iter().all(|&v| v == 0.0) {
                 return Err(CutupError::SingularCovariance);
             }
             // No minimum on the free variables: move along a direction of zero curvature
-            // until a variable reaches a bound.
+            // until a variable reaches a bound. The free problem's linear term includes the
+            // pull of the held variables.
+            let linear = &gradient_free + &q_free * &x_free;
             let direction = descent_ray(&q_free, &linear, &e_free)?;
             let (step, blocking, side) =
                 ratio_test(&x_free, &direction, &indices, bounds).ok_or(CutupError::Unbounded)?;
