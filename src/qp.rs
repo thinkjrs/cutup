@@ -1,5 +1,5 @@
 //! Convex quadratic programs: equality-constrained ones solved by the null-space method, and
-//! ones with nonnegative variables solved by a primal active-set method on top of it.
+//! ones with bounded variables solved by a primal active-set method on top of it.
 
 use crate::eigen::SymmetricEigen;
 use crate::CutupError;
@@ -41,10 +41,10 @@ pub(crate) fn solve_kkt(
 }
 
 /// A problem in `x` restated in `u = Dx`, with `D = diag(sqrt(Kᵢᵢ))`: `K` becomes
-/// `D⁻¹KD⁻¹`, with a unit diagonal, and `c` and the rows of `E` are divided by `D`. The
-/// solution's `x ≥ 0` is unchanged. Each column of `E` and its entry of `b` are also divided
-/// by the column's largest entry first, so that the division by `D` can't overflow; that
-/// scales the multipliers, which are scaled back. A zero or non-finite `Kᵢᵢ` keeps its
+/// `D⁻¹KD⁻¹`, with a unit diagonal, and `c` and the rows of `E` are divided by `D`. Bounds on
+/// `x` scale by `D` like `x`, so `x ≥ 0` is unchanged. Each column of `E` and its entry of `b`
+/// are also divided by the column's largest entry first, so that the division by `D` can't
+/// overflow; that scales the multipliers, which are scaled back. A zero or non-finite `Kᵢᵢ` keeps its
 /// variable's scale, so a linear objective's free block or a bad input passes through.
 struct Units {
     k: DMatrix<f64>,
@@ -305,20 +305,48 @@ impl Constraints {
     }
 }
 
-/// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and x ≥ 0` for a positive semidefinite
-/// `Q`, starting from `start`, which must be feasible.
+/// Lower and upper bounds `l ≤ x ≤ u` on each variable. An upper bound may be infinite.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Bounds {
+    pub(crate) lower: DVector<f64>,
+    pub(crate) upper: DVector<f64>,
+}
+
+impl Bounds {
+    /// `x ≥ 0`, with no upper bound.
+    pub(crate) fn nonnegative(n: usize) -> Self {
+        Bounds {
+            lower: DVector::zeros(n),
+            upper: DVector::from_element(n, f64::INFINITY),
+        }
+    }
+}
+
+/// Where a variable is held: free, or in the active set at one of its bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum State {
+    Free,
+    Lower,
+    Upper,
+}
+
+/// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and l ≤ x ≤ u` for a positive
+/// semidefinite `Q`, starting from `start`, which must be feasible.
 ///
 /// This is a primal active-set method (Nocedal and Wright, 2006, Algorithm 16.3). Variables
-/// in the active set are held at zero, and each iteration solves the equality-constrained
-/// problem in the others with [`solve_kkt`]. If that solution is nonnegative the method moves
-/// to it, and otherwise moves toward it until a variable reaches zero, which joins the
-/// active set. At an equality-constrained optimum, a variable leaves the active set if its
-/// multiplier `ν = Qx − c + Eλ` is negative, since increasing it lowers the objective. When
-/// none is, `x` satisfies the KKT conditions and is optimal. When `Q` is singular and the
-/// equality-constrained problem has no minimum, the method follows a direction of zero
-/// curvature that lowers the objective instead.
+/// in the active set are held at one of their bounds, and each iteration solves the
+/// equality-constrained problem in the others with [`solve_kkt`]. If that solution is within
+/// the bounds the method moves to it, and otherwise moves toward it until a variable reaches a
+/// bound, which joins the active set there. At an equality-constrained optimum, a variable
+/// leaves the active set if its multiplier `ν = Qx − c + Eλ` has the wrong sign: negative at
+/// its lower bound, or positive at its upper bound, since moving it inward lowers the
+/// objective. When none does, `x` satisfies the KKT conditions and is optimal. When `Q` is
+/// singular and the equality-constrained problem has no minimum, the method follows a
+/// direction of zero curvature that lowers the objective instead.
 ///
-/// The returned `x` is clamped at zero, so rounding never leaves a slightly negative entry.
+/// A variable whose bounds are equal is fixed and never leaves the active set.
+///
+/// The returned `x` is clamped to the bounds, so rounding never leaves an entry outside them.
 ///
 /// # Errors
 ///
@@ -327,69 +355,111 @@ impl Constraints {
 /// * [`CutupError::NotConverged`] if the iteration cap is reached, or a variable that would
 ///   lower the objective can't enter without the solver cycling. Only rounding trouble on
 ///   extreme inputs should cause either.
-pub(crate) fn solve_nonnegative(
+pub(crate) fn solve_bounded(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
+    bounds: &Bounds,
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
     // In the units of [`solve_kkt`], so that the tolerances below compare like with like.
     let units = Units::new(q, c, e, b);
+    let bounds = Bounds {
+        lower: bounds.lower.component_mul(&units.scales),
+        upper: bounds.upper.component_mul(&units.scales),
+    };
     let start = start.component_mul(&units.scales);
-    let u = solve_nonnegative_in_units(&units.k, &units.c, &units.e, &units.b, start)?;
+    let u = solve_bounded_in_units(&units.k, &units.c, &units.e, &units.b, &bounds, start)?;
     Ok(units.original(&u))
 }
 
-/// [`solve_nonnegative`] for a problem already in [`Units`].
-fn solve_nonnegative_in_units(
+/// [`solve_bounded`] for a problem already in [`Units`].
+fn solve_bounded_in_units(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
+    bounds: &Bounds,
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
     let n = q.nrows();
-    let mut x = start;
-    let mut free: Vec<bool> = x.iter().map(|&v| v > 0.0).collect();
+    let (lower, upper) = (&bounds.lower, &bounds.upper);
+    let fixed: Vec<bool> = (0..n).map(|i| lower[i] >= upper[i]).collect();
+    let mut x = DVector::from_fn(n, |i, _| {
+        if fixed[i] {
+            lower[i]
+        } else {
+            start[i].clamp(lower[i], upper[i])
+        }
+    });
+    let mut state: Vec<State> = (0..n)
+        .map(|i| match x[i] {
+            v if fixed[i] || v <= lower[i] => State::Lower,
+            v if v >= upper[i] => State::Upper,
+            _ => State::Free,
+        })
+        .collect();
     // Variables that were released and then blocked at once without x moving. Releasing them
     // again would loop, so they stay in the active set until x moves.
     let mut refused = vec![false; n];
     let mut released = None;
 
     for _ in 0..100 + 20 * n {
-        let indices: Vec<usize> = (0..n).filter(|&i| free[i]).collect();
+        let indices: Vec<usize> = (0..n).filter(|&i| state[i] == State::Free).collect();
+        // Every variable is at a bound, as when starting from a vertex. Freeing all of them
+        // lets the steps below block back the ones that belong at a bound, one per step.
+        if indices.is_empty() {
+            if fixed.iter().all(|&f| f) {
+                return Ok(x);
+            }
+            for i in (0..n).filter(|&i| !fixed[i]) {
+                state[i] = State::Free;
+            }
+            continue;
+        }
         let q_free = q.select_rows(&indices).select_columns(&indices);
         let c_free = c.select_rows(&indices);
         let e_free = e.select_rows(&indices);
         let x_free = x.select_rows(&indices);
+        // The free problem's linear term, including the pull of variables held at a nonzero
+        // bound.
+        let mut x_held = x.clone();
+        for &i in &indices {
+            x_held[i] = 0.0;
+        }
+        let q_rows = q.select_rows(&indices);
+        let linear = &c_free - &q_rows * &x_held;
 
         // Solve for the step from x rather than for the new point, so that when Q is singular
         // and the free problem has many minima, the target is the one closest to x. The
-        // minimum-norm one could put a just-released variable below zero, blocking it at once.
-        let gradient_free = &c_free - &q_free * &x_free;
-        let residual = b - e_free.transpose() * &x_free;
-        let noise = q_free.amax() * x_free.amax() + c_free.amax();
+        // minimum-norm one could put a just-released variable outside its bounds, blocking it
+        // at once.
+        let gradient_free = &linear - &q_free * &x_free;
+        let residual = b - e.transpose() * &x;
+        let noise = q_rows.amax() * x.amax() + c_free.amax();
         let Some((delta, multipliers)) =
             solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
         else {
             // Without a linear term the objective is bounded below and the free problem has a
             // minimum, so the solve failed numerically.
-            if c_free.iter().all(|&v| v == 0.0) {
+            if c.iter().all(|&v| v == 0.0) {
                 return Err(CutupError::SingularCovariance);
             }
             // No minimum on the free variables: move along a direction of zero curvature
-            // until a variable reaches zero.
-            let direction = descent_ray(&q_free, &c_free, &e_free)?;
-            let (step, blocking) = ratio_test(&x_free, &direction).ok_or(CutupError::Unbounded)?;
+            // until a variable reaches a bound.
+            let direction = descent_ray(&q_free, &linear, &e_free)?;
+            let (step, blocking, side) =
+                ratio_test(&x_free, &direction, &indices, bounds).ok_or(CutupError::Unbounded)?;
             for (k, &i) in indices.iter().enumerate() {
-                x[i] = (x_free[k] + step * direction[k]).max(0.0);
+                x[i] = (x_free[k] + step * direction[k]).clamp(lower[i], upper[i]);
             }
             block(
                 &mut x,
-                &mut free,
+                &mut state,
                 &mut refused,
-                indices[blocking],
+                (indices[blocking], side),
+                bounds,
                 step,
                 released,
             );
@@ -399,24 +469,50 @@ fn solve_nonnegative_in_units(
 
         let target = &x_free + delta;
 
-        // Step toward the target, stopping where the first variable reaches zero. Entries
-        // within rounding of zero don't block, and are clamped to zero instead.
-        let tolerance = 1e-12 * target.amax().max(x_free.amax());
+        // Step toward the target, stopping where the first variable reaches a bound. Entries
+        // within rounding of a bound don't block, and are clamped to it instead. Rounding is
+        // measured against all of x, since variables held at a nonzero bound feed the step:
+        // a lone free variable at its bound would otherwise block on a step of 1e-17.
+        let tolerance = 1e-12 * target.amax().max(x.amax());
         let blocking = (0..indices.len())
-            .filter(|&k| target[k] < -tolerance)
-            .map(|k| (x_free[k] / (x_free[k] - target[k]), k))
+            .filter_map(|k| {
+                let i = indices[k];
+                if target[k] < lower[i] - tolerance {
+                    Some((
+                        (x_free[k] - lower[i]) / (x_free[k] - target[k]),
+                        k,
+                        State::Lower,
+                    ))
+                } else if target[k] > upper[i] + tolerance {
+                    Some((
+                        (upper[i] - x_free[k]) / (target[k] - x_free[k]),
+                        k,
+                        State::Upper,
+                    ))
+                } else {
+                    None
+                }
+            })
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        if let Some((step, k)) = blocking {
+        if let Some((step, k, side)) = blocking {
             for (j, &i) in indices.iter().enumerate() {
-                x[i] = (x_free[j] + step * (target[j] - x_free[j])).max(0.0);
+                x[i] = (x_free[j] + step * (target[j] - x_free[j])).clamp(lower[i], upper[i]);
             }
-            block(&mut x, &mut free, &mut refused, indices[k], step, released);
+            block(
+                &mut x,
+                &mut state,
+                &mut refused,
+                (indices[k], side),
+                bounds,
+                step,
+                released,
+            );
             released = None;
             continue;
         }
         let mut moved = false;
         for (k, &i) in indices.iter().enumerate() {
-            let next = target[k].max(0.0);
+            let next = target[k].clamp(lower[i], upper[i]);
             moved |= (next - x[i]).abs() > tolerance;
             x[i] = next;
         }
@@ -424,46 +520,57 @@ fn solve_nonnegative_in_units(
             refused.fill(false);
         }
 
-        // Release the active variable with the most negative multiplier, if any. A refused
-        // variable with a negative multiplier means x isn't optimal, but the solver can't
-        // make progress on it.
+        // Release the active variable whose multiplier has the wrong sign by the most, if
+        // any. A refused variable with a wrong-signed multiplier means x isn't optimal, but
+        // the solver can't make progress on it.
         let gradient = q * &x - c;
         let pushback = e * &multipliers;
         // Like the step, the multipliers are differences of terms up to this size.
         let scale = (q.amax() * x.amax() + c.amax()).max(pushback.amax());
-        let negative: Vec<(f64, usize)> = (0..n)
-            .filter(|&i| !free[i])
-            .map(|i| (gradient[i] + pushback[i], i))
-            .filter(|&(nu, _)| nu < -1e-9 * scale)
+        let wrong: Vec<(f64, usize)> = (0..n)
+            .filter(|&i| !fixed[i])
+            .filter_map(|i| {
+                let nu = gradient[i] + pushback[i];
+                match state[i] {
+                    State::Lower if nu < -1e-9 * scale => Some((-nu, i)),
+                    State::Upper if nu > 1e-9 * scale => Some((nu, i)),
+                    _ => None,
+                }
+            })
             .collect();
-        let entering = negative
+        let entering = wrong
             .iter()
             .filter(|&&(_, i)| !refused[i])
-            .min_by(|a, b| a.0.total_cmp(&b.0));
+            .max_by(|a, b| a.0.total_cmp(&b.0));
         match entering {
             Some(&(_, i)) => {
-                free[i] = true;
+                state[i] = State::Free;
                 released = Some(i);
             }
-            None if negative.is_empty() => return Ok(x),
+            None if wrong.is_empty() => return Ok(x),
             None => return Err(CutupError::NotConverged),
         }
     }
     Err(CutupError::NotConverged)
 }
 
-/// Moves variable `i` into the active set after a step of length `step`. If `i` was just
-/// released and blocks without `x` moving, it is refused re-entry until `x` moves.
+/// Moves variable `i` into the active set at bound `side` after a step of length `step`. If
+/// `i` was just released and blocks without `x` moving, it is refused re-entry until `x`
+/// moves.
 fn block(
     x: &mut DVector<f64>,
-    free: &mut [bool],
+    state: &mut [State],
     refused: &mut [bool],
-    i: usize,
+    (i, side): (usize, State),
+    bounds: &Bounds,
     step: f64,
     released: Option<usize>,
 ) {
-    x[i] = 0.0;
-    free[i] = false;
+    x[i] = match side {
+        State::Upper => bounds.upper[i],
+        _ => bounds.lower[i],
+    };
+    state[i] = side;
     if step > 0.0 {
         refused.fill(false);
     } else if released == Some(i) {
@@ -471,14 +578,28 @@ fn block(
     }
 }
 
-/// The largest step `t ≤ ∞` keeping `x + t·d ≥ 0`, and the variable that reaches zero there,
-/// or `None` if no variable decreases. Components of `d` within rounding of zero don't count
-/// as decreasing.
-fn ratio_test(x: &DVector<f64>, d: &DVector<f64>) -> Option<(f64, usize)> {
+/// The largest step `t ≤ ∞` keeping the free variables `x + t·d` within their bounds, the
+/// variable that reaches a bound there, and which bound, or `None` if no variable moves
+/// toward a finite bound. `indices` maps each entry of `x` to its variable. Components of `d`
+/// within rounding of zero don't count as moving.
+fn ratio_test(
+    x: &DVector<f64>,
+    d: &DVector<f64>,
+    indices: &[usize],
+    bounds: &Bounds,
+) -> Option<(f64, usize, State)> {
     let tolerance = 1e-12 * d.amax();
     (0..x.len())
-        .filter(|&k| d[k] < -tolerance)
-        .map(|k| (x[k] / -d[k], k))
+        .filter_map(|k| {
+            let i = indices[k];
+            if d[k] < -tolerance {
+                Some(((x[k] - bounds.lower[i]) / -d[k], k, State::Lower))
+            } else if d[k] > tolerance && bounds.upper[i].is_finite() {
+                Some(((bounds.upper[i] - x[k]) / d[k], k, State::Upper))
+            } else {
+                None
+            }
+        })
         .min_by(|a, b| a.0.total_cmp(&b.0))
 }
 
@@ -513,6 +634,23 @@ mod tests {
 
     fn budget(n: usize) -> (DMatrix<f64>, DVector<f64>) {
         (DMatrix::from_element(n, 1, 1.0), dvector![1.0])
+    }
+
+    fn solve_nonnegative(
+        q: &DMatrix<f64>,
+        c: &DVector<f64>,
+        e: &DMatrix<f64>,
+        b: &DVector<f64>,
+        start: DVector<f64>,
+    ) -> Result<DVector<f64>, CutupError> {
+        solve_bounded(q, c, e, b, &Bounds::nonnegative(q.nrows()), start)
+    }
+
+    fn capped(upper: DVector<f64>) -> Bounds {
+        Bounds {
+            lower: DVector::zeros(upper.len()),
+            upper,
+        }
     }
 
     fn assert_close(a: &DVector<f64>, b: &DVector<f64>, tol: f64) {
@@ -575,8 +713,100 @@ mod tests {
     #[test]
     fn ratio_test_ignores_rounding_noise() {
         let x = dvector![1.0, 1.0, 1.0];
-        assert_eq!(ratio_test(&x, &dvector![1.0, -1e-20, 0.5]), None);
-        assert_eq!(ratio_test(&x, &dvector![1.0, -1e-20, -0.5]), Some((2.0, 2)));
+        let bounds = Bounds::nonnegative(3);
+        let indices = [0, 1, 2];
+        assert_eq!(
+            ratio_test(&x, &dvector![1.0, -1e-20, 0.5], &indices, &bounds),
+            None
+        );
+        assert_eq!(
+            ratio_test(&x, &dvector![1.0, -1e-20, -0.5], &indices, &bounds),
+            Some((2.0, 2, State::Lower))
+        );
+    }
+
+    #[test]
+    fn ratio_test_stops_at_upper_bounds() {
+        let x = dvector![1.0, 1.0];
+        let bounds = capped(dvector![1.5, 4.0]);
+        // Entry k of x is variable indices[k], so x[0] is capped at 4 and x[1] at 1.5.
+        assert_eq!(
+            ratio_test(&x, &dvector![1.0, 1.0], &[1, 0], &bounds),
+            Some((0.5, 1, State::Upper))
+        );
+    }
+
+    #[test]
+    fn cap_binds_and_the_rest_moves_to_other_variables() {
+        // Unconstrained in x ≥ 0 the optimum is (1, 0); capping x₀ at 0.8 leaves 0.2 for x₁.
+        let q = DMatrix::identity(2, 2);
+        let c = dvector![3.0, 0.0];
+        let (e, b) = budget(2);
+        let x = solve_bounded(
+            &q,
+            &c,
+            &e,
+            &b,
+            &capped(dvector![0.8, 1.0]),
+            dvector![0.5, 0.5],
+        )
+        .unwrap();
+        assert_close(&x, &dvector![0.8, 0.2], 1e-15);
+        assert_eq!(x[0], 0.8);
+    }
+
+    #[test]
+    fn variables_are_released_from_upper_bounds() {
+        // From the vertex at both caps, x₂ must leave its cap to reach equal weights.
+        let q = DMatrix::identity(3, 3);
+        let (e, b) = budget(3);
+        let bounds = capped(dvector![0.5, 0.5, 0.5]);
+        let start = dvector![0.0, 0.5, 0.5];
+        let x = solve_bounded(&q, &DVector::zeros(3), &e, &b, &bounds, start).unwrap();
+        assert_close(&x, &DVector::from_element(3, 1.0 / 3.0), 1e-15);
+    }
+
+    #[test]
+    fn floors_and_fixed_variables_hold() {
+        // Minimizing ½‖x‖² − 3x₀ wants x₀ large; x₁'s floor of 0.3 and x₂ fixed at 0.1 leave
+        // x₀ at most 0.6.
+        let q = DMatrix::identity(3, 3);
+        let c = dvector![3.0, 0.0, 0.0];
+        let (e, b) = budget(3);
+        let bounds = Bounds {
+            lower: dvector![0.0, 0.3, 0.1],
+            upper: dvector![1.0, 1.0, 0.1],
+        };
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.3, 0.6, 0.1]).unwrap();
+        assert_close(&x, &dvector![0.6, 0.3, 0.1], 1e-15);
+    }
+
+    #[test]
+    fn linear_objective_fills_caps_in_order() {
+        // With Q = 0 the optimum puts as much as the caps allow on the largest cᵢ first.
+        let q = DMatrix::zeros(4, 4);
+        let c = dvector![0.1, 0.4, -0.2, 0.3];
+        let (e, b) = budget(4);
+        let bounds = capped(DVector::from_element(4, 0.4));
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, DVector::from_element(4, 0.25)).unwrap();
+        assert_close(&x, &dvector![0.2, 0.4, 0.0, 0.4], 1e-15);
+    }
+
+    #[test]
+    fn a_single_feasible_point_is_returned() {
+        let q = DMatrix::identity(2, 2);
+        let (e, b) = budget(2);
+        let bounds = capped(dvector![0.25, 0.75]);
+        let x = solve_bounded(
+            &q,
+            &DVector::zeros(2),
+            &e,
+            &b,
+            &bounds,
+            dvector![0.25, 0.75],
+        )
+        .unwrap();
+        assert_eq!(x, dvector![0.25, 0.75]);
     }
 
     #[test]

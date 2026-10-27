@@ -84,13 +84,13 @@ pub enum CutupError {
     /// happens only with extreme inputs, such as risk budgets more than about 10¹⁴ apart.
     NotConverged,
     /// No long-only portfolio has the target return: it must be between the lowest and the
-    /// highest expected return of any asset.
+    /// highest expected return of any asset, or of any portfolio within the weight bounds.
     TargetReturnOutOfRange {
         /// The target return supplied.
         target_return: f64,
-        /// The lowest expected return of any asset.
+        /// The lowest expected return of any long-only portfolio within the bounds.
         lowest: f64,
-        /// The highest expected return of any asset.
+        /// The highest expected return of any long-only portfolio within the bounds.
         highest: f64,
     },
     /// No asset's expected return is above the risk-free rate by more than rounding, so no
@@ -100,6 +100,14 @@ pub enum CutupError {
         risk_free_rate: f64,
         /// The highest expected return of any asset, which the rate must be below.
         highest_return: f64,
+    },
+    /// No portfolio summing to 1 satisfies the weight bounds: the lower bounds sum to more
+    /// than 1, or the upper bounds to less.
+    InfeasibleBounds {
+        /// The sum of the lower bounds.
+        lower_sum: f64,
+        /// The sum of the upper bounds.
+        upper_sum: f64,
     },
 }
 
@@ -160,7 +168,7 @@ impl fmt::Display for CutupError {
                 highest,
             } => write!(
                 f,
-                "target return {target_return} is outside the assets' expected returns, \
+                "target return {target_return} is outside the reachable expected returns, \
                  from {lowest} to {highest}, so no long-only portfolio reaches it"
             ),
             CutupError::NoPositiveExcessReturn {
@@ -170,6 +178,14 @@ impl fmt::Display for CutupError {
                 f,
                 "risk-free rate {risk_free_rate} must be below the highest expected return \
                  {highest_return} for a long-only portfolio to have a positive Sharpe ratio"
+            ),
+            CutupError::InfeasibleBounds {
+                lower_sum,
+                upper_sum,
+            } => write!(
+                f,
+                "weight bounds can't sum to 1: lower bounds sum to {lower_sum} and upper \
+                 bounds to {upper_sum}"
             ),
         }
     }
@@ -380,6 +396,107 @@ impl MeanVarianceConfig {
     pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
         self.covariance = covariance;
         self
+    }
+}
+
+/// Lower and upper limits on each asset's weight, for
+/// [`PortfolioAllocator::long_only_min_variance_allocation_with_bounds`] and
+/// [`PortfolioAllocator::long_only_mean_variance_allocation_with_bounds`].
+///
+/// Lower bounds must be finite and nonnegative, and each upper bound at least its lower bound.
+/// An upper bound of `f64::INFINITY` means no cap. The default, `0 ≤ w` with no cap, is the
+/// plain long-only constraint.
+///
+/// ```
+/// use cutup::WeightBounds;
+///
+/// // No asset above 30%.
+/// let capped = WeightBounds::uniform(0.0, 0.3);
+///
+/// // At least 5% in each of three assets, and at most 50% in the first.
+/// let mixed = WeightBounds::per_asset(vec![0.05; 3], vec![0.5, 1.0, 1.0]);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeightBounds {
+    lower: Limit,
+    upper: Limit,
+}
+
+/// One side of [`WeightBounds`].
+#[derive(Debug, Clone, PartialEq)]
+enum Limit {
+    Uniform(f64),
+    PerAsset(Vec<f64>),
+}
+
+impl Limit {
+    fn resolve(&self, n: usize) -> Result<DVector<f64>, CutupError> {
+        match self {
+            Limit::Uniform(value) => Ok(DVector::from_element(n, *value)),
+            Limit::PerAsset(values) if values.len() != n => Err(CutupError::DimensionMismatch {
+                expected: n,
+                actual: values.len(),
+            }),
+            Limit::PerAsset(values) => Ok(DVector::from_column_slice(values)),
+        }
+    }
+}
+
+impl Default for WeightBounds {
+    fn default() -> Self {
+        Self::uniform(0.0, f64::INFINITY)
+    }
+}
+
+impl WeightBounds {
+    /// The same bounds `lower ≤ wᵢ ≤ upper` for every asset.
+    pub fn uniform(lower: f64, upper: f64) -> Self {
+        Self {
+            lower: Limit::Uniform(lower),
+            upper: Limit::Uniform(upper),
+        }
+    }
+
+    /// Bounds `lower[i] ≤ wᵢ ≤ upper[i]` for each asset `i`, in column order.
+    pub fn per_asset(lower: Vec<f64>, upper: Vec<f64>) -> Self {
+        Self {
+            lower: Limit::PerAsset(lower),
+            upper: Limit::PerAsset(upper),
+        }
+    }
+
+    /// Checks the bounds for `n` assets, and returns them with each upper bound lowered to
+    /// what the other assets' lower bounds leave room for, `1 − Σⱼ≠ᵢ lⱼ`. That doesn't change
+    /// which portfolios are feasible, and makes every upper bound finite.
+    fn resolve(&self, n: usize) -> Result<qp::Bounds, CutupError> {
+        let lower = self.lower.resolve(n)?;
+        let upper = self.upper.resolve(n)?;
+        if let Some(&value) = lower.iter().find(|&&l| !(l.is_finite() && l >= 0.0)) {
+            return Err(CutupError::InvalidConfig {
+                field: "lower_bound",
+                value,
+            });
+        }
+        if let Some((_, &value)) = lower
+            .iter()
+            .zip(upper.iter())
+            .find(|(l, u)| u.is_nan() || u < l)
+        {
+            return Err(CutupError::InvalidConfig {
+                field: "upper_bound",
+                value,
+            });
+        }
+        let (lower_sum, upper_sum) = (lower.sum(), upper.sum());
+        // Within rounding of a budget of 1, as when ten caps of 0.1 sum to 0.9999999999999999.
+        if lower_sum > 1.0 + 1e-12 || upper_sum < 1.0 - 1e-12 {
+            return Err(CutupError::InfeasibleBounds {
+                lower_sum,
+                upper_sum,
+            });
+        }
+        let upper = DVector::from_fn(n, |i, _| upper[i].min(1.0 - (lower_sum - lower[i])));
+        Ok(qp::Bounds { lower, upper })
     }
 }
 
@@ -994,17 +1111,85 @@ impl PortfolioAllocator {
         &self,
         config: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
+        self.long_only_min_variance_allocation_with_bounds(config, &WeightBounds::default())
+    }
+
+    /// Computes the minimum variance portfolio with each asset's weight between its bounds,
+    /// `lᵢ ≤ wᵢ ≤ uᵢ`, and the budget constraint `1ᵀw = 1`. With the default bounds, `w ≥ 0`,
+    /// this is [`PortfolioAllocator::long_only_min_variance_allocation_with_config`].
+    ///
+    /// Solved exactly by the same active-set method, which holds each asset at its lower
+    /// bound, at its upper bound, or between them.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Adjustments applied to the covariance matrix.
+    /// * `bounds` - The lower and upper bound on each asset's weight.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, within the bounds and summing to 1, up to rounding.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if a lower bound is negative or not finite, an upper
+    ///   bound is below its lower bound or NaN, `regularization` is negative or not finite, or
+    ///   `shrinkage` is outside `[0, 1]`.
+    /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
+    /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
+    ///   bounds to less, by more than `1e-12`.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
+    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, PortfolioAllocator, WeightBounds};
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010,  0.021,  0.004;
+    ///     -0.008, -0.015, -0.002;
+    ///      0.004,  0.009,  0.006;
+    ///     -0.002, -0.006, -0.003;
+    ///      0.006,  0.011,  0.001
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let config = CovarianceConfig::default();
+    /// let unbounded = allocator.long_only_min_variance_allocation_with_config(&config)?;
+    /// assert!(unbounded[2] > 0.9);
+    ///
+    /// // Capping every asset at 50% moves the rest of the weight to the next least risky.
+    /// let bounds = WeightBounds::uniform(0.0, 0.5);
+    /// let weights = allocator.long_only_min_variance_allocation_with_bounds(&config, &bounds)?;
+    /// assert!((weights[2] - 0.5).abs() < 1e-12);
+    /// assert!(weights.iter().all(|&w| w <= 0.5 + 1e-12));
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn long_only_min_variance_allocation_with_bounds(
+        &self,
+        config: &CovarianceConfig,
+        bounds: &WeightBounds,
+    ) -> Result<Weights, CutupError> {
+        let bounds = bounds.resolve(self.cov_matrix.ncols())?;
         let cov = self.adjusted_covariance(config)?;
         let n = cov.ncols();
-
-        // Equal weights are feasible, and from there the solver's first step is to the
-        // unconstrained minimum variance portfolio.
+        // From a point strictly inside the bounds, the solver's first step is to the
+        // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
+        let start = interior_start(&bounds);
         long_only_weights(
             &cov,
             &DVector::zeros(n),
             &DMatrix::from_element(n, 1, 1.0),
             &DVector::from_element(1, 1.0),
-            DVector::from_element(n, 1.0 / n as f64),
+            &bounds,
+            start,
         )
     }
 
@@ -1178,52 +1363,144 @@ impl PortfolioAllocator {
         &self,
         config: &MeanVarianceConfig,
     ) -> Result<Weights, CutupError> {
+        self.long_only_mean_variance_allocation_with_bounds(config, &WeightBounds::default())
+    }
+
+    /// Computes a Markowitz mean-variance portfolio with each asset's weight between its
+    /// bounds, `lᵢ ≤ wᵢ ≤ uᵢ`, and the budget constraint `1ᵀw = 1`. With the default bounds,
+    /// `w ≥ 0`, this is [`PortfolioAllocator::long_only_mean_variance_allocation`].
+    ///
+    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
+    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
+    ///   Only targets between the lowest and highest expected return of any portfolio within
+    ///   the bounds can be reached. Those come from filling the bounds in order of expected
+    ///   return, lowest or highest first. A target within rounding of either end counts as at
+    ///   it.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The objective, optional expected returns (default: the sample mean of the
+    ///   returns), and covariance adjustments.
+    /// * `bounds` - The lower and upper bound on each asset's weight.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, within the bounds and summing to 1, up to rounding.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if a lower bound is negative or not finite, an upper
+    ///   bound is below its lower bound or NaN, the risk aversion is not finite and positive,
+    ///   the target return or an expected return is not finite, or the covariance config is
+    ///   invalid.
+    /// * [`CutupError::DimensionMismatch`] if per-asset bounds or `expected_returns` don't have
+    ///   one entry per asset.
+    /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
+    ///   bounds to less, by more than `1e-12`.
+    /// * [`CutupError::TargetReturnOutOfRange`] for a target return below the lowest or above
+    ///   the highest reachable within the bounds, by more than `1e-12` of the larger in
+    ///   magnitude.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
+    ///   times the risk aversion, isn't finite.
+    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVarianceConfig, PortfolioAllocator, WeightBounds};
+    /// use nalgebra::{dmatrix, dvector};
+    ///
+    /// let returns = dmatrix![
+    ///      0.010, -0.020,  0.005;
+    ///     -0.004,  0.015,  0.002;
+    ///      0.007,  0.003, -0.006;
+    ///      0.002, -0.001,  0.004;
+    ///     -0.003,  0.006,  0.001
+    /// ];
+    /// let expected = dvector![0.004, 0.006, 0.002];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let config = MeanVarianceConfig::target_return(0.005).with_expected_returns(expected);
+    ///
+    /// // With at most 40% in any asset, the highest reachable return is
+    /// // 0.4 · 0.006 + 0.4 · 0.004 + 0.2 · 0.002 = 0.0044.
+    /// let bounds = WeightBounds::uniform(0.0, 0.4);
+    /// assert!(allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds).is_err());
+    ///
+    /// let bounds = WeightBounds::uniform(0.1, 0.6);
+    /// let weights = allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds)?;
+    /// assert!(weights.iter().all(|&w| (0.1 - 1e-12..=0.6 + 1e-12).contains(&w)));
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn long_only_mean_variance_allocation_with_bounds(
+        &self,
+        config: &MeanVarianceConfig,
+        bounds: &WeightBounds,
+    ) -> Result<Weights, CutupError> {
         check_objective(config.objective)?;
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let bounds = bounds.resolve(mu.len())?;
         // An unreachable target is rejected before the covariance is built.
+        let range = ReturnRange::new(&mu, &bounds);
         let objective = match config.objective {
             MeanVarianceObjective::TargetReturn(target) => {
-                MeanVarianceObjective::TargetReturn(reachable_target(&mu, target)?)
+                MeanVarianceObjective::TargetReturn(range.reachable(target)?)
             }
             objective => objective,
         };
         let cov = self.adjusted_covariance(&config.covariance)?;
         let n = cov.ncols();
-        let equal = DVector::from_element(n, 1.0 / n as f64);
+        let budget = (
+            DMatrix::from_element(n, 1, 1.0),
+            DVector::from_element(1, 1.0),
+        );
 
         match objective {
             MeanVarianceObjective::RiskAversion(gamma) => long_only_weights(
                 &(cov * gamma),
                 &mu,
-                &DMatrix::from_element(n, 1, 1.0),
-                &DVector::from_element(1, 1.0),
-                equal,
+                &budget.0,
+                &budget.1,
+                &bounds,
+                interior_start(&bounds),
             ),
+            MeanVarianceObjective::TargetReturn(target)
+                if target == range.lowest || target == range.highest =>
+            {
+                // Only the portfolios that fill the bounds in order of expected return reach
+                // an end of the range, so every asset but those tied at the margin is fixed,
+                // and the target needs no constraint of its own.
+                let bounds = range.face(&mu, &bounds, target == range.highest);
+                long_only_weights(
+                    &cov,
+                    &DVector::zeros(n),
+                    &budget.0,
+                    &budget.1,
+                    &bounds,
+                    interior_start(&bounds),
+                )
+            }
             MeanVarianceObjective::TargetReturn(target) => {
-                // Mixing the lowest and highest expected returns reaches any target in
-                // between. When they're equal, the target is that return, and equal weights
-                // reach it. Dividing by the larger in magnitude first keeps the differences
+                // Mixing the lowest and highest return portfolios reaches any target in
+                // between. Dividing by the larger in magnitude first keeps the differences
                 // from overflowing.
-                let (low, lowest) = mu.argmin();
-                let (high, highest) = mu.argmax();
-                let start = if highest > lowest {
-                    let scale = lowest.abs().max(highest.abs());
-                    let t = ((target / scale - lowest / scale)
-                        / (highest / scale - lowest / scale))
-                        .clamp(0.0, 1.0);
-                    let mut start = DVector::zeros(n);
-                    start[low] = 1.0 - t;
-                    start[high] = t;
-                    start
-                } else {
-                    equal
-                };
+                let scale = range.lowest.abs().max(range.highest.abs());
+                let t = ((target / scale - range.lowest / scale)
+                    / (range.highest / scale - range.lowest / scale))
+                    .clamp(0.0, 1.0);
+                let start = &range.lowest_weights * (1.0 - t) + &range.highest_weights * t;
                 let ones = DVector::from_element(n, 1.0);
                 long_only_weights(
                     &cov,
                     &DVector::zeros(n),
                     &DMatrix::from_columns(&[ones, mu]),
                     &DVector::from_vec(vec![1.0, target]),
+                    &bounds,
                     start,
                 )
             }
@@ -2411,17 +2688,19 @@ fn correlation(cov: &DMatrix<f64>) -> Result<(DMatrix<f64>, DVector<f64>), Cutup
     Ok((correlation, volatilities))
 }
 
-/// Solves `minimize ½ wᵀQw − cᵀw subject to Eᵀw = b and w ≥ 0` from the feasible `start`,
-/// and rescales the solution to sum to 1. With a budget constraint `1ᵀw = 1`, that only
-/// removes the rounding left by clamping at zero; for max Sharpe it maps `y` back to `w`.
+/// Solves `minimize ½ wᵀQw − cᵀw subject to Eᵀw = b and l ≤ w ≤ u` from the feasible
+/// `start`, and rescales the solution to sum to 1. With a budget constraint `1ᵀw = 1`, that
+/// only removes the rounding left by clamping to the bounds; for max Sharpe it maps `y` back
+/// to `w`.
 fn long_only_weights(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
+    bounds: &qp::Bounds,
     start: DVector<f64>,
 ) -> Result<Weights, CutupError> {
-    let weights = qp::solve_nonnegative(q, c, e, b, start)?;
+    let weights = qp::solve_bounded(q, c, e, b, bounds, start)?;
     let total = weights.sum();
     Ok(Weights(weights.iter().map(|w| w / total).collect()))
 }
@@ -2448,6 +2727,7 @@ fn long_only_max_ratio(
         &DVector::zeros(n),
         &DMatrix::from_column_slice(n, 1, a.as_slice()),
         &DVector::from_element(1, 1.0),
+        &qp::Bounds::nonnegative(n),
         start,
     )?;
 
@@ -2473,19 +2753,114 @@ fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, CutupError>
     Ok(cutoff(eigen.values.amax()))
 }
 
-/// Returns `target` if some long-only portfolio reaches it: one within rounding of the
-/// lowest or highest expected return is moved onto it.
-fn reachable_target(mu: &DVector<f64>, target: f64) -> Result<f64, CutupError> {
-    let (lowest, highest) = (mu.min(), mu.max());
-    let tolerance = 1e-12 * lowest.abs().max(highest.abs());
-    if target < lowest - tolerance || target > highest + tolerance {
-        return Err(CutupError::TargetReturnOutOfRange {
-            target_return: target,
+/// A point strictly inside resolved `bounds` with weights summing to 1, where they allow one:
+/// `l + t(u − l)` for the `t` that sums to 1. With the default bounds that's equal weights.
+fn interior_start(bounds: &qp::Bounds) -> DVector<f64> {
+    let room = &bounds.upper - &bounds.lower;
+    let t = match room.sum() {
+        total if total > 0.0 => ((1.0 - bounds.lower.sum()) / total).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    &bounds.lower + room * t
+}
+
+/// The lowest and highest expected return of any portfolio within resolved bounds, and the
+/// portfolios that reach them: start every asset at its lower bound, then raise assets to
+/// their upper bounds in order of expected return until the weights sum to 1.
+struct ReturnRange {
+    lowest: f64,
+    highest: f64,
+    lowest_weights: DVector<f64>,
+    highest_weights: DVector<f64>,
+    /// The expected return of the last asset raised above its lower bound, for the lowest
+    /// and the highest, or `None` if the lower bounds already sum to 1.
+    margins: (Option<f64>, Option<f64>),
+}
+
+impl ReturnRange {
+    fn new(mu: &DVector<f64>, bounds: &qp::Bounds) -> Self {
+        // Stable sorts, so that ties are filled in column order, as argmin and argmax pick.
+        let mut ascending: Vec<usize> = (0..mu.len()).collect();
+        ascending.sort_by(|&i, &j| mu[i].total_cmp(&mu[j]));
+        let mut descending: Vec<usize> = (0..mu.len()).collect();
+        descending.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        let fill = |order: &[usize]| {
+            let mut weights = bounds.lower.clone();
+            let mut left = 1.0 - bounds.lower.sum();
+            let mut margin = None;
+            for &i in order {
+                if left <= 0.0 {
+                    break;
+                }
+                let raise = (bounds.upper[i] - bounds.lower[i]).min(left);
+                if raise > 0.0 {
+                    weights[i] += raise;
+                    left -= raise;
+                    margin = Some(mu[i]);
+                }
+            }
+            (mu.dot(&weights), weights, margin)
+        };
+        let (lowest, lowest_weights, low_margin) = fill(&ascending);
+        let (highest, highest_weights, high_margin) = fill(&descending);
+        ReturnRange {
             lowest,
             highest,
-        });
+            lowest_weights,
+            highest_weights,
+            margins: (low_margin, high_margin),
+        }
     }
-    Ok(target.clamp(lowest, highest))
+
+    /// Returns `target` if some portfolio within the bounds reaches it: one within rounding
+    /// of the lowest or highest is moved onto it.
+    fn reachable(&self, target: f64) -> Result<f64, CutupError> {
+        let (lowest, highest) = (self.lowest, self.highest);
+        let tolerance = 1e-12 * lowest.abs().max(highest.abs());
+        if target < lowest - tolerance || target > highest + tolerance {
+            return Err(CutupError::TargetReturnOutOfRange {
+                target_return: target,
+                lowest,
+                highest,
+            });
+        }
+        Ok(target.clamp(lowest, highest))
+    }
+
+    /// The bounds of the portfolios with the highest expected return, or the lowest. Assets
+    /// whose expected return is above the margin's (below it, for the lowest) are held at
+    /// their upper bound, those on the other side at their lower bound, and only assets tied
+    /// with the margin keep their bounds.
+    fn face(&self, mu: &DVector<f64>, bounds: &qp::Bounds, highest: bool) -> qp::Bounds {
+        let (weights, margin) = if highest {
+            (&self.highest_weights, self.margins.1)
+        } else {
+            (&self.lowest_weights, self.margins.0)
+        };
+        let tied = |i: usize| margin == Some(mu[i]);
+        qp::Bounds {
+            lower: DVector::from_fn(
+                mu.len(),
+                |i, _| {
+                    if tied(i) {
+                        bounds.lower[i]
+                    } else {
+                        weights[i]
+                    }
+                },
+            ),
+            upper: DVector::from_fn(
+                mu.len(),
+                |i, _| {
+                    if tied(i) {
+                        bounds.upper[i]
+                    } else {
+                        weights[i]
+                    }
+                },
+            ),
+        }
+    }
 }
 
 /// Checks a mean-variance objective's parameter.
@@ -2688,8 +3063,8 @@ mod tests {
                 highest: 0.2
             }
             .to_string(),
-            "target return 0.5 is outside the assets' expected returns, from 0.1 to 0.2, so no \
-             long-only portfolio reaches it"
+            "target return 0.5 is outside the reachable expected returns, from 0.1 to 0.2, so \
+             no long-only portfolio reaches it"
         );
         assert_eq!(
             CutupError::NoPositiveExcessReturn {
@@ -2699,6 +3074,14 @@ mod tests {
             .to_string(),
             "risk-free rate 0.03 must be below the highest expected return 0.02 for a long-only \
              portfolio to have a positive Sharpe ratio"
+        );
+        assert_eq!(
+            CutupError::InfeasibleBounds {
+                lower_sum: 0.0,
+                upper_sum: 0.9
+            }
+            .to_string(),
+            "weight bounds can't sum to 1: lower bounds sum to 0 and upper bounds to 0.9"
         );
     }
 
@@ -3551,6 +3934,200 @@ mod tests {
             &allocator.long_only_min_variance_allocation().unwrap(),
             1e-12,
         );
+    }
+
+    /// Returns of three uncorrelated assets whose variances are in the ratio 1 : 2 : 4, so the
+    /// minimum variance weights are inverse variance, 4/7, 2/7 and 1/7.
+    fn uncorrelated_returns() -> DMatrix<f64> {
+        let s = [0.01, 0.01 * 2f64.sqrt(), 0.02];
+        dmatrix![
+            s[0], s[1], s[2];
+            -s[0], s[1], -s[2];
+            s[0], -s[1], -s[2];
+            -s[0], -s[1], s[2]
+        ]
+    }
+
+    #[test]
+    fn test_bounded_min_variance_water_fills() {
+        let allocator = PortfolioAllocator::from_returns(uncorrelated_returns()).unwrap();
+        let config = CovarianceConfig::default();
+        assert_weights_close(
+            &allocator
+                .long_only_min_variance_allocation_with_config(&config)
+                .unwrap(),
+            &Weights(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
+            1e-12,
+        );
+
+        // A cap of 50% on the first asset passes the rest to the others in proportion to
+        // inverse variance, 1/3 and 1/6.
+        let capped = WeightBounds::per_asset(vec![0.0; 3], vec![0.5, 1.0, 1.0]);
+        let weights = allocator
+            .long_only_min_variance_allocation_with_bounds(&config, &capped)
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.5, 1.0 / 3.0, 1.0 / 6.0]), 1e-12);
+
+        // A floor of 25% on the last asset leaves 75% to split 2 : 1.
+        let floored = WeightBounds::per_asset(vec![0.0, 0.0, 0.25], vec![0.5, 1.0, 1.0]);
+        let weights = allocator
+            .long_only_min_variance_allocation_with_bounds(&config, &floored)
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.5, 0.25, 0.25]), 1e-12);
+
+        // Floors and caps of 1/3 leave equal weights as the only portfolio.
+        let pinned = WeightBounds::uniform(1.0 / 3.0, 1.0 / 3.0);
+        let weights = allocator
+            .long_only_min_variance_allocation_with_bounds(&config, &pinned)
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![1.0 / 3.0; 3]), 1e-15);
+    }
+
+    #[test]
+    fn test_bounds_that_dont_bind_change_nothing() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = CovarianceConfig::default().with_shrinkage(0.2);
+        let loose = WeightBounds::uniform(0.0, 1.0);
+        assert_eq!(
+            allocator
+                .long_only_min_variance_allocation_with_bounds(&config, &loose)
+                .unwrap(),
+            allocator
+                .long_only_min_variance_allocation_with_config(&config)
+                .unwrap()
+        );
+        for config in [
+            MeanVarianceConfig::risk_aversion(5.0),
+            MeanVarianceConfig::target_return(0.004),
+        ] {
+            let config = config.with_expected_returns(dvector![0.002, 0.006, 0.003]);
+            assert_eq!(
+                allocator
+                    .long_only_mean_variance_allocation_with_bounds(&config, &loose)
+                    .unwrap(),
+                allocator
+                    .long_only_mean_variance_allocation(&config)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_bounded_mean_variance_targets_the_reachable_range() {
+        let allocator = PortfolioAllocator::from_returns(uncorrelated_returns()).unwrap();
+        let mu = dvector![0.003, 0.003, 0.001];
+        let bounds = WeightBounds::uniform(0.0, 0.6);
+
+        // The lowest return fills the last asset to 60% first, then the first to 40%.
+        let config = MeanVarianceConfig::target_return(0.004).with_expected_returns(mu.clone());
+        match allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds) {
+            Err(CutupError::TargetReturnOutOfRange {
+                target_return,
+                lowest,
+                highest,
+            }) => {
+                assert_eq!(target_return, 0.004);
+                assert!((lowest - 0.0018).abs() < 1e-15, "{lowest}");
+                assert_eq!(highest, 0.003);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // At the highest return the last asset holds nothing, and the two tied assets split
+        // the weight by minimum variance, 2/3 and 1/3, until the 60% cap binds.
+        let config = MeanVarianceConfig::target_return(0.003).with_expected_returns(mu.clone());
+        let weights = allocator
+            .long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.6, 0.4, 0.0]), 1e-12);
+
+        // In between, the target holds and the weights stay within the bounds.
+        let config = MeanVarianceConfig::target_return(0.0025).with_expected_returns(mu.clone());
+        let weights = allocator
+            .long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+            .unwrap();
+        let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        assert!((achieved - 0.0025).abs() < 1e-15, "{achieved}");
+        assert!(
+            weights.iter().all(|&w| (0.0..=0.6 + 1e-15).contains(&w)),
+            "{weights:?}"
+        );
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_invalid_bounds_are_rejected() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let n = full_rank_prices().ncols();
+        let config = CovarianceConfig::default();
+        let solve = |bounds: WeightBounds| {
+            allocator.long_only_min_variance_allocation_with_bounds(&config, &bounds)
+        };
+        let infeasible = |lower_sum: f64, upper_sum: f64| {
+            Err(CutupError::InfeasibleBounds {
+                lower_sum,
+                upper_sum,
+            })
+        };
+
+        let caps = 0.9 / n as f64;
+        assert_eq!(
+            solve(WeightBounds::uniform(0.0, caps)),
+            infeasible(0.0, caps * n as f64)
+        );
+        let floors = 1.1 / n as f64;
+        assert_eq!(
+            solve(WeightBounds::uniform(floors, 1.0)),
+            infeasible(floors * n as f64, n as f64)
+        );
+        assert_eq!(
+            solve(WeightBounds::uniform(-0.1, 1.0)),
+            Err(CutupError::InvalidConfig {
+                field: "lower_bound",
+                value: -0.1
+            })
+        );
+        assert_eq!(
+            solve(WeightBounds::uniform(0.3, 0.2)),
+            Err(CutupError::InvalidConfig {
+                field: "upper_bound",
+                value: 0.2
+            })
+        );
+        assert!(matches!(
+            solve(WeightBounds::uniform(0.0, f64::NAN)),
+            Err(CutupError::InvalidConfig {
+                field: "upper_bound",
+                ..
+            })
+        ));
+        assert!(matches!(
+            solve(WeightBounds::uniform(f64::INFINITY, f64::INFINITY)),
+            Err(CutupError::InvalidConfig {
+                field: "lower_bound",
+                ..
+            })
+        ));
+        assert_eq!(
+            solve(WeightBounds::per_asset(vec![0.0; n + 1], vec![1.0; n + 1])),
+            Err(CutupError::DimensionMismatch {
+                expected: n,
+                actual: n + 1
+            })
+        );
+
+        // Within rounding of a budget of 1 is feasible: ten caps of 0.1 sum to just under it.
+        let ten = PortfolioAllocator::from_returns(DMatrix::from_fn(12, 10, |i, j| {
+            ((i * 7 + j * 3) % 11) as f64 * 0.001 - 0.005 + (i == j) as u8 as f64 * 0.01
+        }))
+        .unwrap();
+        let weights = ten
+            .long_only_min_variance_allocation_with_bounds(
+                &config,
+                &WeightBounds::uniform(0.0, 0.1),
+            )
+            .unwrap();
+        assert_weights_close(&weights, &Weights(vec![0.1; 10]), 1e-15);
     }
 
     #[test]
