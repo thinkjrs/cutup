@@ -83,6 +83,16 @@ pub enum CutupError {
     /// An iterative solver stopped before reaching a solution, although one exists. This
     /// happens only with extreme inputs, such as risk budgets more than about 10¹⁴ apart.
     NotConverged,
+    /// No long-only portfolio has the target return: it must be between the lowest and the
+    /// highest expected return of any asset.
+    TargetReturnOutOfRange {
+        /// The target return supplied.
+        target_return: f64,
+        /// The lowest expected return of any asset.
+        lowest: f64,
+        /// The highest expected return of any asset.
+        highest: f64,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -136,6 +146,15 @@ impl fmt::Display for CutupError {
             CutupError::NotConverged => {
                 write!(f, "the solver stopped before reaching a solution")
             }
+            CutupError::TargetReturnOutOfRange {
+                target_return,
+                lowest,
+                highest,
+            } => write!(
+                f,
+                "target return {target_return} is outside the assets' expected returns, \
+                 from {lowest} to {highest}, so no long-only portfolio reaches it"
+            ),
         }
     }
 }
@@ -279,7 +298,8 @@ impl CovarianceConfig {
 }
 
 /// What a mean-variance optimization trades off. See
-/// [`PortfolioAllocator::mean_variance_allocation`].
+/// [`PortfolioAllocator::mean_variance_allocation`] and
+/// [`PortfolioAllocator::long_only_mean_variance_allocation`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum MeanVarianceObjective {
@@ -290,7 +310,8 @@ pub enum MeanVarianceObjective {
     TargetReturn(f64),
 }
 
-/// Configuration for [`PortfolioAllocator::mean_variance_allocation`].
+/// Configuration for [`PortfolioAllocator::mean_variance_allocation`] and
+/// [`PortfolioAllocator::long_only_mean_variance_allocation`].
 ///
 /// Start from [`MeanVarianceConfig::risk_aversion`] or [`MeanVarianceConfig::target_return`]:
 ///
@@ -1034,22 +1055,7 @@ impl PortfolioAllocator {
         &self,
         config: &MeanVarianceConfig,
     ) -> Result<Weights, CutupError> {
-        match config.objective {
-            MeanVarianceObjective::RiskAversion(gamma) if !(gamma.is_finite() && gamma > 0.0) => {
-                return Err(CutupError::InvalidConfig {
-                    field: "risk_aversion",
-                    value: gamma,
-                });
-            }
-            MeanVarianceObjective::TargetReturn(target) if !target.is_finite() => {
-                return Err(CutupError::InvalidConfig {
-                    field: "target_return",
-                    value: target,
-                });
-            }
-            _ => {}
-        }
-
+        check_objective(config.objective)?;
         let n = self.cov_matrix.ncols();
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
 
@@ -1079,6 +1085,128 @@ impl PortfolioAllocator {
             }
         };
         Ok(Weights(weights.iter().copied().collect()))
+    }
+
+    /// Computes a Markowitz mean-variance portfolio with no short positions: the budget
+    /// constraint `1ᵀw = 1` and `w ≥ 0`.
+    ///
+    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
+    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
+    ///   Only targets between the lowest and highest expected return of any asset can be
+    ///   reached.
+    ///
+    /// Solved exactly by the same active-set method as
+    /// [`PortfolioAllocator::long_only_min_variance_allocation`]. When
+    /// [`PortfolioAllocator::mean_variance_allocation`] returns weights with no short
+    /// positions, the two agree. Unlike it, a risk aversion always has an optimum, since no
+    /// long-only portfolio can gain expected return without limit.
+    ///
+    /// When Σ is singular, several long-only portfolios can share the optimum, and which one
+    /// is returned depends on the solver's path. Add shrinkage or regularization for a unique
+    /// answer.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The objective, optional expected returns (default: the sample mean of the
+    ///   returns), and covariance adjustments.
+    ///
+    /// # Returns
+    ///
+    /// * [`Weights`], one per asset, nonnegative and summing to 1.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
+    ///   target return or an expected return is not finite, or the covariance config is invalid.
+    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
+    /// * [`CutupError::TargetReturnOutOfRange`] for a target return below the lowest or above
+    ///   the highest expected return.
+    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
+    ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
+    ///   should cause.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVarianceConfig, PortfolioAllocator};
+    /// use nalgebra::{dmatrix, dvector};
+    ///
+    /// let returns = dmatrix![
+    ///      0.010, -0.020,  0.005;
+    ///     -0.004,  0.015,  0.002;
+    ///      0.007,  0.003, -0.006;
+    ///      0.002, -0.001,  0.004;
+    ///     -0.003,  0.006,  0.001
+    /// ];
+    /// let expected = dvector![0.004, 0.006, 0.002];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let config = MeanVarianceConfig::risk_aversion(1.0).with_expected_returns(expected);
+    ///
+    /// // With little aversion to risk, the unconstrained portfolio leverages up on the
+    /// // highest expected returns and shorts the lowest.
+    /// assert!(allocator.mean_variance_allocation(&config)?.iter().any(|&w| w < 0.0));
+    ///
+    /// let weights = allocator.long_only_mean_variance_allocation(&config)?;
+    /// assert!(weights.iter().all(|&w| w >= 0.0));
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn long_only_mean_variance_allocation(
+        &self,
+        config: &MeanVarianceConfig,
+    ) -> Result<Weights, CutupError> {
+        check_objective(config.objective)?;
+        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let cov = self.adjusted_covariance(&config.covariance)?;
+        let n = cov.ncols();
+        let ones = DVector::from_element(n, 1.0);
+        let equal = DVector::from_element(n, 1.0 / n as f64);
+
+        let weights = match config.objective {
+            MeanVarianceObjective::RiskAversion(gamma) => qp::solve_nonnegative(
+                &(cov * gamma),
+                &mu,
+                &DMatrix::from_column_slice(n, 1, ones.as_slice()),
+                &DVector::from_element(1, 1.0),
+                equal,
+            )?,
+            MeanVarianceObjective::TargetReturn(target) => {
+                let (low, lowest) = mu.argmin();
+                let (high, highest) = mu.argmax();
+                if !(lowest..=highest).contains(&target) {
+                    return Err(CutupError::TargetReturnOutOfRange {
+                        target_return: target,
+                        lowest,
+                        highest,
+                    });
+                }
+                // Mixing the lowest and highest expected returns reaches any target in
+                // between. When they're equal, the target is that return, and equal weights
+                // reach it.
+                let start = if highest > lowest {
+                    let t = (target - lowest) / (highest - lowest);
+                    let mut start = DVector::zeros(n);
+                    start[low] = 1.0 - t;
+                    start[high] = t;
+                    start
+                } else {
+                    equal
+                };
+                qp::solve_nonnegative(
+                    &cov,
+                    &DVector::zeros(n),
+                    &DMatrix::from_columns(&[ones, mu]),
+                    &DVector::from_vec(vec![1.0, target]),
+                    start,
+                )?
+            }
+        };
+        // Clamping at zero can leave the sum off by rounding.
+        let total = weights.sum();
+        Ok(Weights(weights.iter().map(|w| w / total).collect()))
     }
 
     /// Returns `given` after checking it, or the sample mean of the returns when it's `None`.
@@ -2002,10 +2130,29 @@ pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> Result<Weights, CutupEr
     PortfolioAllocator::from_prices(prices)?.min_variance_allocation()
 }
 
+/// Checks a mean-variance objective's parameter.
+fn check_objective(objective: MeanVarianceObjective) -> Result<(), CutupError> {
+    match objective {
+        MeanVarianceObjective::RiskAversion(gamma) if !(gamma.is_finite() && gamma > 0.0) => {
+            Err(CutupError::InvalidConfig {
+                field: "risk_aversion",
+                value: gamma,
+            })
+        }
+        MeanVarianceObjective::TargetReturn(target) if !target.is_finite() => {
+            Err(CutupError::InvalidConfig {
+                field: "target_return",
+                value: target,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::dmatrix;
+    use nalgebra::{dmatrix, dvector};
 
     /// Six periods of prices for three assets whose returns covariance is full rank.
     fn full_rank_prices() -> DMatrix<f64> {
@@ -2175,6 +2322,16 @@ mod tests {
         assert_eq!(
             CutupError::NotConverged.to_string(),
             "the solver stopped before reaching a solution"
+        );
+        assert_eq!(
+            CutupError::TargetReturnOutOfRange {
+                target_return: 0.5,
+                lowest: 0.1,
+                highest: 0.2
+            }
+            .to_string(),
+            "target return 0.5 is outside the assets' expected returns, from 0.1 to 0.2, so no \
+             long-only portfolio reaches it"
         );
     }
 
@@ -2917,6 +3074,157 @@ mod tests {
         assert_eq!(
             allocator.long_only_min_variance_allocation(),
             Err(CutupError::ZeroVariance { asset: 1 })
+        );
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_matches_unconstrained_when_long() {
+        // A diagonal covariance and close expected returns keep every unconstrained weight
+        // positive, so the constraint is inactive.
+        let (s1, s2, s3) = (0.01, 0.02, 0.04);
+        let returns = dmatrix![
+            s1, s2, s3;
+            -s1, s2, -s3;
+            s1, -s2, -s3;
+            -s1, -s2, s3
+        ];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let expected = dvector![0.001, 0.002, 0.003];
+        for config in [
+            MeanVarianceConfig::risk_aversion(100.0),
+            MeanVarianceConfig::target_return(0.0015),
+        ] {
+            let config = config.with_expected_returns(expected.clone());
+            let unconstrained = allocator.mean_variance_allocation(&config).unwrap();
+            assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
+            assert_weights_close(
+                &allocator
+                    .long_only_mean_variance_allocation(&config)
+                    .unwrap(),
+                &unconstrained,
+                1e-12,
+            );
+        }
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_at_the_extremes() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let expected = dvector![0.001, 0.003, 0.002];
+
+        // With almost no aversion to risk, everything goes to the highest expected return.
+        let config =
+            MeanVarianceConfig::risk_aversion(1e-9).with_expected_returns(expected.clone());
+        assert_weights_close(
+            &allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap(),
+            &Weights(vec![0.0, 1.0, 0.0]),
+            1e-12,
+        );
+
+        // Only the asset with the highest expected return reaches it.
+        let config = MeanVarianceConfig::target_return(0.003).with_expected_returns(expected);
+        assert_weights_close(
+            &allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap(),
+            &Weights(vec![0.0, 1.0, 0.0]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_hits_the_target() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let expected = dvector![0.001, 0.003, 0.002];
+        for target in [0.001, 0.0012, 0.0025, 0.0029] {
+            let config =
+                MeanVarianceConfig::target_return(target).with_expected_returns(expected.clone());
+            let weights = allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap();
+            let w = DVector::from_column_slice(weights.as_slice());
+            assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
+            assert!((w.sum() - 1.0).abs() < 1e-12);
+            assert!((w.dot(&expected) - target).abs() < 1e-15, "{weights:?}");
+        }
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_rejects_unreachable_targets() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = MeanVarianceConfig::target_return(0.004)
+            .with_expected_returns(dvector![0.001, 0.003, 0.002]);
+        assert_eq!(
+            allocator.long_only_mean_variance_allocation(&config),
+            Err(CutupError::TargetReturnOutOfRange {
+                target_return: 0.004,
+                lowest: 0.001,
+                highest: 0.003
+            })
+        );
+
+        // With equal expected returns, only that return can be targeted, by any portfolio.
+        let flat = dvector![0.002, 0.002, 0.002];
+        let config = MeanVarianceConfig::target_return(0.001).with_expected_returns(flat.clone());
+        assert!(matches!(
+            allocator.long_only_mean_variance_allocation(&config),
+            Err(CutupError::TargetReturnOutOfRange { .. })
+        ));
+        let config = MeanVarianceConfig::target_return(0.002).with_expected_returns(flat);
+        assert_weights_close(
+            &allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap(),
+            &allocator.long_only_min_variance_allocation().unwrap(),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_bounded_on_singular_covariance() {
+        // Unconstrained, utility grows without limit (see the next test). Long-only, the
+        // weights can't grow, so there is always an optimum.
+        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let config = MeanVarianceConfig::risk_aversion(2.0);
+        assert_eq!(
+            allocator.mean_variance_allocation(&config),
+            Err(CutupError::Unbounded)
+        );
+        let weights = allocator
+            .long_only_mean_variance_allocation(&config)
+            .unwrap();
+        assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_rejects_bad_input() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        assert_eq!(
+            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(0.0)),
+            Err(CutupError::InvalidConfig {
+                field: "risk_aversion",
+                value: 0.0
+            })
+        );
+        assert_eq!(
+            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::target_return(
+                f64::INFINITY
+            )),
+            Err(CutupError::InvalidConfig {
+                field: "target_return",
+                value: f64::INFINITY
+            })
+        );
+        let config = MeanVarianceConfig::risk_aversion(1.0).with_expected_returns(dvector![0.01]);
+        assert_eq!(
+            allocator.long_only_mean_variance_allocation(&config),
+            Err(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 1
+            })
         );
     }
 

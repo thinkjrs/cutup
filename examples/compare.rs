@@ -55,6 +55,11 @@ fn main() -> Result<(), CutupError> {
             allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
         ),
         (
+            "Long-only mean-variance, γ = 100",
+            allocator
+                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
+        ),
+        (
             "Max Sharpe, r_f = 0",
             allocator.max_sharpe_allocation(&MaxSharpeConfig::default())?,
         ),
