@@ -1248,6 +1248,98 @@
       "condition_number": 16.0
     },
     {
+      "dataset": "orthogonal3",
+      "method": "max_diversification",
+      "tolerance": 1e-09,
+      "weights": [0.5714285714285741, 0.2857142857142835, 0.14285714285714232],
+      "condition_number": 16.0
+    },
+    {
+      "dataset": "two_asset",
+      "method": "max_diversification",
+      "tolerance": 1e-09,
+      "weights": [0.3408313998354051, 0.6591686001645949],
+      "condition_number": 4.196
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "max_diversification",
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.2075258592474461, 0.2053525813511047, 0.24498632370891615, 0.34213523569253307],
+      "condition_number": 74.99
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "max_diversification",
+      "tolerance": 1e-09,
+      "weights": [0.1157206850914442, 0.16678784503294136, 0.0, 0.0, 0.2604742114909195, 0.14402197959949123, 0.16277914183957562, 0.0, 0.04551778522151982, 0.10469835172410827],
+      "condition_number": 19.41
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "max_diversification",
+      "tolerance": 8.1e-08,
+      "weights": [0.2893979192571213, 0.5162867119696161, 0.0, 0.19431536877326266],
+      "condition_number": 8061000.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "max_diversification",
+      "params": {
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.11037039240049144, 0.22083440111188585, 0.21536194930309857, 0.2214930515888573, 0.23194020559566675],
+      "condition_number": 6.996
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "max_diversification",
+      "params": {
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.11795767140171712, 0.1632432776907766, 0.040050550834496774, 0.0471024590848309, 0.2124899505307009, 0.11301782099292165, 0.12410419276101807, 0.0, 0.06996460357151861, 0.1120694731320193],
+      "condition_number": 7.24
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "max_diversification",
+      "params": {
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1489496614122516, 0.17572177522229074, 0.0629847513219758, 0.1651592168081994, 0.12851427126505868, 0.31867032397022393],
+      "condition_number": 12.16
+    },
+    {
+      "dataset": "collinear2",
+      "method": "max_diversification",
+      "params": {
+        "shrinkage": 0.3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6100903519487242, 0.38990964805127587],
+      "condition_number": 5.667
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "max_diversification",
+      "params": {
+        "regularization": 1e-05
+      },
+      "tolerance": 1e-09,
+      "weights": [0.2870246145210728, 0.5030400678657873, 0.10439374079703648, 0.10554157681610347],
+      "condition_number": 47.22
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "max_diversification",
+      "tolerance": 1e-09,
+      "error": "SingularCovariance",
+      "condition_number": 1.492e+17
+    },
+    {
       "dataset": "rank_deficient6",
       "method": "risk_parity",
       "params": {

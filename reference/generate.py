@@ -25,6 +25,8 @@ cutup's implementation:
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
   long-only portfolio in Σ's null space (eigenvalues within n·ε of the largest, from
   numpy.linalg.eigh) with positive excess return.
+* Max diversification: the same support enumeration and linear program as long-only max
+  Sharpe, with the volatilities in place of the excess returns.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -200,17 +202,16 @@ def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.nda
     return z / z.sum()
 
 
-def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
+def long_only_max_ratio(cov: np.ndarray, a: np.ndarray) -> np.ndarray | None:
+    """Maximizes aᵀw / sqrt(wᵀΣw) over long-only w summing to 1, for a with a positive
+    entry, or None when the ratio is unbounded."""
     n = cov.shape[0]
-    excess = mu - risk_free_rate
-    if excess.max() <= 1e-10 * max(abs(risk_free_rate), np.abs(mu).max()):
-        return "NoPositiveExcessReturn"
-    # The highest excess return of a long-only portfolio w = Nz in the null space N of Σ.
+    # The highest aᵀw of a long-only portfolio w = Nz in the null space N of Σ.
     values, vectors = np.linalg.eigh(cov)
     null = vectors[:, values <= n * np.finfo(float).eps * values.max()]
     if null.shape[1] > 0:
         zero_variance = linprog(
-            -(excess @ null),
+            -(a @ null),
             A_ub=-null,
             b_ub=np.zeros(n),
             A_eq=(np.ones(n) @ null)[None, :],
@@ -219,10 +220,23 @@ def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float)
         )
         if zero_variance.status not in (0, 2):
             raise ValueError(f"linprog failed: {zero_variance.message}")
-        if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(excess).max():
-            return "Unbounded"
-    y = long_only(cov, np.zeros(n), excess[:, None], np.array([1.0]))
+        if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(a).max():
+            return None
+    y = long_only(cov, np.zeros(n), a[:, None], np.array([1.0]))
     return y / y.sum()
+
+
+def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
+    excess = mu - risk_free_rate
+    if excess.max() <= 1e-10 * max(abs(risk_free_rate), np.abs(mu).max()):
+        return "NoPositiveExcessReturn"
+    weights = long_only_max_ratio(cov, excess)
+    return "Unbounded" if weights is None else weights
+
+
+def max_diversification(cov: np.ndarray) -> np.ndarray | str:
+    weights = long_only_max_ratio(cov, np.sqrt(np.diag(cov)))
+    return "SingularCovariance" if weights is None else weights
 
 
 def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
@@ -298,6 +312,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
         case "long_only_max_sharpe":
             return long_only_max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
+        case "max_diversification":
+            return max_diversification(adjusted)
         case "risk_parity":
             budgets = np.array(params.get("risk_budgets", np.ones(returns.shape[1])), dtype=float)
             return risk_parity(adjusted, budgets)
@@ -456,6 +472,16 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "prices10x60", "method": "long_only_max_sharpe", "params": {"risk_free_rate": 0.01}, "tolerance": solver})
     out.append({"dataset": "orthogonal3", "method": "long_only_max_sharpe", "tolerance": solver})
 
+    # Max diversification on every dataset. The singular ones have their optimum unique only
+    # with shrinkage, or have no maximum at all: rank_deficient6 has a long-only portfolio with
+    # zero variance.
+    for name in ["orthogonal3", "two_asset", "two_blocks5", "prices10x60", "near_singular4"]:
+        out.append({"dataset": name, "method": "max_diversification", "tolerance": solver})
+    for name in ["two_blocks5", "prices10x60", "rank_deficient6", "collinear2"]:
+        out.append({"dataset": name, "method": "max_diversification", "params": {"shrinkage": 0.3}, "tolerance": solver})
+    out.append({"dataset": "near_singular4", "method": "max_diversification", "params": {"regularization": 1e-5}, "tolerance": solver})
+    out.append({"dataset": "rank_deficient6", "method": "max_diversification", "tolerance": solver})
+
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.
     out.append({"dataset": "rank_deficient6", "method": "risk_parity", "params": {"shrinkage": 0.3}, "tolerance": solver})
@@ -525,7 +551,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "mean_variance", "max_sharpe"):
+        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "max_diversification", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
