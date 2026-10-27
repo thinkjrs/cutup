@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-27
+
 ### Added
 
 - `PortfolioAllocator::long_only_mean_variance_allocation`: mean-variance with no short
@@ -251,7 +253,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.4...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.5...HEAD
+[0.2.5]: https://github.com/thinkjrs/cutup/compare/0.2.4...0.2.5
 [0.2.4]: https://github.com/thinkjrs/cutup/compare/0.2.3...0.2.4
 [0.2.3]: https://github.com/thinkjrs/cutup/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/thinkjrs/cutup/compare/0.2.1...0.2.2
