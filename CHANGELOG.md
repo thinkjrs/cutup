@@ -17,6 +17,16 @@ All notable changes to this project are documented here. The format follows
 - Reference cases against support enumeration, now shared with long-only min variance, and
   property tests: the weights satisfy the KKT conditions for both objectives, and match
   unconstrained mean-variance when it has no short positions.
+- `PortfolioAllocator::long_only_max_sharpe_allocation`: the maximum Sharpe ratio portfolio
+  with no short positions, taking the same `MaxSharpeConfig` as `max_sharpe_allocation`.
+  Solved exactly by the active-set method, after the change of variables that makes it a
+  convex quadratic program. It exists whenever some asset's expected return is above the
+  risk-free rate, even where the unconstrained maximum doesn't.
+- `CutupError::NoPositiveExcessReturn`, returned when no asset's expected return is above
+  the risk-free rate, so no long-only portfolio has a positive Sharpe ratio.
+- Reference cases for long-only max Sharpe against support enumeration, with unbounded
+  cases decided by linear programming, and property tests: the weights satisfy the KKT
+  conditions and have the highest Sharpe ratio of any long-only method.
 
 ## [0.2.4] - 2026-10-26
 
