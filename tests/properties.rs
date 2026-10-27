@@ -92,6 +92,35 @@ fn sharpe(cov: &DMatrix<f64>, excess: &DVector<f64>, weights: &Weights) -> f64 {
 }
 
 /// Every method that returns fully invested weights, by name.
+/// Every long-only method's weights, to compare an optimum against.
+fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
+    let mut methods = vec![
+        allocator.ew_allocation(),
+        allocator.inverse_volatility_allocation().unwrap(),
+        allocator.inverse_variance_allocation().unwrap(),
+        allocator.long_only_min_variance_allocation().unwrap(),
+        allocator
+            .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+            .unwrap(),
+        allocator
+            .long_only_max_sharpe_allocation(&low_rate())
+            .unwrap(),
+        allocator.max_diversification_allocation().unwrap(),
+        allocator.risk_parity_allocation().unwrap(),
+    ];
+    methods.extend(
+        hrp_methods(allocator)
+            .into_iter()
+            .map(|(_, weights)| weights),
+    );
+    methods.extend(
+        herc_methods(allocator)
+            .into_iter()
+            .map(|(_, weights)| weights),
+    );
+    methods
+}
+
 fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
         ("equal weight".to_string(), allocator.ew_allocation()),
@@ -321,15 +350,7 @@ proptest! {
             }
         }
 
-        let mut others = vec![
-            allocator.ew_allocation(),
-            allocator.inverse_volatility_allocation().unwrap(),
-            allocator.inverse_variance_allocation().unwrap(),
-            allocator.risk_parity_allocation().unwrap(),
-        ];
-        others.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        others.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        for weights in others {
+        for weights in long_only_methods(&allocator) {
             let other = variance(&cov, &weights);
             prop_assert!(minimum <= other * (1.0 + 1e-9), "{weights:?}: {other} < {minimum}");
         }
@@ -569,19 +590,7 @@ proptest! {
         let config = MaxSharpeConfig::default().with_risk_free_rate(rate);
         let best = sharpe(&cov, &excess, &allocator.long_only_max_sharpe_allocation(&config).unwrap());
 
-        let mut others = vec![
-            allocator.ew_allocation(),
-            allocator.inverse_volatility_allocation().unwrap(),
-            allocator.inverse_variance_allocation().unwrap(),
-            allocator.long_only_min_variance_allocation().unwrap(),
-            allocator
-                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
-                .unwrap(),
-            allocator.risk_parity_allocation().unwrap(),
-        ];
-        others.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        others.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        for weights in others {
+        for weights in long_only_methods(&allocator) {
             let other = sharpe(&cov, &excess, &weights);
             prop_assert!(other <= best + 1e-9 * best.abs(), "{weights:?}: {other} > {best}");
         }
@@ -633,22 +642,41 @@ proptest! {
         // A weighted average volatility is at least the portfolio's volatility.
         prop_assert!(best >= 1.0 - 1e-12, "{best}");
 
-        let mut others = vec![
-            allocator.ew_allocation(),
-            allocator.inverse_volatility_allocation().unwrap(),
-            allocator.inverse_variance_allocation().unwrap(),
-            allocator.long_only_min_variance_allocation().unwrap(),
-            allocator
-                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
-                .unwrap(),
-            allocator.long_only_max_sharpe_allocation(&low_rate()).unwrap(),
-            allocator.risk_parity_allocation().unwrap(),
-        ];
-        others.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        others.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
-        for weights in others {
+        for weights in long_only_methods(&allocator) {
             let other = ratio(&weights);
             prop_assert!(other <= best * (1.0 + 1e-9), "{weights:?}: {other} > {best}");
+        }
+    }
+
+    #[test]
+    fn max_diversification_ignores_each_asset_scale(
+        returns in returns(),
+        asset in 0usize..6,
+        exponent in -6.0f64..6.0,
+    ) {
+        // The ratio doesn't change when one asset is rescaled by k, so neither does the
+        // optimum, measured in that asset's new units: its weight is divided by k.
+        prop_assume!(well_posed(&returns));
+        let (asset, k) = (asset % returns.ncols(), 10f64.powf(exponent));
+        let mut scaled = returns.clone();
+        scaled.column_mut(asset).scale_mut(k);
+        let base = PortfolioAllocator::from_returns(returns)
+            .unwrap()
+            .max_diversification_allocation()
+            .unwrap();
+        let weights = PortfolioAllocator::from_returns(scaled)
+            .unwrap()
+            .max_diversification_allocation()
+            .unwrap();
+
+        let mut expected = DVector::from_column_slice(base.as_slice());
+        expected[asset] /= k;
+        let expected = &expected / expected.sum();
+        for (w, e) in weights.iter().zip(&expected) {
+            prop_assert!(
+                (w - e).abs() <= 1e-8 * w.max(*e) + 1e-14,
+                "asset {asset} scaled by {k}: {weights:?} vs {expected}"
+            );
         }
     }
 

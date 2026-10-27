@@ -26,7 +26,8 @@ cutup's implementation:
   long-only portfolio in Σ's null space (eigenvalues within n·ε of the largest, from
   numpy.linalg.eigh) with positive excess return.
 * Max diversification: the same support enumeration and linear program as long-only max
-  Sharpe, with the volatilities in place of the excess returns.
+  Sharpe, on the correlation matrix with a vector of ones, since the ratio doesn't depend
+  on each asset's units; the result is divided by the volatilities.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -234,9 +235,19 @@ def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float)
     return "Unbounded" if weights is None else weights
 
 
+def correlation(cov: np.ndarray) -> np.ndarray:
+    volatilities = np.sqrt(np.diag(cov))
+    return cov / np.outer(volatilities, volatilities)
+
+
 def max_diversification(cov: np.ndarray) -> np.ndarray | str:
-    weights = long_only_max_ratio(cov, np.sqrt(np.diag(cov)))
-    return "SingularCovariance" if weights is None else weights
+    # With v = diag(σ)w, the ratio is 1ᵀv / sqrt(vᵀCv) for the correlation matrix C, which
+    # doesn't depend on each asset's units.
+    v = long_only_max_ratio(correlation(cov), np.ones(cov.shape[0]))
+    if v is None:
+        return "SingularCovariance"
+    weights = v / np.sqrt(np.diag(cov))
+    return weights / weights.sum()
 
 
 def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
@@ -329,9 +340,13 @@ def cases(datasets: dict) -> list[dict]:
     exact, solver, clustering = 0.0, 1e-9, 1e-12
     out = []
     for name in datasets:
-        out.append({"dataset": name, "method": "risk_parity", "tolerance": solver})
+        # Min variance and risk parity solve on Σ in raw units, where scales4's volatilities
+        # make Σ numerically singular, so both sides give wrong answers there.
+        if name != "scales4":
+            out.append({"dataset": name, "method": "risk_parity", "tolerance": solver})
         out.append({"dataset": name, "method": "equal_weight", "tolerance": exact})
-        out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
+        if name != "scales4":
+            out.append({"dataset": name, "method": "min_variance", "tolerance": solver})
         out.append({"dataset": name, "method": "hrp", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_volatility", "tolerance": clustering})
         out.append({"dataset": name, "method": "inverse_variance", "tolerance": clustering})
@@ -481,6 +496,8 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": name, "method": "max_diversification", "params": {"shrinkage": 0.3}, "tolerance": solver})
     out.append({"dataset": "near_singular4", "method": "max_diversification", "params": {"regularization": 1e-5}, "tolerance": solver})
     out.append({"dataset": "rank_deficient6", "method": "max_diversification", "tolerance": solver})
+    # Volatilities eight orders of magnitude apart.
+    out.append({"dataset": "scales4", "method": "max_diversification", "tolerance": solver})
 
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.
@@ -555,7 +572,10 @@ def main() -> None:
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
-            condition = float(np.linalg.cond(adjusted))
+            # Max diversification is solved on the correlation matrix, and its accuracy
+            # doesn't depend on each asset's units.
+            solved = correlation(adjusted) if case["method"] == "max_diversification" else adjusted
+            condition = float(np.linalg.cond(solved))
             case["condition_number"] = float(f"{condition:.3e}")
             singular = condition > 1.0 / (adjusted.shape[0] * np.finfo(float).eps)
             if not singular:

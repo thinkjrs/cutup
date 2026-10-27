@@ -120,6 +120,21 @@ def collinear2() -> dict:
     }
 
 
+def scales4(rng: np.random.Generator) -> dict:
+    # Correlated assets whose volatilities run from about 1e-2 down to 1e-10, as when one
+    # asset's returns are in different units. Methods that don't depend on units, such as
+    # max diversification, must give the same answer as on the unscaled returns.
+    periods = 24
+    market = rng.normal(0.0, 0.01, periods)
+    returns = 0.6 * market[:, None] + rng.normal(0.0, 0.008, (periods, 4))
+    returns = returns * np.array([1.0, 1e-3, 1e-6, 1e-8])
+    return {
+        "kind": "returns",
+        "description": "Four correlated assets with volatilities from 1e-2 to 1e-10, 24 periods.",
+        "data": [[float(f"{r:.6e}") for r in row] for row in returns],
+    }
+
+
 def main() -> None:
     rng = np.random.default_rng(20261022)
     datasets = {
@@ -130,6 +145,7 @@ def main() -> None:
         "near_singular4": near_singular4(rng),
         "rank_deficient6": rank_deficient6(rng),
         "collinear2": collinear2(),
+        "scales4": scales4(rng),
     }
     write_json(OUTPUT, datasets)
     print(f"wrote {len(datasets)} datasets to {OUTPUT}")
