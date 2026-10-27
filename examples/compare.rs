@@ -6,7 +6,7 @@
 
 use cutup::{
     CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator,
+    MeanVarianceConfig, PortfolioAllocator, WeightBounds,
 };
 use nalgebra::DMatrix;
 
@@ -49,6 +49,13 @@ fn main() -> Result<(), CutupError> {
         (
             "Long-only min variance",
             allocator.long_only_min_variance_allocation()?,
+        ),
+        (
+            "Long-only min variance, ≤ 30% each",
+            allocator.long_only_min_variance_allocation_with_bounds(
+                &CovarianceConfig::default(),
+                &WeightBounds::uniform(0.0, 0.3),
+            )?,
         ),
         (
             "Mean-variance, γ = 100",
