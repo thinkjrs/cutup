@@ -20,6 +20,10 @@ cutup's implementation:
   checks neither the multipliers' signs nor uses an iterative solver, unlike cutup's
   active-set method. Only covariances that aren't singular are used, where the optimum is
   unique. A target return outside the assets' expected returns is an error.
+* Long-only max Sharpe: the same support enumeration, on the change of variables
+  y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
+  y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
+  long-only portfolio with zero variance and positive excess return.
 * Max Sharpe: the NumPy closed form Σ⁻¹(μ − r_f) / 1ᵀΣ⁻¹(μ − r_f); the minimum-norm
   least-squares solution when Σ is singular.
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
@@ -45,7 +49,7 @@ import numpy as np
 import pandas as pd
 import riskfolio
 from pypfopt import HRPOpt
-from scipy.optimize import nnls
+from scipy.optimize import linprog, nnls
 
 from fixtures import FIXTURES, write_json
 
@@ -195,6 +199,24 @@ def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.nda
     return z / z.sum()
 
 
+def long_only_max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
+    n = cov.shape[0]
+    excess = mu - risk_free_rate
+    if excess.max() <= 1e-10 * (abs(risk_free_rate) + np.abs(mu).max()):
+        return "NoPositiveExcessReturn"
+    # The highest excess return of a long-only portfolio with Σw = 0.
+    zero_variance = linprog(
+        -excess,
+        A_eq=np.vstack([cov / (np.trace(cov) / n), np.ones(n)]),
+        b_eq=np.r_[np.zeros(n), 1.0],
+        bounds=(0, None),
+    )
+    if zero_variance.status == 0 and -zero_variance.fun > 1e-9 * np.abs(excess).max():
+        return "Unbounded"
+    y = long_only(cov, np.zeros(n), excess[:, None], np.array([1.0]))
+    return y / y.sum()
+
+
 def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
     return float(min_variance(cov) @ mu)
 
@@ -266,6 +288,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return target_return(adjusted, mu, params["target_return"])
         case "max_sharpe":
             return max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
+        case "long_only_max_sharpe":
+            return long_only_max_sharpe(adjusted, mu, params.get("risk_free_rate", 0.0))
         case "risk_parity":
             budgets = np.array(params.get("risk_budgets", np.ones(returns.shape[1])), dtype=float)
             return risk_parity(adjusted, budgets)
@@ -398,6 +422,30 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
     out.append({"dataset": "collinear2", "method": "max_sharpe", "params": {"risk_free_rate": 0.0, "shrinkage": 0.3}, "tolerance": solver})
 
+    # Long-only max Sharpe from a rate below every expected return to one between the
+    # minimum variance return and the highest, where only the long-only maximum exists.
+    for name in ["two_asset", "two_blocks5", "prices10x60", "near_singular4"]:
+        mu = load_returns(datasets[name]).mean(axis=0)
+        for fraction in [-0.5, 0.5]:
+            rate = round(float(mu.min() + fraction * (mu.max() - mu.min())), 6)
+            out.append({"dataset": name, "method": "long_only_max_sharpe", "params": {"risk_free_rate": rate}, "tolerance": solver})
+    out.append({"dataset": "orthogonal3", "method": "long_only_max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
+    out.append({"dataset": "prices10x60", "method": "long_only_max_sharpe", "params": {"risk_free_rate": 0.004}, "tolerance": solver})
+    out.append({
+        "dataset": "prices10x60",
+        "method": "long_only_max_sharpe",
+        "params": {
+            "risk_free_rate": 0.0001,
+            "expected_returns": [0.0010, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        },
+        "tolerance": solver,
+    })
+    for name in ["rank_deficient6", "collinear2"]:
+        out.append({"dataset": name, "method": "long_only_max_sharpe", "params": {"shrinkage": 0.3}, "tolerance": solver})
+        out.append({"dataset": name, "method": "long_only_max_sharpe", "params": {"risk_free_rate": -0.01}, "tolerance": solver})
+    out.append({"dataset": "prices10x60", "method": "long_only_max_sharpe", "params": {"risk_free_rate": 0.01}, "tolerance": solver})
+    out.append({"dataset": "orthogonal3", "method": "long_only_max_sharpe", "tolerance": solver})
+
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.
     out.append({"dataset": "rank_deficient6", "method": "risk_parity", "params": {"shrinkage": 0.3}, "tolerance": solver})
@@ -467,7 +515,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "mean_variance", "max_sharpe"):
+        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.

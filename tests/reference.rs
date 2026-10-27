@@ -113,7 +113,7 @@ fn herc_config(params: &Value) -> HercConfig {
     }
 }
 
-const METHODS: [&str; 11] = [
+const METHODS: [&str; 12] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -122,6 +122,7 @@ const METHODS: [&str; 11] = [
     "long_only_mean_variance",
     "mean_variance",
     "max_sharpe",
+    "long_only_max_sharpe",
     "risk_parity",
     "hrp",
     "herc",
@@ -145,6 +146,9 @@ fn run(
         }
         "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
         "max_sharpe" => allocator.max_sharpe_allocation(&max_sharpe_config(params)),
+        "long_only_max_sharpe" => {
+            allocator.long_only_max_sharpe_allocation(&max_sharpe_config(params))
+        }
         "risk_parity" => allocator.risk_parity_allocation_with_config(&risk_parity_config(params)),
         "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
         "herc" => allocator.herc_allocation_with_config(&herc_config(params)),

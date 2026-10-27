@@ -79,6 +79,16 @@ fn herc_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
         .collect()
 }
 
+/// A risk-free rate below every generated expected return, so long-only max Sharpe exists.
+fn low_rate() -> MaxSharpeConfig {
+    MaxSharpeConfig::default().with_risk_free_rate(-1.0)
+}
+
+fn sharpe(cov: &DMatrix<f64>, excess: &DVector<f64>, weights: &Weights) -> f64 {
+    let w = DVector::from_column_slice(weights.as_slice());
+    excess.dot(&w) / variance(cov, weights).sqrt()
+}
+
 /// Every method that returns fully invested weights, by name.
 fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
@@ -116,6 +126,12 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
         "long-only mean-variance".to_string(),
         allocator
             .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+            .unwrap(),
+    ));
+    out.push((
+        "long-only max Sharpe".to_string(),
+        allocator
+            .long_only_max_sharpe_allocation(&low_rate())
             .unwrap(),
     ));
     out.push((
@@ -216,6 +232,7 @@ proptest! {
             allocator
                 .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
                 .unwrap(),
+            allocator.long_only_max_sharpe_allocation(&low_rate()).unwrap(),
             allocator.risk_parity_allocation().unwrap(),
         ];
         long_only.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
@@ -484,6 +501,78 @@ proptest! {
             let unconstrained = allocator.mean_variance_allocation(&config).unwrap();
             let long_only = allocator.long_only_mean_variance_allocation(&config).unwrap();
             if unconstrained.iter().all(|&w| w >= 0.0) {
+                for (a, b) in unconstrained.iter().zip(&long_only) {
+                    prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_only_max_sharpe_satisfies_kkt(returns in returns(), fraction in 0.0f64..0.9) {
+        // The Sharpe ratio doesn't change when w is scaled, so at a long-only maximum its
+        // gradient, proportional to (μ − r_f)·σ² − (μ − r_f)ᵀw·Σw, is zero on every held
+        // asset and no higher on the others.
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        prop_assume!(mu.max() - mu.min() > 1e-6);
+        let rate = mu.min() + fraction * (mu.max() - mu.min());
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = MaxSharpeConfig::default().with_risk_free_rate(rate);
+        let weights = allocator.long_only_max_sharpe_allocation(&config).unwrap();
+        let w = DVector::from_column_slice(weights.as_slice());
+        prop_assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
+        prop_assert!((w.sum() - 1.0).abs() < 1e-12);
+
+        let excess = mu.add_scalar(-rate);
+        let marginal = &cov * &w;
+        let reward = &excess * w.dot(&marginal);
+        let risk = marginal * excess.dot(&w);
+        let gradient = &reward - &risk;
+        let tolerance = 1e-8 * (reward.amax() + risk.amax());
+        for i in 0..w.len() {
+            prop_assert!(gradient[i] <= tolerance, "asset {i}: {weights:?}");
+            prop_assert!(w[i] * gradient[i].abs() <= tolerance, "asset {i}: {weights:?}");
+        }
+    }
+
+    #[test]
+    fn long_only_max_sharpe_is_highest_among_long_only(
+        returns in returns(),
+        fraction in 0.0f64..0.9,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        prop_assume!(mu.max() - mu.min() > 1e-6);
+        let rate = mu.min() + fraction * (mu.max() - mu.min());
+        let excess = mu.add_scalar(-rate);
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = MaxSharpeConfig::default().with_risk_free_rate(rate);
+        let best = sharpe(&cov, &excess, &allocator.long_only_max_sharpe_allocation(&config).unwrap());
+
+        let mut others = vec![
+            allocator.ew_allocation(),
+            allocator.inverse_volatility_allocation().unwrap(),
+            allocator.inverse_variance_allocation().unwrap(),
+            allocator.long_only_min_variance_allocation().unwrap(),
+            allocator
+                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+                .unwrap(),
+            allocator.risk_parity_allocation().unwrap(),
+        ];
+        others.extend(hrp_methods(&allocator).into_iter().map(|(_, weights)| weights));
+        others.extend(herc_methods(&allocator).into_iter().map(|(_, weights)| weights));
+        for weights in others {
+            let other = sharpe(&cov, &excess, &weights);
+            prop_assert!(other <= best + 1e-9 * best.abs(), "{weights:?}: {other} > {best}");
+        }
+
+        // When the tangency portfolio is long-only, it is the long-only maximum too.
+        if let Ok(unconstrained) = allocator.max_sharpe_allocation(&config) {
+            if unconstrained.iter().all(|&w| w >= 0.0) {
+                let long_only = allocator.long_only_max_sharpe_allocation(&config).unwrap();
                 for (a, b) in unconstrained.iter().zip(&long_only) {
                     prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
                 }
