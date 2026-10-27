@@ -441,7 +441,9 @@ proptest! {
         }
 
         // For a target return, the marginal variance Σw is λ₁ + λ₂μᵢ on every held asset and
-        // no lower on the others, for some multipliers λ.
+        // no lower on the others, for some multipliers λ. Fitting λ needs expected returns
+        // that differ by more than rounding.
+        prop_assume!(mu.max() - mu.min() > 1e-6);
         let target = mu.min() + fraction * (mu.max() - mu.min());
         let targeted = allocator
             .long_only_mean_variance_allocation(&MeanVarianceConfig::target_return(target))

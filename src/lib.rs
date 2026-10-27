@@ -942,6 +942,7 @@ impl PortfolioAllocator {
     ///   `shrinkage` is outside `[0, 1]`.
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
     ///   should cause.
@@ -980,16 +981,13 @@ impl PortfolioAllocator {
 
         // Equal weights are feasible, and from there the solver's first step is to the
         // unconstrained minimum variance portfolio.
-        let weights = qp::solve_nonnegative(
+        long_only_weights(
             &cov,
             &DVector::zeros(n),
             &DMatrix::from_element(n, 1, 1.0),
             &DVector::from_element(1, 1.0),
             DVector::from_element(n, 1.0 / n as f64),
-        )?;
-        // Clamping at zero can leave the sum off by rounding.
-        let total = weights.sum();
-        Ok(Weights(weights.iter().map(|w| w / total).collect()))
+        )
     }
 
     /// Computes a Markowitz mean-variance portfolio with the budget constraint `1ᵀw = 1`.
@@ -1025,6 +1023,8 @@ impl PortfolioAllocator {
     ///   portfolio gains expected return without adding variance.
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
+    ///   times the risk aversion, isn't finite.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     ///
     /// # Example
@@ -1093,10 +1093,10 @@ impl PortfolioAllocator {
     /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
     /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
     ///   Only targets between the lowest and highest expected return of any asset can be
-    ///   reached.
+    ///   reached; one within rounding of either end counts as at it.
     ///
     /// Solved exactly by the same active-set method as
-    /// [`PortfolioAllocator::long_only_min_variance_allocation`]. When
+    /// [`PortfolioAllocator::long_only_min_variance_allocation`]. When Σ is invertible and
     /// [`PortfolioAllocator::mean_variance_allocation`] returns weights with no short
     /// positions, the two agree. Unlike it, a risk aversion always has an optimum, since no
     /// long-only portfolio can gain expected return without limit.
@@ -1120,9 +1120,11 @@ impl PortfolioAllocator {
     ///   target return or an expected return is not finite, or the covariance config is invalid.
     /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
     /// * [`CutupError::TargetReturnOutOfRange`] for a target return below the lowest or above
-    ///   the highest expected return.
+    ///   the highest expected return, by more than `1e-12` of the larger in magnitude.
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
     ///   shrinkage nor regularization is applied.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
+    ///   times the risk aversion, isn't finite.
     /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
     /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
     ///   should cause.
@@ -1160,34 +1162,37 @@ impl PortfolioAllocator {
     ) -> Result<Weights, CutupError> {
         check_objective(config.objective)?;
         let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        // An unreachable target is rejected before the covariance is built.
+        let objective = match config.objective {
+            MeanVarianceObjective::TargetReturn(target) => {
+                MeanVarianceObjective::TargetReturn(reachable_target(&mu, target)?)
+            }
+            objective => objective,
+        };
         let cov = self.adjusted_covariance(&config.covariance)?;
         let n = cov.ncols();
-        let ones = DVector::from_element(n, 1.0);
         let equal = DVector::from_element(n, 1.0 / n as f64);
 
-        let weights = match config.objective {
-            MeanVarianceObjective::RiskAversion(gamma) => qp::solve_nonnegative(
+        match objective {
+            MeanVarianceObjective::RiskAversion(gamma) => long_only_weights(
                 &(cov * gamma),
                 &mu,
-                &DMatrix::from_column_slice(n, 1, ones.as_slice()),
+                &DMatrix::from_element(n, 1, 1.0),
                 &DVector::from_element(1, 1.0),
                 equal,
-            )?,
+            ),
             MeanVarianceObjective::TargetReturn(target) => {
-                let (low, lowest) = mu.argmin();
-                let (high, highest) = mu.argmax();
-                if !(lowest..=highest).contains(&target) {
-                    return Err(CutupError::TargetReturnOutOfRange {
-                        target_return: target,
-                        lowest,
-                        highest,
-                    });
-                }
                 // Mixing the lowest and highest expected returns reaches any target in
                 // between. When they're equal, the target is that return, and equal weights
-                // reach it.
+                // reach it. Dividing by the larger in magnitude first keeps the differences
+                // from overflowing.
+                let (low, lowest) = mu.argmin();
+                let (high, highest) = mu.argmax();
                 let start = if highest > lowest {
-                    let t = (target - lowest) / (highest - lowest);
+                    let scale = lowest.abs().max(highest.abs());
+                    let t = ((target / scale - lowest / scale)
+                        / (highest / scale - lowest / scale))
+                        .clamp(0.0, 1.0);
                     let mut start = DVector::zeros(n);
                     start[low] = 1.0 - t;
                     start[high] = t;
@@ -1195,18 +1200,16 @@ impl PortfolioAllocator {
                 } else {
                     equal
                 };
-                qp::solve_nonnegative(
+                let ones = DVector::from_element(n, 1.0);
+                long_only_weights(
                     &cov,
                     &DVector::zeros(n),
                     &DMatrix::from_columns(&[ones, mu]),
                     &DVector::from_vec(vec![1.0, target]),
                     start,
-                )?
+                )
             }
-        };
-        // Clamping at zero can leave the sum off by rounding.
-        let total = weights.sum();
-        Ok(Weights(weights.iter().map(|w| w / total).collect()))
+        }
     }
 
     /// Returns `given` after checking it, or the sample mean of the returns when it's `None`.
@@ -2128,6 +2131,36 @@ impl PortfolioAllocator {
 /// ```
 pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> Result<Weights, CutupError> {
     PortfolioAllocator::from_prices(prices)?.min_variance_allocation()
+}
+
+/// Solves `minimize ½ wᵀQw − cᵀw subject to Eᵀw = b and w ≥ 0` from the feasible `start`,
+/// where the first constraint is the budget `1ᵀw = 1`. Clamping at zero can leave the sum
+/// off by rounding, so the weights are rescaled to sum to 1.
+fn long_only_weights(
+    q: &DMatrix<f64>,
+    c: &DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+    start: DVector<f64>,
+) -> Result<Weights, CutupError> {
+    let weights = qp::solve_nonnegative(q, c, e, b, start)?;
+    let total = weights.sum();
+    Ok(Weights(weights.iter().map(|w| w / total).collect()))
+}
+
+/// Returns `target` if some long-only portfolio reaches it: one within rounding of the
+/// lowest or highest expected return is moved onto it.
+fn reachable_target(mu: &DVector<f64>, target: f64) -> Result<f64, CutupError> {
+    let (lowest, highest) = (mu.min(), mu.max());
+    let tolerance = 1e-12 * lowest.abs().max(highest.abs());
+    if target < lowest - tolerance || target > highest + tolerance {
+        return Err(CutupError::TargetReturnOutOfRange {
+            target_return: target,
+            lowest,
+            highest,
+        });
+    }
+    Ok(target.clamp(lowest, highest))
 }
 
 /// Checks a mean-variance objective's parameter.
@@ -3147,7 +3180,10 @@ mod tests {
             let w = DVector::from_column_slice(weights.as_slice());
             assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
             assert!((w.sum() - 1.0).abs() < 1e-12);
-            assert!((w.dot(&expected) - target).abs() < 1e-15, "{weights:?}");
+            assert!(
+                (w.dot(&expected) - target).abs() < 1e-12 * target,
+                "{weights:?}"
+            );
         }
     }
 
@@ -3180,6 +3216,46 @@ mod tests {
             &allocator.long_only_min_variance_allocation().unwrap(),
             1e-12,
         );
+    }
+
+    #[test]
+    fn test_long_only_mean_variance_target_edge_cases() {
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+
+        // A target a rounding error above the highest expected return is that return.
+        let expected = dvector![0.001, 0.003, 0.002];
+        let config = MeanVarianceConfig::target_return(0.003 * (1.0 + 4.0 * f64::EPSILON))
+            .with_expected_returns(expected);
+        assert_weights_close(
+            &allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap(),
+            &Weights(vec![0.0, 1.0, 0.0]),
+            1e-12,
+        );
+
+        // highest − lowest overflows here, which mustn't spoil the starting point.
+        let expected = dvector![-1e308, 1e308, 0.0];
+        let config =
+            MeanVarianceConfig::target_return(5e307).with_expected_returns(expected.clone());
+        let weights = allocator
+            .long_only_mean_variance_allocation(&config)
+            .unwrap();
+        let w = DVector::from_column_slice(weights.as_slice());
+        assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
+        assert!(
+            (w.dot(&expected) - 5e307).abs() < 1e-12 * 5e307,
+            "{weights:?}"
+        );
+
+        // An unreachable target is reported before the covariance is checked.
+        let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = MeanVarianceConfig::target_return(1.0);
+        assert!(matches!(
+            allocator.long_only_mean_variance_allocation(&config),
+            Err(CutupError::TargetReturnOutOfRange { .. })
+        ));
     }
 
     #[test]
