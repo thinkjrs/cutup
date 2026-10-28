@@ -36,6 +36,23 @@ All notable changes to this project are documented here. The format follows
   `.confidence(c)`. `τ` defaults to 0.05, and the covariance takes the same shrinkage and
   regularization setters as the allocation methods. Market capitalizations are normalized
   to weights. The result is a `Vec<f64>` for `MeanVariance` or `MaxSharpe`.
+- Rebalancing from current weights, on `MinVariance` and on `MeanVariance` with a risk
+  aversion: `.current_weights(w₀)` with `.max_turnover(T)`, capping `Σ|wᵢ − w₀ᵢ|` at `T`, and
+  `.turnover_penalty(κ)`, adding `κ‖w − w₀‖²`. `MeanVariance` also takes
+  `.transaction_costs(c)` and `.transaction_costs_per_asset([..])`, maximizing the expected
+  return net of `Σcᵢ|wᵢ − w₀ᵢ|`. Min variance doesn't take costs, which are in units of
+  return; mean-variance with zero expected returns gives min variance with costs. All work
+  long-only, within bounds, or long-short. The active-set solver now cuts each weight's
+  range at its current weight, where costs make the objective kinked, so the results are
+  exact; a cap is solved through its multiplier, a cost added to every asset, found by
+  bisection.
+- `CutupError::MissingCurrentWeights`, `CutupError::InfeasibleTurnover` for a cap below the
+  turnover needed to move the current weights into the bounds, and
+  `CutupError::NotSupported`, returned for trading settings with a target return.
+- Rebalancing reference cases, from support enumeration over five states per asset and
+  cross-checked against PyPortfolioOpt on cvxpy to 1e-6, and property tests: rebalanced
+  weights satisfy the KKT conditions with costs, caps hold and bind, settings that cost
+  nothing change nothing, and higher costs never trade more.
 - `CutupError::DegenerateViews`, returned when certain views repeat or contradict each
   other, or nearly do, or when a view with the default variance or a confidence is on a
   portfolio with no variance, which would make it certain.

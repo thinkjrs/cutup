@@ -22,6 +22,7 @@ Here are some of the allocation methods included in this library:
 - **Hierarchical Risk Parity (HRP)**
 - **Hierarchical Equal Risk Contribution (HERC)**
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
+- **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
 
 This library leverages `nalgebra` for efficient matrix operations and is designed for performance and extensibility.
 
@@ -39,6 +40,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
+- **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
@@ -51,8 +53,8 @@ Each method is a value you pass to `PortfolioAllocator::allocate`. Methods that 
 | `EqualWeight` | nothing | ✅ | A baseline that needs no estimates and can't fail. |
 | `InverseVolatility` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
 | `InverseVariance` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
-| `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. |
-| `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds allow; `.bounds(..)` caps or floors each asset. |
+| `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. From `.current_weights(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` limit trading. |
+| `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds allow; `.bounds(..)` caps or floors each asset. With a risk aversion, `.transaction_costs(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` rebalance from `.current_weights(..)`. |
 | `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
 | `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `RiskParity` | covariance | ✅ | Every asset contributes the same risk, or the shares set by `.risk_budgets(..)`. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
@@ -141,6 +143,41 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
+### Rebalancing
+
+Give `MinVariance` or `MeanVariance` your current weights to rebalance from them. Turnover is the total weight bought and sold, `Σ|wᵢ − w₀ᵢ|`. Transaction costs are in units of return, so only mean-variance takes them; for min variance with costs, use mean-variance with zero expected returns.
+
+```rust
+use cutup::{CutupError, MeanVariance, MinVariance, PortfolioAllocator};
+use nalgebra::dmatrix;
+
+fn main() -> Result<(), CutupError> {
+    let returns = dmatrix![
+         0.010, -0.020,  0.005;
+        -0.004,  0.015,  0.002;
+         0.007,  0.003, -0.006;
+         0.002, -0.001,  0.004;
+        -0.003,  0.006,  0.001
+    ];
+    let allocator = PortfolioAllocator::from_returns(returns)?;
+    let current = [0.5, 0.3, 0.2];
+
+    // The lowest-variance portfolio within 10% turnover of the current one.
+    let capped = allocator.allocate(&MinVariance::default().current_weights(current).max_turnover(0.1))?;
+    let turnover: f64 = capped.iter().zip(current).map(|(w, c)| (w - c).abs()).sum();
+    assert!(turnover <= 0.1 + 1e-12);
+
+    // Mean-variance net of 10 basis points a trade.
+    let net = allocator.allocate(
+        &MeanVariance::risk_aversion(100.0)
+            .current_weights(current)
+            .transaction_costs(0.001),
+    )?;
+    println!("Rebalanced weights: {:?}", net.as_slice());
+    Ok(())
+}
+```
+
 ### Black-Litterman
 
 Black-Litterman estimates expected returns rather than allocating. Start from the market weights (or capitalizations) and the market's risk aversion δ, add views, and pass the result to a method that uses expected returns:
@@ -178,7 +215,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, support enumeration for rebalancing with turnover caps and transaction costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 
