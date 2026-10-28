@@ -31,3 +31,6 @@ jobs:
 
       - name: Check fixtures against the reference
         run: uv run --project reference --locked python reference/generate.py --check
+
+      - name: Check linear program fixtures against the reference
+        run: uv run --project reference --locked python reference/lp.py --check
