@@ -5,8 +5,9 @@
 //! ```
 
 use cutup::{
-    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator, WeightBounds,
+    Allocation, CutupError, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, Linkage,
+    MaxDiversification, MaxSharpe, MeanVariance, MinVariance, PortfolioAllocator, RiskParity,
+    WeightBounds,
 };
 use nalgebra::DMatrix;
 
@@ -32,64 +33,54 @@ fn main() -> Result<(), CutupError> {
         ],
     );
     let allocator = PortfolioAllocator::from_prices(prices)?;
-    let shrunk = CovarianceConfig::default().with_shrinkage(0.2);
 
-    let methods = [
-        ("Equal weight", allocator.ew_allocation()),
+    let methods: Vec<(&str, Box<dyn Allocation>)> = vec![
+        ("Equal weight", Box::new(EqualWeight)),
+        ("Inverse volatility", Box::new(InverseVolatility::default())),
+        ("Inverse variance", Box::new(InverseVariance::default())),
         (
-            "Inverse volatility",
-            allocator.inverse_volatility_allocation()?,
+            "Min variance",
+            Box::new(MinVariance::default().allow_short()),
         ),
-        ("Inverse variance", allocator.inverse_variance_allocation()?),
-        ("Min variance", allocator.min_variance_allocation()?),
         (
             "Min variance, 20% shrinkage",
-            allocator.min_variance_allocation_with_config(&shrunk)?,
+            Box::new(MinVariance::default().allow_short().shrinkage(0.2)),
         ),
-        (
-            "Long-only min variance",
-            allocator.long_only_min_variance_allocation()?,
-        ),
+        ("Long-only min variance", Box::new(MinVariance::default())),
         (
             "Long-only min variance, ≤ 30% each",
-            allocator.long_only_min_variance_allocation_with_bounds(
-                &CovarianceConfig::default(),
-                &WeightBounds::uniform(0.0, 0.3),
-            )?,
+            Box::new(MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.3))),
         ),
         (
             "Mean-variance, γ = 100",
-            allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
+            Box::new(MeanVariance::risk_aversion(100.0).allow_short()),
         ),
         (
             "Long-only mean-variance, γ = 100",
-            allocator
-                .long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(100.0))?,
+            Box::new(MeanVariance::risk_aversion(100.0)),
         ),
         (
             "Max Sharpe, r_f = 0",
-            allocator.max_sharpe_allocation(&MaxSharpeConfig::default())?,
+            Box::new(MaxSharpe::default().allow_short()),
         ),
         (
             "Long-only max Sharpe, r_f = 0",
-            allocator.long_only_max_sharpe_allocation(&MaxSharpeConfig::default())?,
+            Box::new(MaxSharpe::default()),
         ),
         (
             "Max diversification",
-            allocator.max_diversification_allocation()?,
+            Box::new(MaxDiversification::default()),
         ),
-        ("Risk parity", allocator.risk_parity_allocation()?),
-        ("HRP, single linkage", allocator.hrp_allocation()?),
+        ("Risk parity", Box::new(RiskParity::default())),
+        ("HRP, single linkage", Box::new(Hrp::default())),
         (
             "HRP, Ward linkage",
-            allocator
-                .hrp_allocation_with_config(&HrpConfig::default().with_linkage(Linkage::Ward))?,
+            Box::new(Hrp::default().linkage(Linkage::Ward)),
         ),
-        ("HERC, single linkage", allocator.herc_allocation()?),
+        ("HERC, single linkage", Box::new(Herc::default())),
         (
             "HERC, Ward linkage",
-            allocator
-                .herc_allocation_with_config(&HercConfig::default().with_linkage(Linkage::Ward))?,
+            Box::new(Herc::default().linkage(Linkage::Ward)),
         ),
     ];
 
@@ -104,9 +95,9 @@ fn main() -> Result<(), CutupError> {
         "{:<width$}{:>9}{:>9}{:>9}{:>9}",
         "Method", "Asset 0", "Asset 1", "Asset 2", "Asset 3"
     );
-    for (name, weights) in &methods {
+    for (name, method) in &methods {
         print!("{name:<width$}");
-        for w in weights {
+        for w in &allocator.allocate(method)? {
             print!("{w:>9.3}");
         }
         println!();

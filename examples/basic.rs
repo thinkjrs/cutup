@@ -1,4 +1,4 @@
-use cutup::{run_portfolio_allocation, CutupError};
+use cutup::{CutupError, MinVariance, PortfolioAllocator};
 use nalgebra::DMatrix;
 
 fn main() -> Result<(), CutupError> {
@@ -23,8 +23,9 @@ fn main() -> Result<(), CutupError> {
         ],
     );
 
-    let weights = run_portfolio_allocation(prices)?;
-    println!("Portfolio Weights: {:?}", weights.as_slice());
+    let allocator = PortfolioAllocator::from_prices(prices)?;
+    let weights = allocator.allocate(&MinVariance::default())?;
+    println!("Long-only min variance weights: {:?}", weights.as_slice());
 
     Ok(())
 }
