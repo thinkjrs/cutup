@@ -9,6 +9,7 @@ fixtures in `tests/fixtures/`.
 | --- | --- |
 | `inputs.py` | Builds the input datasets and freezes them to `tests/fixtures/datasets.json`. |
 | `generate.py` | Computes the expected weights for every case and writes `tests/fixtures/expected.json`. |
+| `lp.py` | Solves random linear programs with `scipy.optimize.linprog` (HiGHS) and writes `tests/fixtures/lp.json`, which the unit tests in `src/lp.rs` check cutup's simplex solver against: the outcome (optimal, infeasible or unbounded) and the optimal objective, to 1e-9. |
 | `fixtures.py` | Shared paths and JSON formatting. |
 | `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy, PyPortfolioOpt and riskfolio-lib. |
 
@@ -52,6 +53,7 @@ Requires [uv](https://docs.astral.sh/uv/). Run from the repository root.
 ```bash
 # Check that the committed fixtures still match the reference (what CI runs)
 uv run --project reference python reference/generate.py --check
+uv run --project reference python reference/lp.py --check
 
 # Rewrite the expected weights after adding or changing a case
 uv run --project reference python reference/generate.py

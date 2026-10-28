@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An internal linear program solver, `src/lp.rs`, for CVaR next: a two-phase revised simplex
+  method with bounded variables and Bland's rule. It's checked against
+  `scipy.optimize.linprog` on 70 random problems (`reference/lp.py`, run in CI), and by a
+  property test that every optimum satisfies the optimality conditions.
+
 ## [0.2.7] - 2026-10-28
 
 ### Added
