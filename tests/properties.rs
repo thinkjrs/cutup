@@ -336,6 +336,63 @@ fn assert_same(
     Ok(())
 }
 
+/// Random current weights for `n` assets: positive fractions, normalized to sum to 1.
+fn current_weights(fractions: &[f64], n: usize) -> Vec<f64> {
+    let total: f64 = fractions[..n].iter().sum();
+    fractions[..n].iter().map(|f| f / total).collect()
+}
+
+fn turnover(weights: &Weights, current: &[f64]) -> f64 {
+    weights
+        .iter()
+        .zip(current)
+        .map(|(w, c)| (w - c).abs())
+        .sum()
+}
+
+/// Checks that `w` minimizes a smooth objective with gradient `gradient` plus `Σᵢ costsᵢ|wᵢ −
+/// currentᵢ|` within the bounds: no move of weight from an asset that can shrink to one that
+/// can grow lowers it. Going up, asset i's marginal cost is its gradient plus its cost if it's
+/// at or above its current weight, minus it if below; going down, the reverse. At its current
+/// weight both directions cost.
+fn assert_kinked_optimum(
+    w: &DVector<f64>,
+    gradient: &DVector<f64>,
+    (current, costs): (&[f64], &[f64]),
+    (lower, upper): (&[f64], &[f64]),
+    tolerance: f64,
+) -> Result<(), TestCaseError> {
+    let n = w.len();
+    prop_assert!((w.sum() - 1.0).abs() < 1e-12, "sums to {}", w.sum());
+    let at = |i: usize| (w[i] - current[i]).abs() <= 1e-12;
+    let up = |i: usize| {
+        gradient[i]
+            + if at(i) || w[i] > current[i] {
+                costs[i]
+            } else {
+                -costs[i]
+            }
+    };
+    let down = |i: usize| {
+        -gradient[i]
+            + if at(i) || w[i] < current[i] {
+                costs[i]
+            } else {
+                -costs[i]
+            }
+    };
+    for j in (0..n).filter(|&j| w[j] > lower[j] + 1e-9) {
+        for i in (0..n).filter(|&i| i != j && w[i] < upper[i] - 1e-9) {
+            prop_assert!(
+                up(i) + down(j) >= -tolerance,
+                "moving weight from {j} to {i} lowers the objective by {}: {w:?}",
+                -(up(i) + down(j))
+            );
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn weights_are_finite_and_sum_to_one(returns in returns()) {
@@ -1228,5 +1285,141 @@ proptest! {
                 partial[i] - prior[i]
             );
         }
+    }
+
+    #[test]
+    fn rebalancing_satisfies_kkt(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        costs in prop::collection::vec(0.0f64..0.002, 6),
+        gamma in 1.0f64..500.0,
+        kappa in prop::option::of(0.0f64..0.01),
+        capped in prop::bool::ANY,
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let costs = costs[..n].to_vec();
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let mut method = MeanVariance::risk_aversion(gamma)
+            .current_weights(current.clone())
+            .transaction_costs_per_asset(costs.clone());
+        if let Some(kappa) = kappa {
+            method = method.turnover_penalty(kappa);
+        }
+        // Half of every cap is room enough: (0, 0.5 + 0.5/n) caps on each asset.
+        let (lower, upper) = if long_short {
+            method = method.allow_short();
+            (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n])
+        } else if capped {
+            let cap = 0.5 + 0.5 / n as f64;
+            method = method.bounds(WeightBounds::uniform(0.0, cap));
+            (vec![0.0; n], vec![cap; n])
+        } else {
+            (vec![0.0; n], vec![f64::INFINITY; n])
+        };
+        let weights = allocator.allocate(&method).unwrap();
+        let w = DVector::from_column_slice(weights.as_slice());
+        // −μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖² has gradient γΣw − μ + 2κ(w − w₀).
+        let pull = (&w - DVector::from_column_slice(&current)) * (2.0 * kappa.unwrap_or(0.0));
+        let gradient = &cov * &w * gamma - &mu + pull;
+        let tolerance = 1e-8 * gradient.amax().max(mu.amax()).max(costs.iter().cloned().fold(0.0, f64::max));
+        assert_kinked_optimum(&w, &gradient, (&current, &costs), (&lower, &upper), tolerance)?;
+    }
+
+    #[test]
+    fn turnover_caps_hold_bind_and_cost_variance(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        cap in 0.0f64..1.0,
+        looser in 0.0f64..1.0,
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let method = |cap: Option<f64>| {
+            let mut method = MinVariance::default().current_weights(current.clone());
+            if let Some(cap) = cap {
+                method = method.max_turnover(cap);
+            }
+            if long_short {
+                method = method.allow_short();
+            }
+            method
+        };
+        let free = allocator.allocate(&method(None)).unwrap();
+        let free_turnover = turnover(&free, &current);
+        let capped = allocator.allocate(&method(Some(cap))).unwrap();
+        let used = turnover(&capped, &current);
+        prop_assert!(used <= cap + 1e-12, "turned over {used} past {cap}");
+        if free_turnover > cap {
+            prop_assert!((used - cap).abs() <= 1e-9, "turned over {used}, cap {cap}");
+        } else if long_short {
+            // Without a cap that binds, long-short goes through the closed form, and the cap
+            // through the solver, which agree to rounding.
+            for (a, b) in capped.iter().zip(&free) {
+                prop_assert!((a - b).abs() <= 1e-12 * a.abs().max(1.0), "{capped:?} vs {free:?}");
+            }
+        } else {
+            prop_assert_eq!(&capped, &free);
+        }
+        // A looser cap never has more variance.
+        let loose = allocator.allocate(&method(Some(cap + looser))).unwrap();
+        let v = |w: &Weights| variance(&cov, w);
+        prop_assert!(v(&loose) <= v(&capped) * (1.0 + 1e-12) + 1e-18, "{} > {}", v(&loose), v(&capped));
+        prop_assert!(v(&free) <= v(&loose) * (1.0 + 1e-12) + 1e-18);
+    }
+
+    #[test]
+    fn trading_settings_that_cost_nothing_change_nothing(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        gamma in 1.0f64..500.0,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        // No turnover exceeds 2, the most a portfolio of positive weights can turn over.
+        let idle = MeanVariance::risk_aversion(gamma)
+            .current_weights(current.clone())
+            .transaction_costs(0.0)
+            .turnover_penalty(0.0);
+        prop_assert_eq!(
+            allocator.allocate(&idle.clone().max_turnover(2.0)),
+            allocator.allocate(&MeanVariance::risk_aversion(gamma))
+        );
+        prop_assert_eq!(
+            allocator.allocate(&MinVariance::default().current_weights(current).max_turnover(2.0)),
+            allocator.allocate(&MinVariance::default())
+        );
+    }
+
+    #[test]
+    fn higher_costs_never_trade_more(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        cost in 0.0f64..0.002,
+        more in 0.0f64..0.002,
+        gamma in 1.0f64..500.0,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let trade = |cost: f64| {
+            let method = MeanVariance::risk_aversion(gamma)
+                .current_weights(current.clone())
+                .transaction_costs(cost);
+            turnover(&allocator.allocate(&method).unwrap(), &current)
+        };
+        let (cheap, dear) = (trade(cost), trade(cost + more));
+        prop_assert!(dear <= cheap + 1e-9, "{dear} > {cheap}");
     }
 }
