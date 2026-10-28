@@ -47,6 +47,11 @@ cutup's implementation:
 * HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
 * HERC: riskfolio-lib's HCPortfolio with model="HERC" and rm="MV", for each linkage
   method and for fixed numbers of clusters.
+* Black-Litterman: PyPortfolioOpt's market_implied_prior_returns and
+  BlackLittermanModel.bl_returns, with its "default" (He-Litterman) and "idzorek" view
+  uncertainties, or, when a case mixes kinds of view, a diagonal Ω built row by row with
+  BlackLittermanModel.default_omega and idzorek_method. These cases hold expected returns,
+  not weights.
 
 With --check, nothing is written: the cases are recomputed and compared with the
 committed file, failing if any weight moved by more than a tenth of its tolerance or
@@ -65,6 +70,7 @@ import numpy as np
 import pandas as pd
 import riskfolio
 from pypfopt import EfficientFrontier, HRPOpt
+from pypfopt.black_litterman import BlackLittermanModel, market_implied_prior_returns
 from scipy.optimize import linprog, nnls
 
 from fixtures import FIXTURES, write_json
@@ -468,6 +474,53 @@ def herc(returns: np.ndarray, linkage: str, clusters: int | None) -> np.ndarray:
     return weights["weights"].to_numpy()
 
 
+def black_litterman(cov: np.ndarray, params: dict) -> np.ndarray:
+    """Posterior expected returns. Each view is {"absolute": i}, {"relative": [long, short]}
+    or {"portfolio": weights}, with a return "q" and optionally a "variance" or a
+    "confidence"."""
+    n = cov.shape[0]
+    prior = market_implied_prior_returns(
+        pd.Series(params["market_weights"]),
+        params["risk_aversion"],
+        pd.DataFrame(cov),
+        params.get("risk_free_rate", 0.0),
+    ).to_numpy()
+    tau = params.get("tau", 0.05)
+    views = params.get("views", [])
+    if not views:
+        return prior
+    p = np.zeros((len(views), n))
+    for row, view in zip(p, views):
+        if "absolute" in view:
+            row[view["absolute"]] = 1.0
+        elif "relative" in view:
+            row[view["relative"][0]], row[view["relative"][1]] = 1.0, -1.0
+        else:
+            row[:] = view["portfolio"]
+    q = np.array([view["q"] for view in views])
+    kinds = {"variance" if "variance" in v else "confidence" if "confidence" in v else "default" for v in views}
+    if kinds == {"default"}:
+        omega, confidences = "default", None
+    elif kinds == {"confidence"}:
+        omega, confidences = "idzorek", [view["confidence"] for view in views]
+    else:
+        variances = []
+        for row, view in zip(p, views):
+            row = row.reshape(1, -1)
+            if "variance" in view:
+                variances.append(view["variance"])
+            elif "confidence" in view:
+                omega_row = BlackLittermanModel.idzorek_method([view["confidence"]], cov, prior, [view["q"]], row, tau)
+                variances.append(omega_row[0, 0])
+            else:
+                variances.append(BlackLittermanModel.default_omega(cov, row, tau)[0, 0])
+        omega, confidences = np.diag(variances), None
+    model = BlackLittermanModel(
+        pd.DataFrame(cov), pi=prior, P=p, Q=q, omega=omega, view_confidences=confidences, tau=tau
+    )
+    return model.bl_returns().to_numpy()
+
+
 def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | str:
     params = case.get("params", {})
     mu = np.array(params["expected_returns"]) if "expected_returns" in params else returns.mean(axis=0)
@@ -503,6 +556,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return hrp(returns, params.get("linkage", "single"))
         case "herc":
             return herc(returns, params.get("linkage", "single"), params.get("clusters"))
+        case "black_litterman":
+            return black_litterman(adjusted, params)
     raise ValueError(f"unknown method {case['method']}")
 
 
@@ -728,6 +783,41 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": "prices10x60", "method": "herc", "params": {"clusters": clusters}, "tolerance": clustering})
     out.append({"dataset": "prices10x60", "method": "herc", "params": {"linkage": "ward", "clusters": 5}, "tolerance": clustering})
     out.append({"dataset": "two_blocks5", "method": "herc", "params": {"linkage": "average", "clusters": 3}, "tolerance": clustering})
+
+    # Black-Litterman expected returns: the prior alone, then each kind of view and of view
+    # uncertainty, alone and mixed. Market capitalizations, not weights, on prices10x60.
+    caps10 = [12.0, 3.5, 8.0, 1.2, 20.0, 4.4, 2.5, 9.1, 6.3, 5.0]
+    linear = 1e-15
+    for name, params in [
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5}),
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 3.0, "risk_free_rate": 0.0001}),
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "views": [
+            {"absolute": 4, "q": 0.002},
+            {"relative": [0, 3], "q": 0.0005},
+            {"portfolio": [0.5, 0.0, 0.5, 0.0, 0.0, -0.5, 0.0, -0.5, 0.0, 0.0], "q": 0.0003},
+        ]}),
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "tau": 0.2, "views": [
+            {"absolute": 4, "q": 0.002, "confidence": 0.8},
+            {"relative": [0, 3], "q": 0.0005, "confidence": 0.3},
+        ]}),
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "shrinkage": 0.3, "views": [
+            {"absolute": 4, "q": 0.002, "variance": 1e-6},
+            {"relative": [0, 3], "q": 0.0005, "confidence": 0.6},
+            {"absolute": 9, "q": -0.001},
+            {"relative": [8, 1], "q": 0.0002, "confidence": 1.0},
+        ]}),
+        ("two_blocks5", {"market_weights": [0.3, 0.2, 0.2, 0.15, 0.15], "risk_aversion": 2.5, "views": [
+            {"relative": [0, 3], "q": 0.001},
+        ]}),
+        ("near_singular4", {"market_weights": [0.25, 0.25, 0.25, 0.25], "risk_aversion": 2.0, "views": [
+            {"absolute": 0, "q": 0.001, "confidence": 0.5},
+            {"relative": [1, 2], "q": 0.0005, "variance": 0.0},
+        ]}),
+        ("orthogonal3", {"market_weights": [0.5, 0.3, 0.2], "risk_aversion": 2.5, "regularization": 1e-5, "views": [
+            {"absolute": 2, "q": 0.01, "variance": 0.0},
+        ]}),
+    ]:
+        out.append({"dataset": name, "method": "black_litterman", "params": params, "tolerance": linear})
     return out
 
 

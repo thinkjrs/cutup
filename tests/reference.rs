@@ -5,8 +5,8 @@
 //! `reference/README.md`). Every case is checked and all failures are reported together.
 
 use cutup::{
-    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, WeightBounds, Weights,
+    BlackLitterman, CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
+    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -128,7 +128,44 @@ fn herc_config(params: &Value) -> HercConfig {
     }
 }
 
-const METHODS: [&str; 13] = [
+/// The model a `black_litterman` case describes. Its expected returns are checked like
+/// weights.
+fn black_litterman(params: &Value) -> BlackLitterman {
+    let mut model = BlackLitterman::new(
+        floats(&params["market_weights"]),
+        params["risk_aversion"].as_f64().unwrap(),
+    )
+    .risk_free_rate(params["risk_free_rate"].as_f64().unwrap_or(0.0))
+    .covariance(covariance_config(params));
+    if let Some(tau) = params["tau"].as_f64() {
+        model = model.tau(tau);
+    }
+    for view in params["views"].as_array().into_iter().flatten() {
+        let q = view["q"].as_f64().unwrap();
+        let mut built = if let Some(asset) = view["absolute"].as_u64() {
+            View::absolute(asset as usize, q)
+        } else if view["relative"].is_array() {
+            let pair = &view["relative"];
+            View::relative(
+                pair[0].as_u64().unwrap() as usize,
+                pair[1].as_u64().unwrap() as usize,
+                q,
+            )
+        } else {
+            View::portfolio(floats(&view["portfolio"]), q)
+        };
+        if let Some(omega) = view["variance"].as_f64() {
+            built = built.variance(omega);
+        }
+        if let Some(confidence) = view["confidence"].as_f64() {
+            built = built.confidence(confidence);
+        }
+        model = model.view(built);
+    }
+    model
+}
+
+const METHODS: [&str; 14] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -142,6 +179,7 @@ const METHODS: [&str; 13] = [
     "risk_parity",
     "hrp",
     "herc",
+    "black_litterman",
 ];
 
 fn run(
@@ -179,6 +217,9 @@ fn run(
         "risk_parity" => allocator.risk_parity_allocation_with_config(&risk_parity_config(params)),
         "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
         "herc" => allocator.herc_allocation_with_config(&herc_config(params)),
+        "black_litterman" => black_litterman(params)
+            .expected_returns(allocator)
+            .map(Weights::from),
         other => unreachable!("unknown method {other} is rejected in check"),
     }
 }
