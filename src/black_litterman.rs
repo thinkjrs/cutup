@@ -119,8 +119,10 @@ impl BlackLitterman {
     ///   not finite, or a confidence outside `[0, 1]`.
     /// * [`CutupError::DimensionMismatch`] if a [`View::portfolio`] doesn't have one weight
     ///   per asset.
-    /// * [`CutupError::SingularCovariance`] if `τPΣPᵀ + Ω` is singular, as when two certain
-    ///   views are about the same portfolio.
+    /// * [`CutupError::DegenerateViews`] if `τPΣPᵀ + Ω` is singular, or within rounding of it:
+    ///   certain views that repeat or contradict each other, or a view with the default
+    ///   variance or a confidence on a portfolio with no variance, which would make it
+    ///   certain. Give such a view an explicit [`View::variance`].
     pub fn expected_returns(&self, data: &PortfolioAllocator) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         let pi = self.prior(&cov)?;
@@ -131,7 +133,8 @@ impl BlackLitterman {
             });
         }
         let n = cov.ncols();
-        // A view held with no confidence has infinite variance, and no effect.
+        // Each view's ω is `scale · τpᵀΣp + given`: a scale of 1 by default, (1 − c)/c for a
+        // confidence c, or 0 with a given variance.
         let mut views = Vec::with_capacity(self.views.len());
         for view in &self.views {
             let p = view.weights(n)?;
@@ -141,22 +144,23 @@ impl BlackLitterman {
                     value: view.q,
                 });
             }
-            let spread = (p.transpose() * &cov * &p)[(0, 0)];
-            let omega = match view.uncertainty {
-                Uncertainty::Default => self.tau * spread,
-                Uncertainty::Variance(omega) if omega.is_finite() && omega >= 0.0 => omega,
+            let (scale, given) = match view.uncertainty {
+                Uncertainty::Default => (1.0, 0.0),
+                Uncertainty::Variance(omega) if omega.is_finite() && omega >= 0.0 => (0.0, omega),
                 Uncertainty::Variance(omega) => {
                     return Err(CutupError::InvalidConfig {
                         field: "view_variance",
                         value: omega,
                     })
                 }
-                // Idzorek's confidence, in the closed form of Walters (2014).
+                // Idzorek's confidence, in the closed form of Walters (2014). At 0, or so close
+                // that (1 − c)/c overflows, the view's variance is infinite and it has no effect.
                 Uncertainty::Confidence(c) if (0.0..=1.0).contains(&c) => {
-                    if c == 0.0 {
+                    let scale = (1.0 - c) / c;
+                    if !scale.is_finite() {
                         continue;
                     }
-                    self.tau * (1.0 - c) / c * spread
+                    (scale, 0.0)
                 }
                 Uncertainty::Confidence(c) => {
                     return Err(CutupError::InvalidConfig {
@@ -165,7 +169,7 @@ impl BlackLitterman {
                     })
                 }
             };
-            views.push((p, view.q, omega));
+            views.push((p, view.q, scale, given));
         }
         if views.is_empty() {
             return Ok(pi.as_slice().to_vec());
@@ -176,16 +180,22 @@ impl BlackLitterman {
         let q = DVector::from_fn(k, |i, _| views[i].1);
         let tau_sigma_pt = &cov * p.transpose() * self.tau;
         let mut a = &p * &tau_sigma_pt;
-        for (i, (_, _, omega)) in views.iter().enumerate() {
-            a[(i, i)] += omega;
+        let volatilities = cov.diagonal().map(f64::sqrt);
+        for (i, (p, _, scale, given)) in views.iter().enumerate() {
+            let spread = a[(i, i)];
+            // A view whose variance follows its portfolio's can't be on a portfolio with none:
+            // it would be certain. Within rounding of a perfectly hedged portfolio, whose
+            // variance would otherwise be (Σ|pⱼ|σⱼ)², counts as none.
+            let unhedged = p.abs().dot(&volatilities).powi(2) * self.tau;
+            if *scale > 0.0 && spread <= DEGENERATE * unhedged {
+                return Err(CutupError::DegenerateViews);
+            }
+            a[(i, i)] += scale * spread + given;
         }
-        let x = a
-            .cholesky()
-            .ok_or(CutupError::SingularCovariance)?
-            .solve(&(q - &p * &pi));
+        let x = solve_views(a, q - &p * &pi)?;
         let posterior = pi + tau_sigma_pt * x;
         if posterior.iter().any(|m| !m.is_finite()) {
-            return Err(CutupError::SingularCovariance);
+            return Err(CutupError::DegenerateViews);
         }
         Ok(posterior.as_slice().to_vec())
     }
@@ -230,6 +240,23 @@ impl BlackLitterman {
         let w = DVector::from_iterator(n, self.market_weights.iter().map(|w| w / total));
         Ok((cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate))
     }
+}
+
+/// How close to 0, relative to its scale, a view's variance or the part of it no other view
+/// explains can be before the views are degenerate.
+const DEGENERATE: f64 = 1e-12;
+
+/// Solves `Ax = b` for the views' covariance `A = τPΣPᵀ + Ω`, rejecting views that repeat
+/// or contradict each other: each Cholesky pivot is the part of a view's variance the earlier
+/// views don't explain, which must not vanish relative to the variance itself.
+fn solve_views(a: DMatrix<f64>, b: DVector<f64>) -> Result<DVector<f64>, CutupError> {
+    let diagonal = a.diagonal();
+    let cholesky = a.cholesky().ok_or(CutupError::DegenerateViews)?;
+    let l = cholesky.l_dirty();
+    if (0..diagonal.len()).any(|i| l[(i, i)].powi(2) <= DEGENERATE * diagonal[i]) {
+        return Err(CutupError::DegenerateViews);
+    }
+    Ok(cholesky.solve(&b))
 }
 
 /// A view for [`BlackLitterman`]: a portfolio of the assets has an expected return `q`.
@@ -303,7 +330,8 @@ impl View {
     /// Sets how sure you are of the view, from 0 to 1 (Idzorek, 2005). At 1 the view is
     /// certain and at 0 it has no effect; at 0.5 its variance is the default, `τpᵀΣp`. In
     /// general the variance is `τ(1 − c)/c · pᵀΣp`, the closed form of Walters (2014), as in
-    /// PyPortfolioOpt. Replaces [`View::variance`].
+    /// PyPortfolioOpt. At 0 the view is dropped, where PyPortfolioOpt gives it a variance of
+    /// 1e6, whose effect depends on the units of the returns. Replaces [`View::variance`].
     pub fn confidence(mut self, confidence: f64) -> Self {
         self.uncertainty = Uncertainty::Confidence(confidence);
         self
@@ -570,14 +598,63 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_certain_views_are_singular() {
+    fn conflicting_certain_views_are_degenerate() {
         let allocator = allocator();
         let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
             .view(View::absolute(0, 0.01).variance(0.0))
             .view(View::portfolio([2.0, 0.0, 0.0], 0.03).variance(0.0));
         assert_eq!(
             model.expected_returns(&allocator),
-            Err(CutupError::SingularCovariance)
+            Err(CutupError::DegenerateViews)
         );
+        // The same views, nearly but not exactly repeated, are as unreliable.
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+            .view(View::absolute(0, 0.01).variance(0.0))
+            .view(View::portfolio([1.0, 1e-9, 0.0], 0.01).variance(0.0));
+        assert_eq!(
+            model.expected_returns(&allocator),
+            Err(CutupError::DegenerateViews)
+        );
+    }
+
+    #[test]
+    fn views_on_riskless_portfolios_need_a_variance() {
+        // Assets 0 and 1 move together, so going long one and short the other has no variance.
+        let allocator = PortfolioAllocator::from_returns(dmatrix![
+             0.01,  0.01,  0.004;
+            -0.02, -0.02,  0.001;
+             0.005, 0.005, -0.003
+        ])
+        .unwrap();
+        let model = BlackLitterman::new([0.4, 0.4, 0.2], 2.5);
+        for view in [
+            View::relative(0, 1, 0.001),
+            View::relative(0, 1, 0.001).confidence(0.5),
+        ] {
+            assert_eq!(
+                model.clone().view(view).expected_returns(&allocator),
+                Err(CutupError::DegenerateViews)
+            );
+        }
+        let mu = model
+            .view(View::relative(0, 1, 0.001).variance(1e-6))
+            .expected_returns(&allocator)
+            .unwrap();
+        assert!(mu.iter().all(|m| m.is_finite()));
+    }
+
+    #[test]
+    fn vanishing_confidence_drops_the_view() {
+        let allocator = allocator();
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+        let prior = model.prior_returns(&allocator).unwrap();
+        for confidence in [0.0, 1e-310, f64::MIN_POSITIVE] {
+            let mu = model
+                .clone()
+                .view(View::absolute(0, 0.05).confidence(confidence))
+                .expected_returns(&allocator)
+                .unwrap();
+            assert!(close(&mu, &prior, 1e-15), "{confidence}: {mu:?}");
+        }
     }
 }

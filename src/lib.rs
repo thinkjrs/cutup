@@ -146,6 +146,11 @@ pub enum CutupError {
         /// The asset's column index.
         asset: usize,
     },
+    /// The views given to [`BlackLitterman`] are degenerate: certain views that repeat or
+    /// contradict each other, or a view whose variance follows its portfolio's on a portfolio
+    /// with no variance, which would make it certain. Give such a view an explicit
+    /// [`View::variance`].
+    DegenerateViews,
 }
 
 impl fmt::Display for CutupError {
@@ -227,6 +232,11 @@ impl fmt::Display for CutupError {
             CutupError::NonFiniteWeight { asset } => {
                 write!(f, "weight for asset {asset} is NaN or infinite")
             }
+            CutupError::DegenerateViews => write!(
+                f,
+                "views repeat or contradict each other, or one with a default or confidence \
+                 variance is on a portfolio with no variance; give it an explicit variance"
+            ),
         }
     }
 }
