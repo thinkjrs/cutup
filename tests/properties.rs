@@ -1,8 +1,10 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, WeightBounds, Weights,
+    CovarianceConfig, CutupError, EqualWeight, Herc, HercConfig, Hrp, HrpConfig, InverseVariance,
+    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MaxSharpeConfig, MeanVariance,
+    MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParity, RiskParityConfig,
+    WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -1009,6 +1011,137 @@ proptest! {
         prop_assert_eq!(
             allocator.long_only_mean_variance_allocation_with_bounds(&config, &loose).unwrap(),
             allocator.long_only_mean_variance_allocation(&config).unwrap()
+        );
+    }
+
+    #[test]
+    fn method_values_match_the_methods_they_wrap(
+        returns in returns(),
+        shrinkage in prop::option::of(0.0f64..1.0),
+        fractions in bounds(),
+        gamma in 1.0f64..500.0,
+        target in -0.01f64..0.01,
+        risk_free_rate in -0.01f64..0.01,
+        budgets in prop::collection::vec(0.1f64..10.0, 6),
+        linkage in 0usize..4,
+        clusters in prop::option::of(1usize..=6),
+    ) {
+        // No `well_posed` filter: errors must match too.
+        let n = returns.ncols();
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let covariance = match shrinkage {
+            Some(lambda) => CovarianceConfig::default().with_shrinkage(lambda),
+            None => CovarianceConfig::default(),
+        };
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let bounds = WeightBounds::per_asset(lower, upper);
+        let mu: Vec<f64> = (0..n).map(|i| target * (i as f64 - 1.0)).collect();
+        let linkage = LINKAGES[linkage];
+        let budgets = budgets[..n].to_vec();
+
+        prop_assert_eq!(allocator.allocate(&EqualWeight), Ok(allocator.ew_allocation()));
+        prop_assert_eq!(
+            allocator.allocate(&InverseVolatility::default()),
+            allocator.inverse_volatility_allocation()
+        );
+        prop_assert_eq!(
+            allocator.allocate(&InverseVariance::default()),
+            allocator.inverse_variance_allocation()
+        );
+
+        let min_variance = MinVariance::default().covariance(covariance.clone());
+        prop_assert_eq!(
+            allocator.allocate(&min_variance),
+            allocator.long_only_min_variance_allocation_with_config(&covariance)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&min_variance.clone().bounds(bounds.clone())),
+            allocator.long_only_min_variance_allocation_with_bounds(&covariance, &bounds)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&min_variance.allow_short()),
+            allocator.min_variance_allocation_with_config(&covariance)
+        );
+
+        let risk_aversion = MeanVariance::default().risk_aversion(gamma).covariance(covariance.clone());
+        let config = MeanVarianceConfig::risk_aversion(gamma).with_covariance(covariance.clone());
+        prop_assert_eq!(
+            allocator.allocate(&risk_aversion),
+            allocator.long_only_mean_variance_allocation(&config)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&risk_aversion.clone().bounds(bounds.clone())),
+            allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&risk_aversion.allow_short()),
+            allocator.mean_variance_allocation(&config)
+        );
+        let target_return = MeanVariance::default()
+            .target_return(target)
+            .expected_returns(mu.clone())
+            .covariance(covariance.clone());
+        let config = MeanVarianceConfig::target_return(target)
+            .with_expected_returns(DVector::from_vec(mu.clone()))
+            .with_covariance(covariance.clone());
+        prop_assert_eq!(
+            allocator.allocate(&target_return.clone().bounds(bounds.clone())),
+            allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&target_return.allow_short()),
+            allocator.mean_variance_allocation(&config)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&MeanVariance::default()),
+            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(1.0))
+        );
+
+        let max_sharpe = MaxSharpe::default()
+            .risk_free_rate(risk_free_rate)
+            .expected_returns(mu.clone())
+            .covariance(covariance.clone());
+        let config = MaxSharpeConfig::default()
+            .with_risk_free_rate(risk_free_rate)
+            .with_expected_returns(DVector::from_vec(mu))
+            .with_covariance(covariance.clone());
+        prop_assert_eq!(
+            allocator.allocate(&max_sharpe),
+            allocator.long_only_max_sharpe_allocation(&config)
+        );
+        prop_assert_eq!(
+            allocator.allocate(&max_sharpe.allow_short()),
+            allocator.max_sharpe_allocation(&config)
+        );
+
+        prop_assert_eq!(
+            allocator.allocate(&MaxDiversification::default().covariance(covariance.clone())),
+            allocator.max_diversification_allocation_with_config(&covariance)
+        );
+        prop_assert_eq!(
+            allocator.allocate(
+                &RiskParity::default().risk_budgets(budgets.clone()).covariance(covariance.clone())
+            ),
+            allocator.risk_parity_allocation_with_config(
+                &RiskParityConfig::default()
+                    .with_risk_budgets(DVector::from_vec(budgets))
+                    .with_covariance(covariance)
+            )
+        );
+
+        prop_assert_eq!(
+            allocator.allocate(&Hrp::default().linkage(linkage)),
+            allocator.hrp_allocation_with_config(&HrpConfig::default().with_linkage(linkage))
+        );
+        let mut herc = Herc::default().linkage(linkage);
+        let mut config = HercConfig::default().with_linkage(linkage);
+        if let Some(k) = clusters {
+            herc = herc.clusters(k);
+            config = config.with_clusters(k);
+        }
+        prop_assert_eq!(
+            allocator.allocate(&herc),
+            allocator.herc_allocation_with_config(&config)
         );
     }
 }
