@@ -36,6 +36,9 @@ All notable changes to this project are documented here. The format follows
   `.confidence(c)`. `τ` defaults to 0.05, and the covariance takes the same shrinkage and
   regularization setters as the allocation methods. Market capitalizations are normalized
   to weights. The result is a `Vec<f64>` for `MeanVariance` or `MaxSharpe`.
+- `CutupError::DegenerateViews`, returned when certain views repeat or contradict each
+  other, or nearly do, or when a view with the default variance or a confidence is on a
+  portfolio with no variance, which would make it certain.
 - Black-Litterman reference cases against PyPortfolioOpt's `BlackLittermanModel`, to 1e-15,
   and property tests: mean-variance on the implied returns, at the same risk aversion,
   recovers the market weights, and certain views hold exactly.
