@@ -1,10 +1,10 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    CovarianceConfig, CutupError, EqualWeight, Herc, HercConfig, Hrp, HrpConfig, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MaxSharpeConfig, MeanVariance,
-    MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParity, RiskParityConfig,
-    WeightBounds, Weights,
+    BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, HercConfig, Hrp, HrpConfig,
+    InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MaxSharpeConfig,
+    MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParity,
+    RiskParityConfig, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -1156,5 +1156,64 @@ proptest! {
             allocator.allocate(&herc),
             allocator.herc_allocation_with_config(&config)
         );
+    }
+
+    #[test]
+    fn implied_returns_recover_the_market_weights(
+        returns in returns(),
+        caps in prop::collection::vec(0.1f64..10.0, 6),
+        delta in 0.5f64..10.0,
+        risk_free_rate in -0.01f64..0.01,
+    ) {
+        // Reverse optimization: the market portfolio is mean-variance optimal for the
+        // returns it implies, at the same risk aversion, whatever the risk-free rate.
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let caps = caps[..n].to_vec();
+        let total: f64 = caps.iter().sum();
+        let prior = BlackLitterman::new(caps.clone(), delta)
+            .risk_free_rate(risk_free_rate)
+            .prior_returns(&allocator)
+            .unwrap();
+        let weights = allocator
+            .allocate(&MeanVariance::risk_aversion(delta).expected_returns(prior).allow_short())
+            .unwrap();
+        for (w, cap) in weights.iter().zip(&caps) {
+            prop_assert!((w - cap / total).abs() < 1e-9, "{weights:?} vs {caps:?}");
+        }
+    }
+
+    #[test]
+    fn certain_views_hold_and_others_move_toward_them(
+        returns in returns(),
+        caps in prop::collection::vec(0.1f64..10.0, 6),
+        q in -0.01f64..0.01,
+        spread in -0.01f64..0.01,
+        confidence in 0.05f64..0.95,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let model = BlackLitterman::new(caps[..n].to_vec(), 2.5);
+        let prior = model.prior_returns(&allocator).unwrap();
+
+        let certain = model
+            .clone()
+            .view(View::absolute(0, q).variance(0.0))
+            .view(View::relative(n - 1, 0, spread).confidence(1.0))
+            .expected_returns(&allocator)
+            .unwrap();
+        let scale = prior.iter().fold(q.abs().max(spread.abs()), |m, p| m.max(p.abs()));
+        prop_assert!((certain[0] - q).abs() <= 1e-9 * scale, "{certain:?}");
+        prop_assert!((certain[n - 1] - certain[0] - spread).abs() <= 1e-9 * scale, "{certain:?}");
+
+        // A single uncertain view lands strictly between the prior and the view.
+        let partial = model
+            .view(View::absolute(0, q).confidence(confidence))
+            .expected_returns(&allocator)
+            .unwrap()[0];
+        let (low, high) = (prior[0].min(q), prior[0].max(q));
+        prop_assert!(partial >= low && partial <= high, "{partial} outside [{low}, {high}]");
     }
 }
