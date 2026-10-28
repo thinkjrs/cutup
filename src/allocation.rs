@@ -7,31 +7,6 @@ use crate::{
 };
 use nalgebra::DVector;
 
-/// The `covariance`, `shrinkage` and `regularization` setters, for a method with a
-/// `covariance: CovarianceConfig` field.
-macro_rules! covariance_setters {
-    () => {
-        /// Applies `covariance` adjustments to the covariance matrix.
-        pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-            self.covariance = covariance;
-            self
-        }
-
-        /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-        /// [`CovarianceConfig::shrinkage`].
-        pub fn shrinkage(mut self, lambda: f64) -> Self {
-            self.covariance = self.covariance.with_shrinkage(lambda);
-            self
-        }
-
-        /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-        pub fn regularization(mut self, epsilon: f64) -> Self {
-            self.covariance = self.covariance.with_regularization(epsilon);
-            self
-        }
-    };
-}
-
 /// An allocation method: anything that turns a [`PortfolioAllocator`]'s returns into
 /// [`Weights`].
 ///
