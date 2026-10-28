@@ -1185,7 +1185,7 @@ proptest! {
     }
 
     #[test]
-    fn certain_views_hold_and_others_move_toward_them(
+    fn views_hold_and_move_other_assets_by_their_covariance(
         returns in returns(),
         caps in prop::collection::vec(0.1f64..10.0, 6),
         q in -0.01f64..0.01,
@@ -1194,6 +1194,7 @@ proptest! {
     ) {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
+        let cov = covariance(&returns);
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let model = BlackLitterman::new(caps[..n].to_vec(), 2.5);
         let prior = model.prior_returns(&allocator).unwrap();
@@ -1208,12 +1209,24 @@ proptest! {
         prop_assert!((certain[0] - q).abs() <= 1e-9 * scale, "{certain:?}");
         prop_assert!((certain[n - 1] - certain[0] - spread).abs() <= 1e-9 * scale, "{certain:?}");
 
-        // A single uncertain view lands strictly between the prior and the view.
+        // A single uncertain view lands between the prior and the view, and moves every
+        // other asset by its covariance with the view's: μ − π = τΣp · x for a scalar x, so
+        // μᵢ − πᵢ = Σᵢ₀ / Σ₀₀ · (μ₀ − π₀).
         let partial = model
             .view(View::absolute(0, q).confidence(confidence))
             .expected_returns(&allocator)
-            .unwrap()[0];
+            .unwrap();
         let (low, high) = (prior[0].min(q), prior[0].max(q));
-        prop_assert!(partial >= low && partial <= high, "{partial} outside [{low}, {high}]");
+        prop_assert!(partial[0] >= low && partial[0] <= high, "{} outside [{low}, {high}]", partial[0]);
+        let moved = partial[0] - prior[0];
+        for i in 1..n {
+            let expected = cov[(i, 0)] / cov[(0, 0)] * moved;
+            let tolerance = 1e-9 * (expected.abs() + moved.abs() * (cov[(i, i)] / cov[(0, 0)]).sqrt());
+            prop_assert!(
+                (partial[i] - prior[i] - expected).abs() <= tolerance,
+                "asset {i} moved {} not {expected}",
+                partial[i] - prior[i]
+            );
+        }
     }
 }
