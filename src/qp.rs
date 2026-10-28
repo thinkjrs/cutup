@@ -530,26 +530,18 @@ fn solve_piecewise_in_units(
         }
         // Each free variable's segment: its ends, and the slope of the kink's cost on it,
         // which joins the linear term.
-        let (lower, upper, slope): (Vec<f64>, Vec<f64>, Vec<f64>) = indices
+        let free: Vec<(&Segments, usize)> = indices
             .iter()
             .map(|&i| match state[i] {
-                State::Free(j) => {
-                    let s = &segments[i];
-                    (s.points[j], s.points[j + 1], s.slopes[j])
-                }
+                State::Free(j) => (&segments[i], j),
                 State::At(_) => unreachable!("only free variables are indexed"),
             })
-            .fold(
-                (vec![], vec![], vec![]),
-                |(mut l, mut u, mut s), (a, b, c)| {
-                    l.push(a);
-                    u.push(b);
-                    s.push(c);
-                    (l, u, s)
-                },
-            );
+            .collect();
+        let lower: Vec<f64> = free.iter().map(|(s, j)| s.points[*j]).collect();
+        let upper: Vec<f64> = free.iter().map(|(s, j)| s.points[j + 1]).collect();
+        let slope = DVector::from_iterator(free.len(), free.iter().map(|(s, j)| s.slopes[*j]));
         let q_free = q.select_rows(&indices).select_columns(&indices);
-        let c_free = c.select_rows(&indices) - DVector::from_vec(slope);
+        let c_free = c.select_rows(&indices) - slope;
         let e_free = e.select_rows(&indices);
         let x_free = x.select_rows(&indices);
         let q_rows = q.select_rows(&indices);
@@ -693,17 +685,19 @@ fn solve_piecewise_in_units(
 /// Solves [`solve_piecewise`]'s problem with the turnover `Σᵢ|xᵢ − aᵢ|` capped at `cap`, `a`
 /// being the kinks' points. A multiplier `λ ≥ 0` on the cap adds `λ` to every slope, and the
 /// turnover of the optimum with slopes `κ + λ` falls as `λ` grows. So if the problem without
-/// the cap turns over more than `cap`, `λ` is found by bisection, between 0 and a `λ` at
-/// which the turnover is within the cap, until the two meet to rounding. Each solve starts
-/// from the last solution within the cap.
+/// the cap turns over more than `cap`, or has no optimum, `λ` is bracketed by doubling and then
+/// found by alternating secant and bisection steps, each solve starting from the last solution
+/// within the cap. The turnover is piecewise linear in `λ`, so once both ends of the bracket
+/// share a support the secant step lands on the cap, and the search stops there.
 ///
 /// The caller checks that some feasible `x` turns over at most `cap`. Then a large enough `λ`
 /// reaches one: at the slopes `|Qa − c|` every variable that can stay at its kink does.
 ///
 /// # Errors
 ///
-/// Any error from [`solve_piecewise`], or [`CutupError::NotConverged`] if no `λ` up to
-/// 2¹⁰⁰⁰ times that reaches the cap.
+/// Any error from [`solve_piecewise`] but [`CutupError::Unbounded`], which a small `λ` only
+/// means is too small, or [`CutupError::NotConverged`] if no `λ` up to 2¹⁰⁰⁰ times that reaches
+/// the cap.
 pub(crate) fn solve_turnover_capped(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
@@ -714,49 +708,69 @@ pub(crate) fn solve_turnover_capped(
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
     let turnover = |x: &DVector<f64>| (x - &kinks.at).abs().sum();
-    // Summing the turnover rounds by a few ulps of the largest weight, which can put an
-    // optimum exactly at the cap just past it.
-    let within = |x: &DVector<f64>| {
-        turnover(x) <= cap + 4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0)
-    };
+    // Summing the turnover rounds by a few ulps of the largest weight, so within that of the
+    // cap counts as at it.
+    let slack = |x: &DVector<f64>| 4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0);
+    // The optimum with every slope raised by `extra`, and its turnover. An objective with no
+    // minimum runs the weights off without limit, past any cap, so it turns over infinitely.
     let solve = |extra: f64, start: DVector<f64>| {
-        let kinks = Kinks {
+        let raised = Kinks {
             at: kinks.at.clone(),
             slopes: kinks.slopes.add_scalar(extra),
         };
-        solve_piecewise(q, c, e, b, bounds, &kinks, start)
+        match solve_piecewise(q, c, e, b, bounds, &raised, start) {
+            Ok(x) => Ok((turnover(&x), Some(x))),
+            Err(CutupError::Unbounded) => Ok((f64::INFINITY, None)),
+            Err(error) => Err(error),
+        }
     };
 
-    let unconstrained = solve(0.0, start)?;
-    if within(&unconstrained) {
-        return Ok(unconstrained);
+    let (mut low_turnover, unconstrained) = solve(0.0, start.clone())?;
+    if let Some(x) = unconstrained
+        .as_ref()
+        .filter(|x| low_turnover <= cap + slack(x))
+    {
+        return Ok(x.clone());
     }
+    let mut low = 0.0;
+    let mut warm = unconstrained.unwrap_or(start);
     let pull = (q * &kinks.at - c).amax();
     let mut high = if pull > 0.0 { pull } else { 1.0 };
-    let mut best = solve(high, unconstrained.clone())?;
-    let mut doublings = 0;
-    while !within(&best) {
-        doublings += 1;
-        if doublings > 1000 {
+    let (mut high_turnover, mut best) = loop {
+        match solve(high, warm.clone())? {
+            (used, Some(x)) if used <= cap + slack(&x) => break (used, x),
+            (used, x) => {
+                (low, low_turnover) = (high, used);
+                warm = x.unwrap_or(warm);
+            }
+        }
+        if high > f64::MAX / 2.0 {
             return Err(CutupError::NotConverged);
         }
         high *= 2.0;
-        best = solve(high, best)?;
-    }
-    let mut low = 0.0;
-    loop {
-        let middle = low + (high - low) / 2.0;
+    };
+
+    for step in 0.. {
+        if high_turnover >= cap - slack(&best) {
+            return Ok(best);
+        }
+        let secant = low + (low_turnover - cap) / (low_turnover - high_turnover) * (high - low);
+        let middle = if step % 2 == 0 && secant > low && secant < high {
+            secant
+        } else {
+            low + (high - low) / 2.0
+        };
         if middle <= low || middle >= high {
             return Ok(best);
         }
-        let x = solve(middle, best.clone())?;
-        if within(&x) {
-            high = middle;
-            best = x;
-        } else {
-            low = middle;
+        match solve(middle, best.clone())? {
+            (used, Some(x)) if used <= cap + slack(&x) => {
+                (high, high_turnover, best) = (middle, used, x);
+            }
+            (used, _) => (low, low_turnover) = (middle, used),
         }
     }
+    unreachable!("the loop returns once the bracket can't be split")
 }
 
 /// Moves free variable `i` into the active set at the `side` end of its segment after a step
