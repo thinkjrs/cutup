@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The `Allocation` trait and `PortfolioAllocator::allocate`, one entry point for every
+  method. Each method is a value built from `default()` and chained settings:
+  `EqualWeight`, `InverseVolatility`, `InverseVariance`, `MinVariance`, `MeanVariance`,
+  `MaxSharpe`, `MaxDiversification`, `RiskParity`, `Hrp` and `Herc`, as in
+  `allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.3)))`.
+  `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless `.allow_short()` is
+  called, and `MeanVariance` defaults to a risk aversion of 1, as PyPortfolioOpt does.
+  Expected returns and risk budgets take plain `Vec<f64>`s or arrays. Each value gives
+  exactly the weights of the `PortfolioAllocator` method it wraps, and those methods are
+  unchanged.
+- `From<Vec<f64>> for Weights`, so you can implement `Allocation` for methods of your own.
+- A property test that every method value gives the same weights or error as the method it
+  wraps, and an integration test that mixes methods, including one defined outside the
+  crate, in a `Vec<Box<dyn Allocation>>`.
+
 ## [0.2.6] - 2026-10-27
 
 ### Added

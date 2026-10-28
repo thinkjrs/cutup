@@ -42,21 +42,20 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 
 ## Choosing a method
 
+Each method is a value you pass to `PortfolioAllocator::allocate`. Methods that can short are long-only unless you call `.allow_short()`.
+
 | Method | Uses | Long-only | Notes |
 | --- | --- | --- | --- |
-| `ew_allocation` | nothing | ✅ | A baseline that needs no estimates and can't fail. |
-| `inverse_volatility_allocation` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
-| `inverse_variance_allocation` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
-| `min_variance_allocation` | covariance | ❌ | The lowest-variance fully invested portfolio. Sensitive to estimation error, so consider shrinkage. |
-| `long_only_min_variance_allocation` | covariance | ✅ | The lowest-variance portfolio without shorting. Usually concentrates in a few low-risk assets and holds none of the rest; `_with_bounds` caps or floors each asset. |
-| `mean_variance_allocation` | covariance, expected returns | ❌ | Markowitz, for a risk aversion or a target return. Most sensitive to the expected returns you supply. |
-| `long_only_mean_variance_allocation` | covariance, expected returns | ✅ | Markowitz without shorting. A target return must lie between the lowest and highest expected return, or, with bounds, the lowest and highest return the bounds allow. Low risk aversion concentrates in the highest expected returns; `_with_bounds` caps or floors each asset. |
-| `max_sharpe_allocation` | covariance, expected returns, risk-free rate | ❌ | The tangency portfolio. Requires the risk-free rate to be below the min variance portfolio's return. As sensitive to expected returns as mean-variance. |
-| `long_only_max_sharpe_allocation` | covariance, expected returns, risk-free rate | ✅ | The highest Sharpe ratio without shorting. Only needs some asset's expected return above the risk-free rate. |
-| `max_diversification_allocation` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
-| `risk_parity_allocation` | covariance | ✅ | Every asset contributes the same risk. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
-| `hrp_allocation` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
-| `herc_allocation` | covariance, correlations | ✅ | Like HRP, but splits where the clustering tree branches and groups similar assets, so the result doesn't depend on column order. |
+| `EqualWeight` | nothing | ✅ | A baseline that needs no estimates and can't fail. |
+| `InverseVolatility` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
+| `InverseVariance` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
+| `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. |
+| `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, for a `.risk_aversion(..)` (1 by default) or a `.target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds allow; `.bounds(..)` caps or floors each asset. |
+| `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
+| `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
+| `RiskParity` | covariance | ✅ | Every asset contributes the same risk, or the shares set by `.risk_budgets(..)`. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
+| `Hrp` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
+| `Herc` | covariance, correlations | ✅ | Like HRP, but splits where the clustering tree branches and groups similar assets, so the result doesn't depend on column order. |
 
 Long-only methods never return negative weights. The others can. To see every method on the same data:
 
@@ -77,13 +76,14 @@ cutup = "0.2.6"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
-Minimum variance, mean-variance and max Sharpe weights can be negative (short positions). Without shorting, use `long_only_min_variance_allocation`, `long_only_mean_variance_allocation` or `long_only_max_sharpe_allocation`.
+Build a method from `default()` and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods such as `min_variance_allocation` still work, and will be deprecated before 0.3.0.
 
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
 ```rust
 use cutup::{
-    run_portfolio_allocation, CovarianceConfig, CutupError, MeanVarianceConfig, PortfolioAllocator,
+    run_portfolio_allocation, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
+    MinVariance, PortfolioAllocator, WeightBounds,
 };
 use nalgebra::DMatrix;
 
@@ -110,24 +110,27 @@ fn main() -> Result<(), CutupError> {
 
     let allocator = PortfolioAllocator::from_prices(prices.clone())?;
 
-    let min_variance_weights = allocator.min_variance_allocation()?;
+    let min_variance_weights = allocator.allocate(&MinVariance::default().allow_short())?;
+    // No asset above 40%.
+    let capped_weights =
+        allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.4)))?;
     // Risk aversion is in the units of your returns: per-period returns have small variances,
     // so meaningful values are large. Shrinking the sample covariance toward its average
     // variance reduces estimation error.
-    let config = MeanVarianceConfig::risk_aversion(100.0)
-        .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-    let mean_variance_weights = allocator.mean_variance_allocation(&config)?;
-    let ew_weights = allocator.ew_allocation();
-    let inverse_volatility_weights = allocator.inverse_volatility_allocation()?;
-    let hrp_weights = allocator.hrp_allocation()?;
+    let mean_variance_weights =
+        allocator.allocate(&MeanVariance::default().risk_aversion(100.0).shrinkage(0.1))?;
+    let ew_weights = allocator.allocate(&EqualWeight)?;
+    let inverse_volatility_weights = allocator.allocate(&InverseVolatility::default())?;
+    let hrp_weights = allocator.allocate(&Hrp::default())?;
 
     println!("Min Variance Weights: {:?}", min_variance_weights.as_slice());
+    println!("Capped Min Variance Weights: {:?}", capped_weights.as_slice());
     println!("Mean-Variance Weights: {:?}", mean_variance_weights.as_slice());
     println!("EW Weights: {:?}", ew_weights.as_slice());
     println!("Inverse Volatility Weights: {:?}", inverse_volatility_weights.as_slice());
     println!("HRP Weights: {:?}", hrp_weights.as_slice());
 
-    // or run a minimum variance allocation in one go
+    // or run a long-short minimum variance allocation in one go
 
     let weights = run_portfolio_allocation(prices)?;
     println!("Portfolio Weights: {:?}", weights.as_slice());
