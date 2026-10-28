@@ -305,7 +305,7 @@ impl Constraints {
     }
 }
 
-/// Lower and upper bounds `l ≤ x ≤ u` on each variable. An upper bound may be infinite.
+/// Lower and upper bounds `l ≤ x ≤ u` on each variable. Either may be infinite.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bounds {
     pub(crate) lower: DVector<f64>,
@@ -322,26 +322,98 @@ impl Bounds {
     }
 }
 
-/// Where a variable is held: free, or in the active set at one of its bounds.
+/// A cost `κᵢ|xᵢ − aᵢ|` on moving each variable away from `aᵢ`, added to the objective of
+/// [`solve_piecewise`]: a kink in the objective at `a`. Zero slopes add nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Kinks {
+    pub(crate) at: DVector<f64>,
+    pub(crate) slopes: DVector<f64>,
+}
+
+impl Kinks {
+    /// No kinks, for `n` variables.
+    pub(crate) fn none(n: usize) -> Self {
+        Kinks {
+            at: DVector::zeros(n),
+            slopes: DVector::zeros(n),
+        }
+    }
+}
+
+/// One variable's range `[l, u]`, cut at its kink when that lies strictly inside, into
+/// segments on which the objective is smooth. `slopes[j]` is the derivative of the kink's cost
+/// on segment `j`: `−κ` below the kink and `+κ` above it.
+#[derive(Debug, Clone)]
+struct Segments {
+    points: Vec<f64>,
+    slopes: Vec<f64>,
+}
+
+impl Segments {
+    fn new(lower: f64, upper: f64, at: f64, slope: f64) -> Self {
+        if slope > 0.0 && lower < at && at < upper {
+            Segments {
+                points: vec![lower, at, upper],
+                slopes: vec![-slope, slope],
+            }
+        } else {
+            let side = if at <= lower { slope } else { -slope };
+            Segments {
+                points: vec![lower, upper],
+                slopes: vec![if slope > 0.0 { side } else { 0.0 }],
+            }
+        }
+    }
+
+    fn last(&self) -> usize {
+        self.points.len() - 1
+    }
+}
+
+/// Where a variable is: held at one of its segments' end points, or free inside a segment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
-    Free,
+    At(usize),
+    Free(usize),
+}
+
+/// Which end of its segment a variable reaches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Side {
     Lower,
     Upper,
 }
 
 /// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and l ≤ x ≤ u` for a positive
-/// semidefinite `Q`, starting from `start`, which must be feasible.
+/// semidefinite `Q`, starting from `start`, which must be feasible. This is
+/// [`solve_piecewise`] with no kinks.
+pub(crate) fn solve_bounded(
+    q: &DMatrix<f64>,
+    c: &DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+    bounds: &Bounds,
+    start: DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    solve_piecewise(q, c, e, b, bounds, &Kinks::none(q.nrows()), start)
+}
+
+/// Solves `minimize ½ xᵀQx − cᵀx + Σᵢ κᵢ|xᵢ − aᵢ| subject to Eᵀx = b and l ≤ x ≤ u` for a
+/// positive semidefinite `Q` and `κ ≥ 0`, starting from `start`, which must be feasible. A
+/// bound may be infinite.
 ///
-/// This is a primal active-set method (Nocedal and Wright, 2006, Algorithm 16.3). Variables
-/// in the active set are held at one of their bounds, and each iteration solves the
-/// equality-constrained problem in the others with [`solve_kkt`]. If that solution is within
-/// the bounds the method moves to it, and otherwise moves toward it until a variable reaches a
-/// bound, which joins the active set there. At an equality-constrained optimum, a variable
-/// leaves the active set if its multiplier `ν = Qx − c + Eλ` has the wrong sign: negative at
-/// its lower bound, or positive at its upper bound, since moving it inward lowers the
-/// objective. When none does, `x` satisfies the KKT conditions and is optimal. When `Q` is
-/// singular and the equality-constrained problem has no minimum, the method follows a
+/// This is a primal active-set method (Nocedal and Wright, 2006, Algorithm 16.3). Each
+/// variable's range is cut at its kink `aᵢ` into segments on which the objective is smooth,
+/// with the kink's cost a linear term of `±κᵢ`. Variables in the active set are held at an end
+/// of a segment, a bound or the kink, and each iteration solves the equality-constrained
+/// problem in the others, each within its segment, with [`solve_kkt`]. If that solution stays
+/// within the segments the method moves to it, and otherwise moves toward it until a variable
+/// reaches an end, which joins the active set there. At an equality-constrained optimum, a
+/// held variable leaves the active set if moving it into a segment next to it lowers the
+/// objective: with `ν = Qx − c + Eλ` and that segment's slope `s`, if `ν + s < 0` going up or
+/// `ν + s > 0` going down. At a lower bound that's `ν < 0`, at an upper bound `ν > 0`, and at
+/// a kink `|ν| > κ`. When none does, `x` satisfies the KKT conditions and is optimal. When `Q`
+/// is singular and the equality-constrained problem has no minimum, the method follows a
 /// direction of zero curvature that lowers the objective instead.
 ///
 /// A variable whose bounds are equal is fixed and never leaves the active set.
@@ -355,51 +427,75 @@ enum State {
 /// * [`CutupError::NotConverged`] if the iteration cap is reached, or a variable that would
 ///   lower the objective can't enter without the solver cycling. Only rounding trouble on
 ///   extreme inputs should cause either.
-pub(crate) fn solve_bounded(
+pub(crate) fn solve_piecewise(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
     bounds: &Bounds,
+    kinks: &Kinks,
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
-    // In the units of [`solve_kkt`], so that the tolerances below compare like with like.
+    // In the units of [`solve_kkt`], so that the tolerances below compare like with like. The
+    // kinks move with x, and their slopes scale like c.
     let units = Units::new(q, c, e, b);
-    let bounds = Bounds {
-        lower: bounds.lower.component_mul(&units.scales),
-        upper: bounds.upper.component_mul(&units.scales),
-    };
+    let segments: Vec<Segments> = (0..q.nrows())
+        .map(|i| {
+            let scale = units.scales[i];
+            Segments::new(
+                bounds.lower[i] * scale,
+                bounds.upper[i] * scale,
+                kinks.at[i] * scale,
+                kinks.slopes[i] / scale,
+            )
+        })
+        .collect();
     let start = start.component_mul(&units.scales);
-    let u = solve_bounded_in_units(&units.k, &units.c, &units.e, &units.b, &bounds, start)?;
+    let u = solve_piecewise_in_units(&units.k, &units.c, &units.e, &units.b, &segments, start)?;
     Ok(units.original(&u))
 }
 
-/// [`solve_bounded`] for a problem already in [`Units`].
-fn solve_bounded_in_units(
+/// [`solve_piecewise`] for a problem already in [`Units`].
+fn solve_piecewise_in_units(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
-    bounds: &Bounds,
+    segments: &[Segments],
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
     let n = q.nrows();
-    let (lower, upper) = (&bounds.lower, &bounds.upper);
-    let fixed: Vec<bool> = (0..n).map(|i| lower[i] >= upper[i]).collect();
+    let fixed: Vec<bool> = segments
+        .iter()
+        .map(|s| s.points[0] >= s.points[s.last()])
+        .collect();
     let mut x = DVector::from_fn(n, |i, _| {
+        let s = &segments[i];
         if fixed[i] {
-            lower[i]
+            s.points[0]
         } else {
-            start[i].clamp(lower[i], upper[i])
+            start[i].clamp(s.points[0], s.points[s.last()])
         }
     });
     let mut state: Vec<State> = (0..n)
-        .map(|i| match x[i] {
-            v if fixed[i] || v <= lower[i] => State::Lower,
-            v if v >= upper[i] => State::Upper,
-            _ => State::Free,
+        .map(|i| {
+            let s = &segments[i];
+            if fixed[i] || x[i] <= s.points[0] {
+                return State::At(0);
+            }
+            if x[i] >= s.points[s.last()] {
+                return State::At(s.last());
+            }
+            match s.points.iter().position(|&p| p == x[i]) {
+                Some(p) => State::At(p),
+                None => State::Free(s.points.iter().rposition(|&p| p < x[i]).unwrap_or(0)),
+            }
         })
         .collect();
+    let slope_amax = segments
+        .iter()
+        .flat_map(|s| s.slopes.iter())
+        .fold(0.0f64, |m, s| m.max(s.abs()));
     // Variables that were released and then blocked at once without x moving. Releasing them
     // again would loop, so they stay in the active set until x moves.
     let mut refused = vec![false; n];
@@ -409,11 +505,13 @@ fn solve_bounded_in_units(
     let mut freed_at: Option<DVector<f64>> = None;
 
     for _ in 0..100 + 20 * n {
-        let indices: Vec<usize> = (0..n).filter(|&i| state[i] == State::Free).collect();
-        // Every variable is at a bound, as when starting from a vertex. Freeing all of them
-        // lets the steps below block back the ones that belong at a bound, one per step; at
-        // an optimal vertex they block back onto it without x moving. Steps never block the
-        // last free variable, so getting here again at the same x means the solver can't make
+        let indices: Vec<usize> = (0..n)
+            .filter(|&i| matches!(state[i], State::Free(_)))
+            .collect();
+        // Every variable is held, as when starting from a vertex. Freeing all of them lets the
+        // steps below block back the ones that belong where they are, one per step; at an
+        // optimal vertex they block back onto it without x moving. Steps never block the last
+        // free variable, so getting here again at the same x means the solver can't make
         // progress.
         if indices.is_empty() {
             if fixed.iter().all(|&f| f) {
@@ -424,21 +522,43 @@ fn solve_bounded_in_units(
             }
             freed_at = Some(x.clone());
             for i in (0..n).filter(|&i| !fixed[i]) {
-                state[i] = State::Free;
+                if let State::At(p) = state[i] {
+                    state[i] = State::Free(p.min(segments[i].last() - 1));
+                }
             }
             continue;
         }
+        // Each free variable's segment: its ends, and the slope of the kink's cost on it,
+        // which joins the linear term.
+        let (lower, upper, slope): (Vec<f64>, Vec<f64>, Vec<f64>) = indices
+            .iter()
+            .map(|&i| match state[i] {
+                State::Free(j) => {
+                    let s = &segments[i];
+                    (s.points[j], s.points[j + 1], s.slopes[j])
+                }
+                State::At(_) => unreachable!("only free variables are indexed"),
+            })
+            .fold(
+                (vec![], vec![], vec![]),
+                |(mut l, mut u, mut s), (a, b, c)| {
+                    l.push(a);
+                    u.push(b);
+                    s.push(c);
+                    (l, u, s)
+                },
+            );
         let q_free = q.select_rows(&indices).select_columns(&indices);
-        let c_free = c.select_rows(&indices);
+        let c_free = c.select_rows(&indices) - DVector::from_vec(slope);
         let e_free = e.select_rows(&indices);
         let x_free = x.select_rows(&indices);
         let q_rows = q.select_rows(&indices);
 
         // Solve for the step from x rather than for the new point, so that when Q is singular
         // and the free problem has many minima, the target is the one closest to x. The
-        // minimum-norm one could put a just-released variable outside its bounds, blocking it
+        // minimum-norm one could put a just-released variable outside its segment, blocking it
         // at once. The rows of Q over all of x include the pull of variables held at a
-        // nonzero bound.
+        // nonzero point.
         let gradient_free = &c_free - &q_rows * &x;
         let residual = b - e.transpose() * &x;
         let noise = q_rows.amax() * x.amax() + c_free.amax();
@@ -452,21 +572,21 @@ fn solve_bounded_in_units(
                 return Err(CutupError::SingularCovariance);
             }
             // No minimum on the free variables: move along a direction of zero curvature
-            // until a variable reaches a bound. The free problem's linear term includes the
-            // pull of the held variables.
+            // until a variable reaches an end of its segment. The free problem's linear term
+            // includes the pull of the held variables.
             let linear = &gradient_free + &q_free * &x_free;
             let direction = descent_ray(&q_free, &linear, &e_free)?;
             let (step, blocking, side) =
-                ratio_test(&x_free, &direction, &indices, bounds).ok_or(CutupError::Unbounded)?;
-            for (k, &i) in indices.iter().enumerate() {
-                x[i] = (x_free[k] + step * direction[k]).clamp(lower[i], upper[i]);
+                ratio_test(&x_free, &direction, &lower, &upper).ok_or(CutupError::Unbounded)?;
+            for k in 0..indices.len() {
+                x[indices[k]] = (x_free[k] + step * direction[k]).clamp(lower[k], upper[k]);
             }
             block(
                 &mut x,
                 &mut state,
                 &mut refused,
                 (indices[blocking], side),
-                bounds,
+                segments,
                 step,
                 released,
             );
@@ -476,25 +596,25 @@ fn solve_bounded_in_units(
 
         let target = &x_free + delta;
 
-        // Step toward the target, stopping where the first variable reaches a bound. Entries
-        // within rounding of a bound don't block, and are clamped to it instead. Rounding is
-        // measured against all of x, since variables held at a nonzero bound feed the step:
-        // a lone free variable at its bound would otherwise block on a step of 1e-17.
+        // Step toward the target, stopping where the first variable reaches an end of its
+        // segment. Entries within rounding of an end don't block, and are clamped to it
+        // instead. Rounding is measured against all of x, since variables held at a nonzero
+        // point feed the step: a lone free variable at its bound would otherwise block on a
+        // step of 1e-17.
         let tolerance = 1e-12 * target.amax().max(x.amax());
         let blocking = (0..indices.len())
             .filter_map(|k| {
-                let i = indices[k];
-                if target[k] < lower[i] - tolerance {
+                if target[k] < lower[k] - tolerance {
                     Some((
-                        (x_free[k] - lower[i]) / (x_free[k] - target[k]),
+                        (x_free[k] - lower[k]) / (x_free[k] - target[k]),
                         k,
-                        State::Lower,
+                        Side::Lower,
                     ))
-                } else if target[k] > upper[i] + tolerance {
+                } else if target[k] > upper[k] + tolerance {
                     Some((
-                        (upper[i] - x_free[k]) / (target[k] - x_free[k]),
+                        (upper[k] - x_free[k]) / (target[k] - x_free[k]),
                         k,
-                        State::Upper,
+                        Side::Upper,
                     ))
                 } else {
                     None
@@ -502,15 +622,16 @@ fn solve_bounded_in_units(
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((step, k, side)) = blocking {
-            for (j, &i) in indices.iter().enumerate() {
-                x[i] = (x_free[j] + step * (target[j] - x_free[j])).clamp(lower[i], upper[i]);
+            for j in 0..indices.len() {
+                x[indices[j]] =
+                    (x_free[j] + step * (target[j] - x_free[j])).clamp(lower[j], upper[j]);
             }
             block(
                 &mut x,
                 &mut state,
                 &mut refused,
                 (indices[k], side),
-                bounds,
+                segments,
                 step,
                 released,
             );
@@ -519,7 +640,7 @@ fn solve_bounded_in_units(
         }
         let mut moved = false;
         for (k, &i) in indices.iter().enumerate() {
-            let next = target[k].clamp(lower[i], upper[i]);
+            let next = target[k].clamp(lower[k], upper[k]);
             moved |= (next - x[i]).abs() > tolerance;
             x[i] = next;
         }
@@ -527,31 +648,39 @@ fn solve_bounded_in_units(
             refused.fill(false);
         }
 
-        // Release the active variable whose multiplier has the wrong sign by the most, if
-        // any. A refused variable with a wrong-signed multiplier means x isn't optimal, but
-        // the solver can't make progress on it.
+        // Release the held variable that lowers the objective fastest by moving into a
+        // segment next to it, if any. A refused variable that would means x isn't optimal,
+        // but the solver can't make progress on it.
         let gradient = q * &x - c;
         let pushback = e * &multipliers;
         // Like the step, the multipliers are differences of terms up to this size.
-        let scale = (q.amax() * x.amax() + c.amax()).max(pushback.amax());
-        let wrong: Vec<(f64, usize)> = (0..n)
+        let scale = (q.amax() * x.amax() + c.amax().max(slope_amax)).max(pushback.amax());
+        let wrong: Vec<(f64, usize, usize)> = (0..n)
             .filter(|&i| !fixed[i])
             .filter_map(|i| {
+                let State::At(p) = state[i] else {
+                    return None;
+                };
+                let s = &segments[i];
                 let nu = gradient[i] + pushback[i];
-                match state[i] {
-                    State::Lower if nu < -1e-9 * scale => Some((-nu, i)),
-                    State::Upper if nu > 1e-9 * scale => Some((nu, i)),
+                // The objective's rate of decrease moving up into segment p, and down into
+                // segment p − 1.
+                let up = (p < s.last()).then(|| -(nu + s.slopes[p]));
+                let down = (p > 0).then(|| nu + s.slopes[p - 1]);
+                match (up, down) {
+                    (Some(rate), _) if rate > 1e-9 * scale => Some((rate, i, p)),
+                    (_, Some(rate)) if rate > 1e-9 * scale => Some((rate, i, p - 1)),
                     _ => None,
                 }
             })
             .collect();
         let entering = wrong
             .iter()
-            .filter(|&&(_, i)| !refused[i])
+            .filter(|&&(_, i, _)| !refused[i])
             .max_by(|a, b| a.0.total_cmp(&b.0));
         match entering {
-            Some(&(_, i)) => {
-                state[i] = State::Free;
+            Some(&(_, i, segment)) => {
+                state[i] = State::Free(segment);
                 released = Some(i);
             }
             None if wrong.is_empty() => return Ok(x),
@@ -561,23 +690,96 @@ fn solve_bounded_in_units(
     Err(CutupError::NotConverged)
 }
 
-/// Moves variable `i` into the active set at bound `side` after a step of length `step`. If
-/// `i` was just released and blocks without `x` moving, it is refused re-entry until `x`
-/// moves.
+/// Solves [`solve_piecewise`]'s problem with the turnover `Σᵢ|xᵢ − aᵢ|` capped at `cap`, `a`
+/// being the kinks' points. A multiplier `λ ≥ 0` on the cap adds `λ` to every slope, and the
+/// turnover of the optimum with slopes `κ + λ` falls as `λ` grows. So if the problem without
+/// the cap turns over more than `cap`, `λ` is found by bisection, between 0 and a `λ` at
+/// which the turnover is within the cap, until the two meet to rounding. Each solve starts
+/// from the last solution within the cap.
+///
+/// The caller checks that some feasible `x` turns over at most `cap`. Then a large enough `λ`
+/// reaches one: at the slopes `|Qa − c|` every variable that can stay at its kink does.
+///
+/// # Errors
+///
+/// Any error from [`solve_piecewise`], or [`CutupError::NotConverged`] if no `λ` up to
+/// 2¹⁰⁰⁰ times that reaches the cap.
+pub(crate) fn solve_turnover_capped(
+    q: &DMatrix<f64>,
+    c: &DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+    bounds: &Bounds,
+    (kinks, cap): (&Kinks, f64),
+    start: DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    let turnover = |x: &DVector<f64>| (x - &kinks.at).abs().sum();
+    // Summing the turnover rounds by a few ulps of the largest weight, which can put an
+    // optimum exactly at the cap just past it.
+    let within = |x: &DVector<f64>| {
+        turnover(x) <= cap + 4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0)
+    };
+    let solve = |extra: f64, start: DVector<f64>| {
+        let kinks = Kinks {
+            at: kinks.at.clone(),
+            slopes: kinks.slopes.add_scalar(extra),
+        };
+        solve_piecewise(q, c, e, b, bounds, &kinks, start)
+    };
+
+    let unconstrained = solve(0.0, start)?;
+    if within(&unconstrained) {
+        return Ok(unconstrained);
+    }
+    let pull = (q * &kinks.at - c).amax();
+    let mut high = if pull > 0.0 { pull } else { 1.0 };
+    let mut best = solve(high, unconstrained.clone())?;
+    let mut doublings = 0;
+    while !within(&best) {
+        doublings += 1;
+        if doublings > 1000 {
+            return Err(CutupError::NotConverged);
+        }
+        high *= 2.0;
+        best = solve(high, best)?;
+    }
+    let mut low = 0.0;
+    loop {
+        let middle = low + (high - low) / 2.0;
+        if middle <= low || middle >= high {
+            return Ok(best);
+        }
+        let x = solve(middle, best.clone())?;
+        if within(&x) {
+            high = middle;
+            best = x;
+        } else {
+            low = middle;
+        }
+    }
+}
+
+/// Moves free variable `i` into the active set at the `side` end of its segment after a step
+/// of length `step`. If `i` was just released and blocks without `x` moving, it is refused
+/// re-entry until `x` moves.
 fn block(
     x: &mut DVector<f64>,
     state: &mut [State],
     refused: &mut [bool],
-    (i, side): (usize, State),
-    bounds: &Bounds,
+    (i, side): (usize, Side),
+    segments: &[Segments],
     step: f64,
     released: Option<usize>,
 ) {
-    x[i] = match side {
-        State::Upper => bounds.upper[i],
-        _ => bounds.lower[i],
+    let State::Free(j) = state[i] else {
+        unreachable!("only free variables block");
     };
-    state[i] = side;
+    let point = match side {
+        Side::Lower => j,
+        Side::Upper => j + 1,
+    };
+    x[i] = segments[i].points[point];
+    state[i] = State::At(point);
     if step > 0.0 {
         refused.fill(false);
     } else if released == Some(i) {
@@ -585,24 +787,22 @@ fn block(
     }
 }
 
-/// The largest step `t ≤ ∞` keeping the free variables `x + t·d` within their bounds, the
-/// variable that reaches a bound there, and which bound, or `None` if no variable moves
-/// toward a finite bound. `indices` maps each entry of `x` to its variable. Components of `d`
-/// within rounding of zero don't count as moving.
+/// The largest step `t ≤ ∞` keeping `x + t·d` within `[lower, upper]`, the entry that reaches
+/// an end there, and which end, or `None` if no entry moves toward a finite end. Components of
+/// `d` within rounding of zero don't count as moving.
 fn ratio_test(
     x: &DVector<f64>,
     d: &DVector<f64>,
-    indices: &[usize],
-    bounds: &Bounds,
-) -> Option<(f64, usize, State)> {
+    lower: &[f64],
+    upper: &[f64],
+) -> Option<(f64, usize, Side)> {
     let tolerance = 1e-12 * d.amax();
     (0..x.len())
         .filter_map(|k| {
-            let i = indices[k];
-            if d[k] < -tolerance {
-                Some(((x[k] - bounds.lower[i]) / -d[k], k, State::Lower))
-            } else if d[k] > tolerance && bounds.upper[i].is_finite() {
-                Some(((bounds.upper[i] - x[k]) / d[k], k, State::Upper))
+            if d[k] < -tolerance && lower[k].is_finite() {
+                Some(((x[k] - lower[k]) / -d[k], k, Side::Lower))
+            } else if d[k] > tolerance && upper[k].is_finite() {
+                Some(((upper[k] - x[k]) / d[k], k, Side::Upper))
             } else {
                 None
             }
@@ -720,26 +920,33 @@ mod tests {
     #[test]
     fn ratio_test_ignores_rounding_noise() {
         let x = dvector![1.0, 1.0, 1.0];
-        let bounds = Bounds::nonnegative(3);
-        let indices = [0, 1, 2];
+        let (lower, upper) = ([0.0; 3], [f64::INFINITY; 3]);
         assert_eq!(
-            ratio_test(&x, &dvector![1.0, -1e-20, 0.5], &indices, &bounds),
+            ratio_test(&x, &dvector![1.0, -1e-20, 0.5], &lower, &upper),
             None
         );
         assert_eq!(
-            ratio_test(&x, &dvector![1.0, -1e-20, -0.5], &indices, &bounds),
-            Some((2.0, 2, State::Lower))
+            ratio_test(&x, &dvector![1.0, -1e-20, -0.5], &lower, &upper),
+            Some((2.0, 2, Side::Lower))
         );
     }
 
     #[test]
     fn ratio_test_stops_at_upper_bounds() {
         let x = dvector![1.0, 1.0];
-        let bounds = capped(dvector![1.5, 4.0]);
-        // Entry k of x is variable indices[k], so x[0] is capped at 4 and x[1] at 1.5.
         assert_eq!(
-            ratio_test(&x, &dvector![1.0, 1.0], &[1, 0], &bounds),
-            Some((0.5, 1, State::Upper))
+            ratio_test(&x, &dvector![1.0, 1.0], &[0.0, 0.0], &[4.0, 1.5]),
+            Some((0.5, 1, Side::Upper))
+        );
+    }
+
+    #[test]
+    fn ratio_test_ignores_infinite_floors() {
+        let x = dvector![1.0, 1.0];
+        let lower = [f64::NEG_INFINITY, 0.0];
+        assert_eq!(
+            ratio_test(&x, &dvector![-1.0, 0.0], &lower, &[2.0, 2.0]),
+            None
         );
     }
 
@@ -834,5 +1041,177 @@ mod tests {
         let x = solve_nonnegative(&q, &DVector::zeros(3), &e, &b, dvector![0.2, 0.3, 0.5]).unwrap();
         assert!(x.iter().all(|&v| v >= 0.0), "{x:?}");
         assert!((x.sum() - 1.0).abs() < 1e-14);
+    }
+
+    /// Two variables summing to 1 with a diagonal `Q` and both kinks at `x₀ = a`: the
+    /// objective in `t = x₀` is a parabola plus `(κ₀ + κ₁)|t − a|`, minimized in closed form.
+    fn two_kinked(q: [f64; 2], c: [f64; 2], a: f64, kappa: [f64; 2]) -> f64 {
+        let curvature = q[0] + q[1];
+        let smooth = (c[0] - c[1] + q[1]) / curvature;
+        let total = kappa[0] + kappa[1];
+        if smooth > a + total / curvature {
+            smooth - total / curvature
+        } else if smooth < a - total / curvature {
+            smooth + total / curvature
+        } else {
+            a
+        }
+    }
+
+    #[test]
+    fn kinks_match_the_closed_form() {
+        let (e, b) = budget(2);
+        let q = dmatrix![2.0, 0.0; 0.0, 1.0];
+        for (c, a, kappa) in [
+            ([0.9, 0.1], 0.3, [0.1, 0.05]),
+            ([0.9, 0.1], 0.3, [0.5, 0.5]),
+            ([-0.4, 0.3], 0.6, [0.02, 0.0]),
+            ([0.2, 0.2], 0.5, [0.0, 0.0]),
+        ] {
+            let kinks = Kinks {
+                at: dvector![a, 1.0 - a],
+                slopes: DVector::from_row_slice(&kappa),
+            };
+            let expected = two_kinked([2.0, 1.0], c, a, kappa);
+            for start in [dvector![0.5, 0.5], dvector![0.9, 0.1], dvector![a, 1.0 - a]] {
+                let x = solve_piecewise(
+                    &q,
+                    &DVector::from_row_slice(&c),
+                    &e,
+                    &b,
+                    &Bounds::nonnegative(2),
+                    &kinks,
+                    start,
+                )
+                .unwrap();
+                assert_close(&x, &dvector![expected, 1.0 - expected], 1e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_slopes_change_nothing() {
+        let q = dmatrix![2.0, 0.5, 0.0; 0.5, 1.0, 0.2; 0.0, 0.2, 3.0];
+        let c = dvector![0.4, 0.2, -0.5];
+        let (e, b) = budget(3);
+        let bounds = Bounds::nonnegative(3);
+        let start = DVector::from_element(3, 1.0 / 3.0);
+        let kinks = Kinks {
+            at: dvector![0.2, 0.3, 0.5],
+            slopes: DVector::zeros(3),
+        };
+        assert_eq!(
+            solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start.clone()).unwrap(),
+            solve_bounded(&q, &c, &e, &b, &bounds, start).unwrap()
+        );
+    }
+
+    #[test]
+    fn large_slopes_hold_every_variable_at_its_kink() {
+        let q = dmatrix![2.0, 0.5, 0.0; 0.5, 1.0, 0.2; 0.0, 0.2, 3.0];
+        let c = dvector![0.4, 0.2, -0.5];
+        let (e, b) = budget(3);
+        let at = dvector![0.2, 0.3, 0.5];
+        let kinks = Kinks {
+            at: at.clone(),
+            slopes: DVector::from_element(3, 10.0),
+        };
+        for start in [DVector::from_element(3, 1.0 / 3.0), at.clone()] {
+            let x =
+                solve_piecewise(&q, &c, &e, &b, &Bounds::nonnegative(3), &kinks, start).unwrap();
+            assert_close(&x, &at, 1e-15);
+        }
+    }
+
+    #[test]
+    fn kinks_work_without_bounds() {
+        // Long-short: x₀ wants to go below 0.
+        let (e, b) = budget(2);
+        let q = dmatrix![1.0, 0.0; 0.0, 1.0];
+        let c = dvector![-2.0, 1.0];
+        let free = Bounds {
+            lower: DVector::from_element(2, f64::NEG_INFINITY),
+            upper: DVector::from_element(2, f64::INFINITY),
+        };
+        let kinks = Kinks {
+            at: dvector![0.5, 0.5],
+            slopes: dvector![0.25, 0.25],
+        };
+        let x = solve_piecewise(&q, &c, &e, &b, &free, &kinks, dvector![0.5, 0.5]).unwrap();
+        let expected = two_kinked([1.0, 1.0], [-2.0, 1.0], 0.5, [0.25, 0.25]);
+        assert!(expected < 0.0);
+        assert_close(&x, &dvector![expected, 1.0 - expected], 1e-14);
+    }
+
+    #[test]
+    fn a_kink_outside_the_bounds_is_one_sided() {
+        // Holding 0.8 of x₀, capped at 0.5: x₀ can only fall, and selling it costs κ, so the
+        // cost only pushes weight toward the cap.
+        let (e, b) = budget(2);
+        let q = dmatrix![1.0, 0.0; 0.0, 1.0];
+        let bounds = capped(dvector![0.5, 1.0]);
+        let kinks = Kinks {
+            at: dvector![0.8, 0.2],
+            slopes: dvector![0.1, 0.0],
+        };
+        let x = solve_piecewise(
+            &q,
+            &DVector::zeros(2),
+            &e,
+            &b,
+            &bounds,
+            &kinks,
+            dvector![0.3, 0.7],
+        )
+        .unwrap();
+        assert_close(&x, &dvector![0.5, 0.5], 1e-15);
+    }
+
+    #[test]
+    fn a_binding_turnover_cap_is_met_exactly() {
+        let q = dmatrix![2.0, 0.5, 0.0; 0.5, 1.0, 0.2; 0.0, 0.2, 3.0];
+        let c = dvector![0.4, 0.2, -0.5];
+        let (e, b) = budget(3);
+        let bounds = Bounds::nonnegative(3);
+        let at = dvector![0.1, 0.1, 0.8];
+        let kinks = Kinks {
+            at: at.clone(),
+            slopes: DVector::zeros(3),
+        };
+        let start = DVector::from_element(3, 1.0 / 3.0);
+        let free = solve_bounded(&q, &c, &e, &b, &bounds, start.clone()).unwrap();
+        let unconstrained = (&free - &at).abs().sum();
+        let cap = unconstrained / 2.0;
+        let x =
+            solve_turnover_capped(&q, &c, &e, &b, &bounds, (&kinks, cap), start.clone()).unwrap();
+        assert!(((&x - &at).abs().sum() - cap).abs() < 1e-14);
+        // A loose cap changes nothing.
+        let loose = solve_turnover_capped(&q, &c, &e, &b, &bounds, (&kinks, 2.0), start).unwrap();
+        assert_eq!(loose, free);
+    }
+
+    #[test]
+    fn a_turnover_cap_is_a_cost_at_its_multiplier() {
+        // On two variables the capped optimum moves t = x₀ from a by exactly cap / 2, and is
+        // the closed form with the costs that stop it there.
+        let (e, b) = budget(2);
+        let q = dmatrix![2.0, 0.0; 0.0, 1.0];
+        let c = dvector![0.9, 0.1];
+        let kinks = Kinks {
+            at: dvector![0.3, 0.7],
+            slopes: dvector![0.0, 0.0],
+        };
+        let x = solve_turnover_capped(
+            &q,
+            &c,
+            &e,
+            &b,
+            &Bounds::nonnegative(2),
+            (&kinks, 0.2),
+            dvector![0.5, 0.5],
+        )
+        .unwrap();
+        assert!(two_kinked([2.0, 1.0], [0.9, 0.1], 0.3, [0.0, 0.0]) > 0.4);
+        assert_close(&x, &dvector![0.4, 0.6], 1e-14);
     }
 }
