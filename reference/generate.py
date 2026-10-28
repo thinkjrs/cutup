@@ -498,6 +498,8 @@ def black_litterman(cov: np.ndarray, params: dict) -> np.ndarray:
         else:
             row[:] = view["portfolio"]
     q = np.array([view["q"] for view in views])
+    if any("variance" in view and "confidence" in view for view in views):
+        raise ValueError("a view sets at most one of variance or confidence")
     kinds = {"variance" if "variance" in v else "confidence" if "confidence" in v else "default" for v in views}
     if kinds == {"default"}:
         omega, confidences = "default", None
@@ -799,6 +801,10 @@ def cases(datasets: dict) -> list[dict]:
         ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "tau": 0.2, "views": [
             {"absolute": 4, "q": 0.002, "confidence": 0.8},
             {"relative": [0, 3], "q": 0.0005, "confidence": 0.3},
+        ]}),
+        ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "views": [
+            {"absolute": 4, "q": 0.002, "confidence": 0.05},
+            {"relative": [0, 3], "q": 0.0005, "confidence": 0.95},
         ]}),
         ("prices10x60", {"market_weights": caps10, "risk_aversion": 2.5, "shrinkage": 0.3, "views": [
             {"absolute": 4, "q": 0.002, "variance": 1e-6},

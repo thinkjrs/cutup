@@ -154,11 +154,11 @@ fn black_litterman(params: &Value) -> BlackLitterman {
         } else {
             View::portfolio(floats(&view["portfolio"]), q)
         };
-        if let Some(omega) = view["variance"].as_f64() {
-            built = built.variance(omega);
-        }
-        if let Some(confidence) = view["confidence"].as_f64() {
-            built = built.confidence(confidence);
+        match (view["variance"].as_f64(), view["confidence"].as_f64()) {
+            (Some(omega), None) => built = built.variance(omega),
+            (None, Some(confidence)) => built = built.confidence(confidence),
+            (None, None) => {}
+            (Some(_), Some(_)) => panic!("a view sets at most one of variance or confidence"),
         }
         model = model.view(built);
     }
