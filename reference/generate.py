@@ -47,6 +47,15 @@ cutup's implementation:
 * HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
 * HERC: riskfolio-lib's HCPortfolio with model="HERC" and rm="MV", for each linkage
   method and for fixed numbers of clusters.
+* Turnover and transaction costs, for min variance and mean-variance from current weights
+  w₀: support enumeration with five states per asset, at its lower bound, at its upper
+  bound, at w₀, or free above or below w₀, where the cost cᵢ|wᵢ − w₀ᵢ| is the linear term
+  ±cᵢ. A turnover cap adds, on each support, a candidate with the cap as an equality
+  Σ sign(wᵢ − w₀ᵢ)(wᵢ − w₀ᵢ) = T. The best feasible candidate is the optimum, as above. The
+  objective is written out from each method's definition, not from cutup's. Each result
+  is cross-checked against PyPortfolioOpt, with an L1 cost, a squared-distance objective
+  and an L1 constraint on cvxpy with Clarabel at tight tolerances, to 1e-6. A cap below the turnover needed to
+  move w₀ into the bounds is an expected error.
 * Black-Litterman: PyPortfolioOpt's market_implied_prior_returns and
   BlackLittermanModel.bl_returns, with its "default" (He-Litterman) and "idzorek" view
   uncertainties, or, when a case mixes kinds of view, a diagonal Ω built row by row with
@@ -66,6 +75,7 @@ import json
 import platform
 import sys
 
+import cvxpy as cp
 import numpy as np
 import pandas as pd
 import riskfolio
@@ -474,6 +484,131 @@ def herc(returns: np.ndarray, linkage: str, clusters: int | None) -> np.ndarray:
     return weights["weights"].to_numpy()
 
 
+def kinked(
+    k: np.ndarray,
+    c: np.ndarray,
+    current: np.ndarray,
+    costs: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    cap: float | None,
+) -> np.ndarray | None:
+    """Minimizes ½wᵀKw − cᵀw + Σᵢ costsᵢ|wᵢ − currentᵢ| subject to 1ᵀw = 1, l ≤ w ≤ u and,
+    with a cap, Σᵢ|wᵢ − currentᵢ| ≤ cap, by support enumeration over five states per asset."""
+    n = len(c)
+    # 0: lower bound, 1: upper bound, 2: at current, 3: free above it, 4: free below it.
+    def choices(i):
+        out = []
+        if np.isfinite(lower[i]):
+            out.append(0)
+        if np.isfinite(upper[i]) and upper[i] > lower[i]:
+            out.append(1)
+        if lower[i] <= current[i] <= upper[i]:
+            out.append(2)
+        if current[i] < upper[i] and upper[i] > lower[i]:
+            out.append(3)
+        if current[i] > lower[i] and upper[i] > lower[i]:
+            out.append(4)
+        return out
+
+    def objective(w):
+        return 0.5 * w @ k @ w - c @ w + costs @ np.abs(w - current)
+
+    best, best_value = None, np.inf
+    for states in itertools.product(*(choices(i) for i in range(n))):
+        free = [i for i in range(n) if states[i] >= 3]
+        held = [i for i in range(n) if states[i] < 3]
+        w = np.zeros(n)
+        for i in held:
+            w[i] = (lower[i], upper[i], current[i])[states[i]]
+        sign = np.array([1.0 if states[i] == 3 else -1.0 for i in free])
+        for capped in ([False, True] if cap is not None else [False]):
+            if not free:
+                candidates = [w.copy()]
+            else:
+                columns = [np.ones(len(free))]
+                rhs = [1.0 - w[held].sum()]
+                if capped:
+                    columns.append(sign)
+                    rhs.append(cap - np.abs(w[held] - current[held]).sum() + sign @ current[free])
+                e = np.column_stack(columns)
+                m = e.shape[1]
+                kkt = np.block([[k[np.ix_(free, free)], e], [e.T, np.zeros((m, m))]])
+                linear = c[free] - sign * costs[free] - k[np.ix_(free, held)] @ w[held]
+                solution, *_ = np.linalg.lstsq(kkt, np.concatenate([linear, rhs]), rcond=None)
+                candidate = w.copy()
+                candidate[free] = solution[: len(free)]
+                candidates = [candidate]
+            for candidate in candidates:
+                tolerance = 1e-12 * max(1.0, np.abs(candidate).max())
+                if abs(candidate.sum() - 1.0) > 1e-9:
+                    continue
+                if np.any(candidate < lower - tolerance) or np.any(candidate > upper + tolerance):
+                    continue
+                moved = candidate[free] - current[free]
+                if np.any(sign * moved < -tolerance):
+                    continue
+                if cap is not None and np.abs(candidate - current).sum() > cap + 1e-12:
+                    continue
+                value = objective(candidate)
+                if value < best_value:
+                    best, best_value = candidate, value
+    return best
+
+
+def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool) -> np.ndarray | str:
+    """Min variance, wᵀΣw + κ‖w − w₀‖², or mean-variance, −μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖²
+    + Σcᵢ|wᵢ − w₀ᵢ|, from current weights w₀, as ½wᵀKw − cᵀw plus the costs."""
+    n = cov.shape[0]
+    current = np.array(params["current_weights"], dtype=float)
+    kappa = params.get("turnover_penalty", 0.0)
+    cap = params.get("max_turnover")
+    costs = params.get("transaction_costs", 0.0)
+    costs = np.full(n, costs) if np.isscalar(costs) else np.array(costs, dtype=float)
+    if params.get("long_short"):
+        lower, upper = np.full(n, -np.inf), np.full(n, np.inf)
+    else:
+        bounds = weight_bounds(params, n)
+        lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
+        # Each cap lowered to what the other floors leave, as cutup resolves them.
+        upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
+    if mean_variance:
+        gamma = params["risk_aversion"]
+        k, c = gamma * cov + 2 * kappa * np.eye(n), mu + 2 * kappa * current
+    else:
+        k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
+    if cap is not None:
+        clipped = np.clip(current, lower, upper)
+        minimum = np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
+        if minimum > cap + 1e-12:
+            return "InfeasibleTurnover"
+    weights = kinked(k, c, current, costs, lower, upper, cap)
+    cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, params if mean_variance else None)
+    return weights
+
+
+def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, mean_variance) -> None:
+    """Checks a rebalance against PyPortfolioOpt on cvxpy, with Clarabel at tight
+    tolerances, to 1e-6. Unlike the other cross-checks it holds even on near_singular4."""
+    bounds = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)]
+    # Clarabel at tight tolerances: at its defaults it stops about 2e-5 short at the kinks.
+    tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}
+    frontier = EfficientFrontier(mu, cov, weight_bounds=bounds, solver="CLARABEL", solver_options=tight)
+    if np.any(costs > 0):
+        frontier.add_objective(lambda w: cp.sum(cp.multiply(costs, cp.abs(w - current))))
+    if kappa > 0:
+        frontier.add_objective(lambda w: kappa * cp.sum_squares(w - current))
+    if cap is not None:
+        frontier.add_constraint(lambda w: cp.norm(w - current, 1) <= cap)
+    if mean_variance is not None:
+        frontier.max_quadratic_utility(mean_variance["risk_aversion"])
+    else:
+        frontier.min_volatility()
+    theirs = np.array(list(frontier.weights))
+    if np.abs(theirs - weights).max() > 1e-6:
+        raise ValueError(f"PyPortfolioOpt disagrees: {theirs} vs {weights}")
+
+
 def black_litterman(cov: np.ndarray, params: dict) -> np.ndarray:
     """Posterior expected returns. Each view is {"absolute": i}, {"relative": [long, short]}
     or {"portfolio": weights}, with a return "q" and optionally a "variance" or a
@@ -560,6 +695,10 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return herc(returns, params.get("linkage", "single"), params.get("clusters"))
         case "black_litterman":
             return black_litterman(adjusted, params)
+        case "rebalance_min_variance":
+            return rebalance(adjusted, mu, params, mean_variance=False)
+        case "rebalance_mean_variance":
+            return rebalance(adjusted, mu, params, mean_variance=True)
     raise ValueError(f"unknown method {case['method']}")
 
 
@@ -786,6 +925,36 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "prices10x60", "method": "herc", "params": {"linkage": "ward", "clusters": 5}, "tolerance": clustering})
     out.append({"dataset": "two_blocks5", "method": "herc", "params": {"linkage": "average", "clusters": 3}, "tolerance": clustering})
 
+    # Rebalancing from current weights: turnover caps that bind and don't, a turnover penalty,
+    # transaction costs, uniform and per asset, with bounds the current weights break, long-
+    # short, and a cap too small to reach the bounds.
+    for name, params in [
+        ("orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 0.2}),
+        ("orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 2.0}),
+        ("orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 0.0}),
+        ("two_asset", {"current_weights": [0.9, 0.1], "max_turnover": 0.1}),
+        ("two_blocks5", {"current_weights": [0.2] * 5, "max_turnover": 0.15}),
+        ("two_blocks5", {"current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "turnover_penalty": 2e-4}),
+        ("two_blocks5", {"current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "turnover_penalty": 1e-4, "max_turnover": 0.3}),
+        ("near_singular4", {"current_weights": [0.1, 0.2, 0.3, 0.4], "max_turnover": 0.25}),
+        ("near_singular4", {"current_weights": [0.1, 0.2, 0.3, 0.4], "max_turnover": 0.25, "bounds": [0.0, 0.35]}),
+        ("near_singular4", {"current_weights": [0.1, 0.2, 0.3, 0.4], "max_turnover": 0.05, "bounds": [0.0, 0.35]}),
+        ("two_blocks5", {"current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "max_turnover": 0.2, "long_short": True}),
+    ]:
+        out.append({"dataset": name, "method": "rebalance_min_variance", "params": params, "tolerance": solver})
+    mu5 = [0.0012, 0.0004, 0.0009, 0.0002, 0.0007]
+    for name, params in [
+        ("two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0005}),
+        ("two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": [0.001, 0.0, 0.0005, 0.0002, 0.002]}),
+        ("two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0002, "max_turnover": 0.3}),
+        ("two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "turnover_penalty": 1e-3, "transaction_costs": 0.0001}),
+        ("two_blocks5", {"risk_aversion": 20.0, "expected_returns": mu5, "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "transaction_costs": 0.0003, "long_short": True}),
+        ("two_blocks5", {"risk_aversion": 20.0, "expected_returns": mu5, "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "transaction_costs": 0.0003, "max_turnover": 0.4, "long_short": True}),
+        ("orthogonal3", {"risk_aversion": 100.0, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "transaction_costs": 0.0002, "bounds": [0.0, 0.5]}),
+        ("near_singular4", {"risk_aversion": 100.0, "current_weights": [0.25] * 4, "transaction_costs": 0.0001, "max_turnover": 0.1}),
+    ]:
+        out.append({"dataset": name, "method": "rebalance_mean_variance", "params": params, "tolerance": solver})
+
     # Black-Litterman expected returns: the prior alone, then each kind of view and of view
     # uncertainty, alone and mixed. Market capitalizations, not weights, on prices10x60.
     caps10 = [12.0, 3.5, 8.0, 1.2, 20.0, 4.4, 2.5, 9.1, 6.3, 5.0]
@@ -873,7 +1042,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "max_diversification", "mean_variance", "max_sharpe"):
+        if case["method"] in ("rebalance_min_variance", "rebalance_mean_variance", "min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "max_diversification", "mean_variance", "max_sharpe"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.

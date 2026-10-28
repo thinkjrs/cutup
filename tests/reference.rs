@@ -6,7 +6,8 @@
 
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVarianceConfig, PortfolioAllocator, RiskParityConfig, View, WeightBounds, Weights,
+    MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParityConfig, View,
+    WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -165,7 +166,46 @@ fn black_litterman(params: &Value) -> BlackLitterman {
     model
 }
 
-const METHODS: [&str; 14] = [
+/// A method with the trading settings of a `rebalance_*` case.
+macro_rules! rebalance {
+    ($method:expr, $params:expr) => {{
+        let params = $params;
+        let mut method = $method
+            .covariance(covariance_config(params))
+            .current_weights(floats(&params["current_weights"]));
+        if let Some(cap) = params["max_turnover"].as_f64() {
+            method = method.max_turnover(cap);
+        }
+        if let Some(kappa) = params["turnover_penalty"].as_f64() {
+            method = method.turnover_penalty(kappa);
+        }
+        if params["long_short"].as_bool() == Some(true) {
+            method = method.allow_short();
+        } else if let Some(bounds) = weight_bounds(params) {
+            method = method.bounds(bounds);
+        }
+        method
+    }};
+}
+
+fn rebalance_mean_variance(params: &Value) -> MeanVariance {
+    let mut method = rebalance!(
+        MeanVariance::risk_aversion(params["risk_aversion"].as_f64().unwrap()),
+        params
+    );
+    if params["expected_returns"].is_array() {
+        method = method.expected_returns(floats(&params["expected_returns"]));
+    }
+    match &params["transaction_costs"] {
+        Value::Array(_) => method.transaction_costs_per_asset(floats(&params["transaction_costs"])),
+        cost => match cost.as_f64() {
+            Some(cost) => method.transaction_costs(cost),
+            None => method,
+        },
+    }
+}
+
+const METHODS: [&str; 16] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -180,6 +220,8 @@ const METHODS: [&str; 14] = [
     "hrp",
     "herc",
     "black_litterman",
+    "rebalance_min_variance",
+    "rebalance_mean_variance",
 ];
 
 fn run(
@@ -217,6 +259,8 @@ fn run(
         "risk_parity" => allocator.risk_parity_allocation_with_config(&risk_parity_config(params)),
         "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
         "herc" => allocator.herc_allocation_with_config(&herc_config(params)),
+        "rebalance_min_variance" => allocator.allocate(&rebalance!(MinVariance::default(), params)),
+        "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
         "black_litterman" => black_litterman(params)
             .expected_returns(allocator)
             .map(Weights::from),
