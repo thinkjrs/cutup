@@ -14,14 +14,20 @@ All notable changes to this project are documented here. The format follows
   `MaxSharpe`, `MaxDiversification`, `RiskParity`, `Hrp` and `Herc`, as in
   `allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.3)))`.
   `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless `.allow_short()` is
-  called, and `MeanVariance` defaults to a risk aversion of 1, as PyPortfolioOpt does.
-  Expected returns and risk budgets take plain `Vec<f64>`s or arrays. Each value gives
-  exactly the weights of the `PortfolioAllocator` method it wraps, and those methods are
-  unchanged.
+  called. `MeanVariance` has no default, since a sensible risk aversion depends on the
+  period of the returns: start from `MeanVariance::risk_aversion` or
+  `MeanVariance::target_return`. Expected returns and risk budgets take plain `Vec<f64>`s or
+  arrays. Each value gives exactly the weights of the `PortfolioAllocator` method it wraps,
+  and those methods are unchanged. `Allocation` is implemented for `&A` and `Box<A>`, so a
+  `Vec<Box<dyn Allocation>>` runs without `.as_ref()`.
 - `From<Vec<f64>> for Weights`, so you can implement `Allocation` for methods of your own.
+  `allocate` checks there's one weight per asset (`CutupError::DimensionMismatch`
+  otherwise) and that each is finite (the new `CutupError::NonFiniteWeight` otherwise).
+- The `basic` and `compare` examples use `allocate`.
 - A property test that every method value gives the same weights or error as the method it
-  wraps, and an integration test that mixes methods, including one defined outside the
-  crate, in a `Vec<Box<dyn Allocation>>`.
+  wraps, including through the `shrinkage` and `regularization` shortcuts, and integration
+  tests that mix methods, including one defined outside the crate, in a
+  `Vec<Box<dyn Allocation>>`, and that `allocate` rejects malformed weights.
 
 ## [0.2.6] - 2026-10-27
 
