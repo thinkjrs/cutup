@@ -1,7 +1,7 @@
 //! Turnover and transaction costs against current weights, for min variance and
 //! mean-variance.
 
-use crate::{interior_start, qp, CutupError, WeightBounds, Weights};
+use crate::{interior_start, normalized, qp, CutupError, WeightBounds, Weights};
 use nalgebra::{DMatrix, DVector};
 
 /// The trading settings of [`MinVariance`](crate::MinVariance) and
@@ -23,12 +23,8 @@ pub(crate) enum Costs {
 }
 
 impl Trading {
-    /// Whether any setting changes the optimum. Current weights alone don't.
-    pub(crate) fn is_active(&self) -> bool {
-        self.penalty.is_some() || self.max_turnover.is_some() || self.costs.is_some()
-    }
-
-    /// The first setting that changes the optimum, by name, for errors.
+    /// The first setting that changes the optimum, by name, or `None` if none does. Current
+    /// weights alone don't.
     pub(crate) fn first_setting(&self) -> Option<&'static str> {
         if self.max_turnover.is_some() {
             Some("max_turnover")
@@ -41,7 +37,9 @@ impl Trading {
         }
     }
 
-    /// Checks the settings for `n` assets, returning the current weights, if any.
+    /// Checks the settings for `n` assets, returning the current weights, if any, rescaled to
+    /// sum to exactly 1: within `1e-9` of it counts as rounding, but a turnover cap of 0 could
+    /// never be met from weights that sum to anything else.
     pub(crate) fn check(&self, n: usize) -> Result<Option<DVector<f64>>, CutupError> {
         let nonnegative = |field: &'static str, value: f64| {
             if value.is_finite() && value >= 0.0 {
@@ -96,7 +94,7 @@ impl Trading {
                 value: total,
             });
         }
-        Ok(Some(DVector::from_column_slice(current)))
+        Ok(Some(DVector::from_column_slice(current) / total))
     }
 
     fn costs(&self, n: usize) -> DVector<f64> {
@@ -141,13 +139,13 @@ pub(crate) fn rebalance(
         slopes: trading.costs(n),
     };
     // Long-short, the optimum without the kinks is a feasible start that, unlike the current
-    // weights, isn't at every kink at once.
+    // weights, isn't at every kink at once. Where there's none, as when a singular covariance
+    // lets expected return grow without limit, the costs or the cap may still bound the
+    // problem, and the current weights are a feasible start.
     let start = if bounds.lower.iter().all(|l| l.is_finite()) {
         interior_start(&bounds)
     } else {
-        qp::solve_kkt(&q, &c, &e, &b)?
-            .ok_or(CutupError::Unbounded)?
-            .0
+        qp::solve_kkt(&q, &c, &e, &b)?.map_or_else(|| current.clone(), |(x, _)| x)
     };
     let weights = match trading.max_turnover {
         Some(cap) => {
@@ -159,8 +157,7 @@ pub(crate) fn rebalance(
         }
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
     };
-    let total = weights.sum();
-    Ok(Weights(weights.iter().map(|w| w / total).collect()))
+    Ok(normalized(weights))
 }
 
 /// The least turnover from `current` to a portfolio summing to 1 within `bounds`: move each
@@ -316,6 +313,48 @@ mod tests {
         for (w, c) in weights.iter().zip(current) {
             assert!((w - c).abs() < 1e-15);
         }
+    }
+
+    #[test]
+    fn current_weights_within_rounding_of_one_are_rescaled() {
+        // Summing to 1 − 1e-10, which a cap of 0 could never be met from as given.
+        let current = [0.2, 0.3, 0.4999999999];
+        for method in [MinVariance::default(), MinVariance::default().allow_short()] {
+            let weights = method
+                .current_weights(current)
+                .max_turnover(0.0)
+                .allocate(&allocator())
+                .unwrap();
+            let total: f64 = current.iter().sum();
+            for (w, c) in weights.iter().zip(current) {
+                assert!((w - c / total).abs() < 1e-15);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cap_bounds_an_unbounded_long_short_objective() {
+        // Two periods of three assets: Σ is singular, so long-short mean-variance gains
+        // expected return without limit, until a turnover cap stops it.
+        let allocator = PortfolioAllocator::from_returns(dmatrix![
+            0.01, -0.02, 0.005;
+            -0.004, 0.015, 0.002
+        ])
+        .unwrap();
+        let method = MeanVariance::risk_aversion(10.0).allow_short();
+        assert_eq!(method.allocate(&allocator), Err(CutupError::Unbounded));
+        let current = [0.3, 0.3, 0.4];
+        let weights = method
+            .current_weights(current)
+            .max_turnover(0.2)
+            .allocate(&allocator)
+            .unwrap();
+        let turnover: f64 = weights
+            .iter()
+            .zip(current)
+            .map(|(w, c)| (w - c).abs())
+            .sum();
+        assert!((turnover - 0.2).abs() < 1e-15, "{turnover}");
     }
 
     #[test]

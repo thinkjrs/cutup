@@ -201,7 +201,7 @@ impl MinVariance {
 
 impl Allocation for MinVariance {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        if self.trading.is_active() {
+        if self.trading.first_setting().is_some() {
             let cov = data.adjusted_covariance(&self.covariance)?;
             let n = cov.ncols();
             return turnover::rebalance(

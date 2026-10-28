@@ -2871,9 +2871,14 @@ fn long_only_weights(
     bounds: &qp::Bounds,
     start: DVector<f64>,
 ) -> Result<Weights, CutupError> {
-    let weights = qp::solve_bounded(q, c, e, b, bounds, start)?;
-    let total = weights.sum();
-    Ok(Weights(weights.iter().map(|w| w / total).collect()))
+    Ok(normalized(qp::solve_bounded(q, c, e, b, bounds, start)?))
+}
+
+/// `x` rescaled to sum to 1. With a budget constraint `1ᵀx = 1`, that only removes the
+/// rounding left by clamping to the bounds; for max Sharpe it maps `y` back to `w`.
+fn normalized(x: DVector<f64>) -> Weights {
+    let total = x.sum();
+    Weights(x.iter().map(|w| w / total).collect())
 }
 
 /// Maximizes `aᵀw / sqrt(wᵀΣw)` over long-only portfolios summing to 1, for `a` with its
