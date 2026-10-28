@@ -27,6 +27,7 @@ fixtures in `tests/fixtures/`.
 | Risk parity | Cyclical coordinate descent (Griveau-Billion et al., 2013) on the correlation matrix, run to convergence, unlike cutup's Newton iteration, with equal and custom risk budgets. The expected error is decided by `scipy.optimize.nnls` finding a long-only portfolio with zero variance. |
 | HRP | PyPortfolioOpt `HRPOpt`, for each linkage |
 | HERC | riskfolio-lib `HCPortfolio.optimization(model="HERC", rm="MV")`, for each linkage and for fixed numbers of clusters. Datasets with two assets are skipped, because riskfolio-lib's gap statistic can't choose a number of clusters for them. |
+| Black-Litterman | PyPortfolioOpt `market_implied_prior_returns` and `BlackLittermanModel.bl_returns`, with absolute, relative and portfolio views, and its `"default"` (He-Litterman) and `"idzorek"` view uncertainties. Cases that mix kinds of uncertainty pass a diagonal Ω built row by row with `BlackLittermanModel.default_omega` and `idzorek_method`. These cases hold expected returns rather than weights, checked to 1e-15. |
 
 Every covariance-based reference works in correlation units `u = diag(σ)w`, as cutup
 does: with `Σ = diag(σ) C diag(σ)`, linear solves, pseudo-inverses, null spaces and

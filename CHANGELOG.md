@@ -28,6 +28,17 @@ All notable changes to this project are documented here. The format follows
   wraps, including through the `shrinkage` and `regularization` shortcuts, and integration
   tests that mix methods, including one defined outside the crate, in a
   `Vec<Box<dyn Allocation>>`, and that `allocate` rejects malformed weights.
+- Black-Litterman expected returns: `BlackLitterman::new(market_weights, delta)` gives the
+  market-implied prior `π = δΣw_mkt + r_f` (`prior_returns`), and `expected_returns` blends
+  it with views, `π + τΣPᵀ(τPΣPᵀ + Ω)⁻¹(Q − Pπ)`. Views are `View::absolute`,
+  `View::relative` and `View::portfolio`. Each view's variance defaults to `τpᵀΣp` (He and
+  Litterman), or is set with `.variance(ω)`, or as an Idzorek confidence from 0 to 1 with
+  `.confidence(c)`. `τ` defaults to 0.05, and the covariance takes the same shrinkage and
+  regularization setters as the allocation methods. Market capitalizations are normalized
+  to weights. The result is a `Vec<f64>` for `MeanVariance` or `MaxSharpe`.
+- Black-Litterman reference cases against PyPortfolioOpt's `BlackLittermanModel`, to 1e-15,
+  and property tests: mean-variance on the implied returns, at the same risk aversion,
+  recovers the market weights, and certain views hold exactly.
 
 ## [0.2.6] - 2026-10-27
 

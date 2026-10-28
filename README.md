@@ -21,6 +21,7 @@ Here are some of the allocation methods included in this library:
 - **Risk Parity (Equal Risk Contribution) and Risk Budgeting**
 - **Hierarchical Risk Parity (HRP)**
 - **Hierarchical Equal Risk Contribution (HERC)**
+- **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 
 This library leverages `nalgebra` for efficient matrix operations and is designed for performance and extensibility.
 
@@ -38,6 +39,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
+- **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
 ## Choosing a method
@@ -139,13 +141,44 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
+### Black-Litterman
+
+Black-Litterman estimates expected returns rather than allocating. Start from the market weights (or capitalizations) and the market's risk aversion δ, add views, and pass the result to a method that uses expected returns:
+
+```rust
+use cutup::{BlackLitterman, CutupError, MeanVariance, PortfolioAllocator, View};
+use nalgebra::dmatrix;
+
+fn main() -> Result<(), CutupError> {
+    let returns = dmatrix![
+         0.010, -0.020,  0.005;
+        -0.004,  0.015,  0.002;
+         0.007,  0.003, -0.006;
+         0.002, -0.001,  0.004;
+        -0.003,  0.006,  0.001
+    ];
+    let allocator = PortfolioAllocator::from_returns(returns)?;
+
+    let mu = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+        // Asset 0 returns 0.1% a period, and you're 60% sure of it.
+        .view(View::absolute(0, 0.001).confidence(0.6))
+        // Asset 1 beats asset 2 by 0.05% a period.
+        .view(View::relative(1, 2, 0.0005))
+        .expected_returns(&allocator)?;
+
+    let weights = allocator.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
+    println!("Black-Litterman weights: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
 ## Testing
 
 ```bash
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, PyPortfolioOpt for HRP, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 
