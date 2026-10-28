@@ -1,10 +1,15 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+mod allocation;
 mod cluster;
 mod eigen;
 mod qp;
 
+pub use allocation::{
+    Allocation, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification,
+    MaxSharpe, MeanVariance, MinVariance, RiskParity,
+};
 pub use cluster::Linkage;
 
 use eigen::SymmetricEigen;
@@ -275,6 +280,14 @@ impl<'a> IntoIterator for &'a Weights {
 impl From<Weights> for Vec<f64> {
     fn from(weights: Weights) -> Self {
         weights.0
+    }
+}
+
+/// Weights in column order, for an [`Allocation`] of your own. They're taken as given, so
+/// make them sum to 1, as every method in this crate does.
+impl From<Vec<f64>> for Weights {
+    fn from(weights: Vec<f64>) -> Self {
+        Weights(weights)
     }
 }
 
@@ -771,6 +784,38 @@ impl PortfolioAllocator {
     pub fn from_returns(returns: DMatrix<f64>) -> Result<Self, CutupError> {
         PortfolioAllocator::validate(&returns, 2)?;
         PortfolioAllocator::build(returns)
+    }
+
+    /// Computes weights with `method`, any [`Allocation`]: one of this crate's methods, such as
+    /// [`MinVariance`] or [`Hrp`], or one of your own.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `method` returns. Each method's type lists its errors.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, PortfolioAllocator};
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![
+    ///      0.010, -0.020,  0.005;
+    ///     -0.004,  0.015,  0.002;
+    ///      0.007,  0.003, -0.006;
+    ///      0.002, -0.001,  0.004
+    /// ];
+    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    ///
+    /// let long_only = allocator.allocate(&MinVariance::default())?;
+    /// let long_short = allocator.allocate(&MinVariance::default().allow_short())?;
+    ///
+    /// assert!(long_only.iter().all(|&w| w >= 0.0));
+    /// assert!((long_short.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn allocate<A: Allocation + ?Sized>(&self, method: &A) -> Result<Weights, CutupError> {
+        method.allocate(self)
     }
 
     /// Builds an allocator from returns that have already been validated, rejecting a
