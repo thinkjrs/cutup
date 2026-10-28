@@ -52,6 +52,9 @@ mod allocation;
 mod black_litterman;
 mod cluster;
 mod eigen;
+// Used by CVaR, in the next change.
+#[allow(dead_code)]
+mod lp;
 mod qp;
 mod turnover;
 
