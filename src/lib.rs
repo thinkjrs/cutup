@@ -26,11 +26,34 @@ macro_rules! covariance_setters {
     };
 }
 
+/// The `current_weights` and `max_turnover` setters, for a method with a `trading: Trading`
+/// field.
+macro_rules! turnover_setters {
+    () => {
+        /// Sets your current weights, one per asset in column order: what turnover and
+        /// trading costs are measured against. They must sum to 1, within `1e-9`; to hold cash,
+        /// include it as an asset. On their own they change nothing.
+        pub fn current_weights(mut self, current: impl Into<Vec<f64>>) -> Self {
+            self.trading.current = Some(current.into());
+            self
+        }
+
+        /// Caps the turnover `Σᵢ|wᵢ − w₀ᵢ|`, the total weight bought and sold, at `cap`.
+        /// Needs [current weights](Self::current_weights). A cap of 0 keeps the current
+        /// weights, if they're within the bounds.
+        pub fn max_turnover(mut self, cap: f64) -> Self {
+            self.trading.max_turnover = Some(cap);
+            self
+        }
+    };
+}
+
 mod allocation;
 mod black_litterman;
 mod cluster;
 mod eigen;
 mod qp;
+mod turnover;
 
 pub use allocation::{
     Allocation, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification,
@@ -151,6 +174,24 @@ pub enum CutupError {
     /// with no variance, which would make it certain. Give such a view an explicit
     /// [`View::variance`].
     DegenerateViews,
+    /// A turnover cap, turnover penalty or transaction costs were set without current weights
+    /// to measure them against.
+    MissingCurrentWeights,
+    /// No portfolio within the weight bounds can be reached from the current weights within
+    /// the turnover cap: moving the current weights into the bounds alone turns over more.
+    InfeasibleTurnover {
+        /// The least turnover that reaches the bounds.
+        minimum: f64,
+        /// The turnover cap.
+        cap: f64,
+    },
+    /// A setting isn't supported in combination with another yet.
+    NotSupported {
+        /// The setting.
+        setting: &'static str,
+        /// What it can't be combined with.
+        with: &'static str,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -231,6 +272,18 @@ impl fmt::Display for CutupError {
             ),
             CutupError::NonFiniteWeight { asset } => {
                 write!(f, "weight for asset {asset} is NaN or infinite")
+            }
+            CutupError::MissingCurrentWeights => write!(
+                f,
+                "turnover and transaction cost settings need current weights to measure from"
+            ),
+            CutupError::InfeasibleTurnover { minimum, cap } => write!(
+                f,
+                "turnover cap {cap} is below {minimum}, the least turnover that reaches the \
+                 weight bounds from the current weights"
+            ),
+            CutupError::NotSupported { setting, with } => {
+                write!(f, "`{setting}` isn't supported with {with} yet")
             }
             CutupError::DegenerateViews => write!(
                 f,

@@ -1,7 +1,8 @@
 //! Allocation methods as values, and the [`Allocation`] trait that runs them.
 
+use crate::turnover::{self, Costs, Trading};
 use crate::{
-    CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
+    check_objective, CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
     MeanVarianceConfig, MeanVarianceObjective, PortfolioAllocator, RiskParityConfig, WeightBounds,
     Weights,
 };
@@ -126,11 +127,31 @@ impl Allocation for InverseVariance {
 ///
 /// Those methods list the errors.
 ///
+/// # Rebalancing
+///
+/// From [current weights](MinVariance::current_weights) `w₀`, it can cap the turnover with
+/// [`MinVariance::max_turnover`], or penalize it with [`MinVariance::turnover_penalty`].
+/// Transaction costs are in units of return, so they only apply to [`MeanVariance`], whose
+/// objective is too. For min variance with costs, use mean-variance with zero expected returns:
+/// `MeanVariance::risk_aversion(γ).expected_returns(vec![0.0; n]).transaction_costs(c)`
+/// minimizes `(γ/2) wᵀΣw + Σcᵢ|wᵢ − w₀ᵢ|`, where `γ` is the rate at which you trade variance
+/// for cost.
+///
+/// Besides those methods' errors, these settings return:
+///
+/// * [`CutupError::MissingCurrentWeights`] if one is set without current weights.
+/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9` or
+///   aren't finite, or the cap or penalty is negative or not finite.
+/// * [`CutupError::DimensionMismatch`] if there isn't one current weight per asset.
+/// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
+///   current weights into the bounds.
+///
 /// ```
 /// use cutup::{MinVariance, WeightBounds};
 ///
 /// let capped = MinVariance::default().shrinkage(0.1).bounds(WeightBounds::uniform(0.0, 0.3));
 /// let long_short = MinVariance::default().allow_short();
+/// let rebalance = MinVariance::default().current_weights([0.5, 0.3, 0.2]).max_turnover(0.1);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -138,6 +159,7 @@ pub struct MinVariance {
     covariance: CovarianceConfig,
     /// `None` when short positions are allowed.
     bounds: Option<WeightBounds>,
+    trading: Trading,
 }
 
 impl Default for MinVariance {
@@ -145,12 +167,22 @@ impl Default for MinVariance {
         Self {
             covariance: CovarianceConfig::default(),
             bounds: Some(WeightBounds::default()),
+            trading: Trading::default(),
         }
     }
 }
 
 impl MinVariance {
     covariance_setters!();
+    turnover_setters!();
+
+    /// Adds `κ‖w − w₀‖²` to the variance minimized, pulling the weights toward the
+    /// [current weights](MinVariance::current_weights) `w₀`. `κ` is in the units of variance,
+    /// so a meaningful value is on the scale of the assets' variances.
+    pub fn turnover_penalty(mut self, kappa: f64) -> Self {
+        self.trading.penalty = Some(kappa);
+        self
+    }
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MinVariance::allow_short`].
@@ -169,6 +201,18 @@ impl MinVariance {
 
 impl Allocation for MinVariance {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+        if self.trading.is_active() {
+            let cov = data.adjusted_covariance(&self.covariance)?;
+            let n = cov.ncols();
+            return turnover::rebalance(
+                cov,
+                DVector::zeros(n),
+                self.bounds.as_ref(),
+                &self.trading,
+                1.0,
+            );
+        }
+        self.trading.check(data.cov_matrix.ncols())?;
         match &self.bounds {
             Some(bounds) => {
                 data.long_only_min_variance_allocation_with_bounds(&self.covariance, bounds)
@@ -191,12 +235,38 @@ impl Allocation for MinVariance {
 ///
 /// Those methods list the errors.
 ///
+/// # Rebalancing
+///
+/// From [current weights](MeanVariance::current_weights) `w₀`, with a risk aversion it
+/// maximizes `μᵀw − (γ/2) wᵀΣw − κ‖w − w₀‖² − Σcᵢ|wᵢ − w₀ᵢ|`: the expected return net of
+/// [transaction costs](MeanVariance::transaction_costs) `c` and a
+/// [turnover penalty](MeanVariance::turnover_penalty) `κ`, optionally with the turnover
+/// capped by [`MeanVariance::max_turnover`]. Costs and the penalty are in the units of the
+/// returns. These settings don't work with a target return yet, and return
+/// [`CutupError::NotSupported`] with one.
+///
+/// Besides those methods' errors, these settings return:
+///
+/// * [`CutupError::MissingCurrentWeights`] if one is set without current weights.
+/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9` or
+///   aren't finite, or the cap, penalty or a cost is negative or not finite.
+/// * [`CutupError::DimensionMismatch`] if there isn't one current weight, or per-asset cost,
+///   per asset.
+/// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
+///   current weights into the bounds.
+///
 /// ```
 /// use cutup::MeanVariance;
 ///
 /// let method = MeanVariance::target_return(0.005)
 ///     .expected_returns([0.004, 0.006, 0.002])
 ///     .shrinkage(0.1);
+///
+/// // Rebalance net of 10 basis points a trade, turning over at most 20%.
+/// let rebalance = MeanVariance::risk_aversion(100.0)
+///     .current_weights([0.4, 0.3, 0.3])
+///     .transaction_costs(0.001)
+///     .max_turnover(0.2);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -206,6 +276,7 @@ pub struct MeanVariance {
     covariance: CovarianceConfig,
     /// `None` when short positions are allowed.
     bounds: Option<WeightBounds>,
+    trading: Trading,
 }
 
 impl MeanVariance {
@@ -226,6 +297,7 @@ impl MeanVariance {
             expected_returns: None,
             covariance: CovarianceConfig::default(),
             bounds: Some(WeightBounds::default()),
+            trading: Trading::default(),
         }
     }
 
@@ -237,6 +309,29 @@ impl MeanVariance {
     }
 
     covariance_setters!();
+    turnover_setters!();
+
+    /// Subtracts `κ‖w − w₀‖²` from the objective, pulling the weights toward the
+    /// [current weights](MeanVariance::current_weights) `w₀`. `κ` is in the units of the
+    /// returns.
+    pub fn turnover_penalty(mut self, kappa: f64) -> Self {
+        self.trading.penalty = Some(kappa);
+        self
+    }
+
+    /// Charges `cost` per unit of weight traded, `Σ cost·|wᵢ − w₀ᵢ|`, against the expected
+    /// return: 0.001 is 10 basis points. Needs [current weights](MeanVariance::current_weights).
+    pub fn transaction_costs(mut self, cost: f64) -> Self {
+        self.trading.costs = Some(Costs::Uniform(cost));
+        self
+    }
+
+    /// Charges `costs[i]` per unit of asset `i`'s weight traded, one per asset in column order.
+    /// See [`MeanVariance::transaction_costs`].
+    pub fn transaction_costs_per_asset(mut self, costs: impl Into<Vec<f64>>) -> Self {
+        self.trading.costs = Some(Costs::PerAsset(costs.into()));
+        self
+    }
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MeanVariance::allow_short`].
@@ -260,6 +355,19 @@ impl Allocation for MeanVariance {
             expected_returns: self.expected_returns.clone().map(DVector::from_vec),
             covariance: self.covariance.clone(),
         };
+        if let Some(setting) = self.trading.first_setting() {
+            check_objective(config.objective)?;
+            let MeanVarianceObjective::RiskAversion(gamma) = config.objective else {
+                return Err(CutupError::NotSupported {
+                    setting,
+                    with: "a target return",
+                });
+            };
+            let mu = data.expected_returns(config.expected_returns.as_ref())?;
+            let cov = data.adjusted_covariance(&config.covariance)?;
+            return turnover::rebalance(cov * gamma, mu, self.bounds.as_ref(), &self.trading, 2.0);
+        }
+        self.trading.check(data.cov_matrix.ncols())?;
         match &self.bounds {
             Some(bounds) => data.long_only_mean_variance_allocation_with_bounds(&config, bounds),
             None => data.mean_variance_allocation(&config),
