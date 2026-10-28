@@ -1018,6 +1018,7 @@ proptest! {
     fn method_values_match_the_methods_they_wrap(
         returns in returns(),
         shrinkage in prop::option::of(0.0f64..1.0),
+        regularization in prop::option::of(1e-8f64..1e-4),
         fractions in bounds(),
         gamma in 1.0f64..500.0,
         target in -0.01f64..0.01,
@@ -1025,14 +1026,32 @@ proptest! {
         budgets in prop::collection::vec(0.1f64..10.0, 6),
         linkage in 0usize..4,
         clusters in prop::option::of(1usize..=6),
+        max_clusters in 1usize..=10,
     ) {
         // No `well_posed` filter: errors must match too.
         let n = returns.ncols();
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let covariance = match shrinkage {
-            Some(lambda) => CovarianceConfig::default().with_shrinkage(lambda),
-            None => CovarianceConfig::default(),
-        };
+        let mut covariance = CovarianceConfig::default();
+        if let Some(lambda) = shrinkage {
+            covariance = covariance.with_shrinkage(lambda);
+        }
+        if let Some(epsilon) = regularization {
+            covariance = covariance.with_regularization(epsilon);
+        }
+        // The same adjustments through each value's own setters. Min variance uses
+        // `.covariance(..)` instead, so both routes are checked.
+        macro_rules! adjusted {
+            ($method:expr) => {{
+                let mut method = $method;
+                if let Some(lambda) = shrinkage {
+                    method = method.shrinkage(lambda);
+                }
+                if let Some(epsilon) = regularization {
+                    method = method.regularization(epsilon);
+                }
+                method
+            }};
+        }
         let (lower, upper) = weight_bounds(&fractions, n);
         let bounds = WeightBounds::per_asset(lower, upper);
         let mu: Vec<f64> = (0..n).map(|i| target * (i as f64 - 1.0)).collect();
@@ -1063,7 +1082,7 @@ proptest! {
             allocator.min_variance_allocation_with_config(&covariance)
         );
 
-        let risk_aversion = MeanVariance::default().risk_aversion(gamma).covariance(covariance.clone());
+        let risk_aversion = adjusted!(MeanVariance::risk_aversion(gamma));
         let config = MeanVarianceConfig::risk_aversion(gamma).with_covariance(covariance.clone());
         prop_assert_eq!(
             allocator.allocate(&risk_aversion),
@@ -1077,10 +1096,7 @@ proptest! {
             allocator.allocate(&risk_aversion.allow_short()),
             allocator.mean_variance_allocation(&config)
         );
-        let target_return = MeanVariance::default()
-            .target_return(target)
-            .expected_returns(mu.clone())
-            .covariance(covariance.clone());
+        let target_return = adjusted!(MeanVariance::target_return(target).expected_returns(mu.clone()));
         let config = MeanVarianceConfig::target_return(target)
             .with_expected_returns(DVector::from_vec(mu.clone()))
             .with_covariance(covariance.clone());
@@ -1092,15 +1108,10 @@ proptest! {
             allocator.allocate(&target_return.allow_short()),
             allocator.mean_variance_allocation(&config)
         );
-        prop_assert_eq!(
-            allocator.allocate(&MeanVariance::default()),
-            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(1.0))
-        );
 
-        let max_sharpe = MaxSharpe::default()
+        let max_sharpe = adjusted!(MaxSharpe::default()
             .risk_free_rate(risk_free_rate)
-            .expected_returns(mu.clone())
-            .covariance(covariance.clone());
+            .expected_returns(mu.clone()));
         let config = MaxSharpeConfig::default()
             .with_risk_free_rate(risk_free_rate)
             .with_expected_returns(DVector::from_vec(mu))
@@ -1115,12 +1126,12 @@ proptest! {
         );
 
         prop_assert_eq!(
-            allocator.allocate(&MaxDiversification::default().covariance(covariance.clone())),
+            allocator.allocate(&adjusted!(MaxDiversification::default())),
             allocator.max_diversification_allocation_with_config(&covariance)
         );
         prop_assert_eq!(
             allocator.allocate(
-                &RiskParity::default().risk_budgets(budgets.clone()).covariance(covariance.clone())
+                &adjusted!(RiskParity::default().risk_budgets(budgets.clone()))
             ),
             allocator.risk_parity_allocation_with_config(
                 &RiskParityConfig::default()
@@ -1133,8 +1144,10 @@ proptest! {
             allocator.allocate(&Hrp::default().linkage(linkage)),
             allocator.hrp_allocation_with_config(&HrpConfig::default().with_linkage(linkage))
         );
-        let mut herc = Herc::default().linkage(linkage);
-        let mut config = HercConfig::default().with_linkage(linkage);
+        let mut herc = Herc::default().linkage(linkage).max_clusters(max_clusters);
+        let mut config = HercConfig::default()
+            .with_linkage(linkage)
+            .with_max_clusters(max_clusters);
         if let Some(k) = clusters {
             herc = herc.clusters(k);
             config = config.with_clusters(k);

@@ -1,6 +1,6 @@
 use cutup::{
     run_portfolio_allocation, Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp,
-    MaxSharpe, MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, Weights,
+    InverseVolatility, MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, Weights,
 };
 use nalgebra::dmatrix;
 
@@ -38,23 +38,31 @@ fn test_portfolio_allocations() {
     assert!((external.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 }
 
-/// A method defined outside the crate: all weight on the asset with the highest mean return.
-struct BestMean;
+/// A method defined outside the crate: all weight on the lowest-volatility asset.
+struct LowestVolatility;
 
-impl Allocation for BestMean {
+impl Allocation for LowestVolatility {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        let tangency = data.allocate(&MaxSharpe::default().allow_short())?;
-        let best = (0..tangency.len())
-            .max_by(|&a, &b| tangency[a].total_cmp(&tangency[b]))
+        let inverse = data.allocate(&InverseVolatility::default())?;
+        let lowest = (0..inverse.len())
+            .max_by(|&a, &b| inverse[a].total_cmp(&inverse[b]))
             .unwrap();
-        let mut weights = vec![0.0; tangency.len()];
-        weights[best] = 1.0;
+        let mut weights = vec![0.0; inverse.len()];
+        weights[lowest] = 1.0;
         Ok(Weights::from(weights))
     }
 }
 
-#[test]
-fn methods_mix_in_one_collection() {
+/// A method that returns whatever weights it was given.
+struct Fixed(Vec<f64>);
+
+impl Allocation for Fixed {
+    fn allocate(&self, _: &PortfolioAllocator) -> Result<Weights, CutupError> {
+        Ok(Weights::from(self.0.clone()))
+    }
+}
+
+fn allocator() -> PortfolioAllocator {
     let returns = dmatrix![
          0.010, -0.020,  0.005;
         -0.004,  0.015,  0.002;
@@ -62,16 +70,43 @@ fn methods_mix_in_one_collection() {
          0.002, -0.001,  0.004;
         -0.003,  0.006,  0.001
     ];
-    let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+    PortfolioAllocator::from_returns(returns).unwrap()
+}
+
+#[test]
+fn methods_mix_in_one_collection() {
+    let allocator = allocator();
     let methods: Vec<Box<dyn Allocation>> = vec![
         Box::new(EqualWeight),
         Box::new(MinVariance::default().shrinkage(0.1)),
-        Box::new(MeanVariance::default().risk_aversion(10.0)),
+        Box::new(MeanVariance::risk_aversion(10.0)),
         Box::new(Hrp::default()),
-        Box::new(BestMean),
+        Box::new(LowestVolatility),
     ];
     for method in &methods {
-        let weights = allocator.allocate(method.as_ref()).unwrap();
+        let weights = allocator.allocate(method).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
+    // Asset 2 has the lowest volatility.
+    assert_eq!(
+        allocator.allocate(&LowestVolatility).unwrap().as_slice(),
+        [0.0, 0.0, 1.0]
+    );
+}
+
+#[test]
+fn allocate_rejects_malformed_weights() {
+    let allocator = allocator();
+    assert_eq!(
+        allocator.allocate(&Fixed(vec![0.5, 0.5])),
+        Err(CutupError::DimensionMismatch {
+            expected: 3,
+            actual: 2
+        })
+    );
+    assert_eq!(
+        allocator.allocate(&Fixed(vec![0.5, f64::NAN, 0.5])),
+        Err(CutupError::NonFiniteWeight { asset: 1 })
+    );
+    assert!(allocator.allocate(&Fixed(vec![0.2, 0.3, 0.5])).is_ok());
 }
