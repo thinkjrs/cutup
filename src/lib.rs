@@ -114,6 +114,11 @@ pub enum CutupError {
         /// The sum of the upper bounds.
         upper_sum: f64,
     },
+    /// An [`Allocation`] returned a weight that is NaN or infinite.
+    NonFiniteWeight {
+        /// The asset's column index.
+        asset: usize,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -192,6 +197,9 @@ impl fmt::Display for CutupError {
                 "weight bounds can't sum to 1: lower bounds sum to {lower_sum} and upper \
                  bounds to {upper_sum}"
             ),
+            CutupError::NonFiniteWeight { asset } => {
+                write!(f, "weight for asset {asset} is NaN or infinite")
+            }
         }
     }
 }
@@ -283,8 +291,9 @@ impl From<Weights> for Vec<f64> {
     }
 }
 
-/// Weights in column order, for an [`Allocation`] of your own. They're taken as given, so
-/// make them sum to 1, as every method in this crate does.
+/// Weights in column order, for an [`Allocation`] of your own. [`PortfolioAllocator::allocate`]
+/// checks there's one finite weight per asset, but not the sum, so make them sum to 1, as every
+/// method in this crate does.
 impl From<Vec<f64>> for Weights {
     fn from(weights: Vec<f64>) -> Self {
         Weights(weights)
@@ -791,7 +800,9 @@ impl PortfolioAllocator {
     ///
     /// # Errors
     ///
-    /// Whatever `method` returns. Each method's type lists its errors.
+    /// * Whatever `method` returns. Each method's type lists its errors.
+    /// * [`CutupError::DimensionMismatch`] if `method` doesn't return one weight per asset.
+    /// * [`CutupError::NonFiniteWeight`] if `method` returns a weight that is NaN or infinite.
     ///
     /// # Example
     ///
@@ -815,7 +826,18 @@ impl PortfolioAllocator {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn allocate<A: Allocation + ?Sized>(&self, method: &A) -> Result<Weights, CutupError> {
-        method.allocate(self)
+        let weights = method.allocate(self)?;
+        let n = self.returns.ncols();
+        if weights.len() != n {
+            return Err(CutupError::DimensionMismatch {
+                expected: n,
+                actual: weights.len(),
+            });
+        }
+        if let Some(asset) = weights.iter().position(|w| !w.is_finite()) {
+            return Err(CutupError::NonFiniteWeight { asset });
+        }
+        Ok(weights)
     }
 
     /// Builds an allocator from returns that have already been validated, rejecting a

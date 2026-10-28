@@ -7,6 +7,31 @@ use crate::{
 };
 use nalgebra::DVector;
 
+/// The `covariance`, `shrinkage` and `regularization` setters, for a method with a
+/// `covariance: CovarianceConfig` field.
+macro_rules! covariance_setters {
+    () => {
+        /// Applies `covariance` adjustments to the covariance matrix.
+        pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
+            self.covariance = covariance;
+            self
+        }
+
+        /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
+        /// [`CovarianceConfig::shrinkage`].
+        pub fn shrinkage(mut self, lambda: f64) -> Self {
+            self.covariance = self.covariance.with_shrinkage(lambda);
+            self
+        }
+
+        /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
+        pub fn regularization(mut self, epsilon: f64) -> Self {
+            self.covariance = self.covariance.with_regularization(epsilon);
+            self
+        }
+    };
+}
+
 /// An allocation method: anything that turns a [`PortfolioAllocator`]'s returns into
 /// [`Weights`].
 ///
@@ -51,12 +76,13 @@ use nalgebra::DVector;
 ///     Box::new(RiskParity::default()),
 /// ];
 /// for method in &methods {
-///     assert_eq!(allocator.allocate(method.as_ref())?.len(), 2);
+///     assert_eq!(allocator.allocate(method)?.len(), 2);
 /// }
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 ///
-/// Implement it to add a method of your own. Every method returns weights that sum to 1.
+/// Implement it to add a method of your own, returning one weight per asset that sum to 1, as
+/// every method in this crate does. Build the [`Weights`] from a `Vec<f64>`.
 pub trait Allocation {
     /// Computes the weights for the returns in `data`.
     ///
@@ -64,6 +90,18 @@ pub trait Allocation {
     ///
     /// Whatever the method can't compute weights for. See each method's type.
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError>;
+}
+
+impl<A: Allocation + ?Sized> Allocation for &A {
+    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+        (**self).allocate(data)
+    }
+}
+
+impl<A: Allocation + ?Sized> Allocation for Box<A> {
+    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+        (**self).allocate(data)
+    }
 }
 
 /// Equal weights, `1/n` each. Never fails.
@@ -137,24 +175,7 @@ impl Default for MinVariance {
 }
 
 impl MinVariance {
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-
-    /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-    /// [`CovarianceConfig::shrinkage`].
-    pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.covariance.shrinkage = Some(lambda);
-        self
-    }
-
-    /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-    pub fn regularization(mut self, epsilon: f64) -> Self {
-        self.covariance.regularization = Some(epsilon);
-        self
-    }
+    covariance_setters!();
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MinVariance::allow_short`].
@@ -184,10 +205,9 @@ impl Allocation for MinVariance {
 
 /// Mean-variance optimization. Long-only by default.
 ///
-/// The default maximizes `μᵀw − (γ/2) wᵀΣw` with a risk aversion `γ = 1`, as
-/// PyPortfolioOpt's `max_quadratic_utility` does. Set another with
-/// [`MeanVariance::risk_aversion`], or minimize variance for a return with
-/// [`MeanVariance::target_return`].
+/// Start from an objective, [`MeanVariance::risk_aversion`] or [`MeanVariance::target_return`].
+/// Unlike the other methods it has no default: a sensible risk aversion depends on the period
+/// of the returns, and for per-period returns, whose variances are small, it's large.
 ///
 /// * Long-only, optionally within [`MeanVariance::bounds`]: same as
 ///   [`PortfolioAllocator::long_only_mean_variance_allocation_with_bounds`].
@@ -199,8 +219,7 @@ impl Allocation for MinVariance {
 /// ```
 /// use cutup::MeanVariance;
 ///
-/// let method = MeanVariance::default()
-///     .target_return(0.005)
+/// let method = MeanVariance::target_return(0.005)
 ///     .expected_returns([0.004, 0.006, 0.002])
 ///     .shrinkage(0.1);
 /// ```
@@ -214,30 +233,25 @@ pub struct MeanVariance {
     bounds: Option<WeightBounds>,
 }
 
-impl Default for MeanVariance {
-    fn default() -> Self {
+impl MeanVariance {
+    /// Maximizes `μᵀw − (γ/2) wᵀΣw` with risk aversion `gamma`. Larger values favor lower
+    /// variance.
+    pub fn risk_aversion(gamma: f64) -> Self {
+        Self::new(MeanVarianceObjective::RiskAversion(gamma))
+    }
+
+    /// Minimizes variance subject to an expected portfolio return of `target`.
+    pub fn target_return(target: f64) -> Self {
+        Self::new(MeanVarianceObjective::TargetReturn(target))
+    }
+
+    fn new(objective: MeanVarianceObjective) -> Self {
         Self {
-            objective: MeanVarianceObjective::RiskAversion(1.0),
+            objective,
             expected_returns: None,
             covariance: CovarianceConfig::default(),
             bounds: Some(WeightBounds::default()),
         }
-    }
-}
-
-impl MeanVariance {
-    /// Maximizes `μᵀw − (γ/2) wᵀΣw` with risk aversion `gamma`. Replaces
-    /// [`MeanVariance::target_return`].
-    pub fn risk_aversion(mut self, gamma: f64) -> Self {
-        self.objective = MeanVarianceObjective::RiskAversion(gamma);
-        self
-    }
-
-    /// Minimizes variance subject to an expected portfolio return of `target`. Replaces
-    /// [`MeanVariance::risk_aversion`].
-    pub fn target_return(mut self, target: f64) -> Self {
-        self.objective = MeanVarianceObjective::TargetReturn(target);
-        self
     }
 
     /// Uses `expected_returns`, one per asset in column order, instead of the sample mean of
@@ -247,24 +261,7 @@ impl MeanVariance {
         self
     }
 
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-
-    /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-    /// [`CovarianceConfig::shrinkage`].
-    pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.covariance.shrinkage = Some(lambda);
-        self
-    }
-
-    /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-    pub fn regularization(mut self, epsilon: f64) -> Self {
-        self.covariance.regularization = Some(epsilon);
-        self
-    }
+    covariance_setters!();
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MeanVariance::allow_short`].
@@ -342,24 +339,7 @@ impl MaxSharpe {
         self
     }
 
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-
-    /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-    /// [`CovarianceConfig::shrinkage`].
-    pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.covariance.shrinkage = Some(lambda);
-        self
-    }
-
-    /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-    pub fn regularization(mut self, epsilon: f64) -> Self {
-        self.covariance.regularization = Some(epsilon);
-        self
-    }
+    covariance_setters!();
 
     /// Allows short positions.
     pub fn allow_short(mut self) -> Self {
@@ -394,24 +374,7 @@ pub struct MaxDiversification {
 }
 
 impl MaxDiversification {
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-
-    /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-    /// [`CovarianceConfig::shrinkage`].
-    pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.covariance.shrinkage = Some(lambda);
-        self
-    }
-
-    /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-    pub fn regularization(mut self, epsilon: f64) -> Self {
-        self.covariance.regularization = Some(epsilon);
-        self
-    }
+    covariance_setters!();
 }
 
 impl Allocation for MaxDiversification {
@@ -446,24 +409,7 @@ impl RiskParity {
         self
     }
 
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-
-    /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
-    /// [`CovarianceConfig::shrinkage`].
-    pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.covariance.shrinkage = Some(lambda);
-        self
-    }
-
-    /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
-    pub fn regularization(mut self, epsilon: f64) -> Self {
-        self.covariance.regularization = Some(epsilon);
-        self
-    }
+    covariance_setters!();
 }
 
 impl Allocation for RiskParity {
