@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-28
+
 ### Added
 
 - The `Allocation` trait and `PortfolioAllocator::allocate`, one entry point for every
@@ -340,7 +342,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.6...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.7...HEAD
+[0.2.7]: https://github.com/thinkjrs/cutup/compare/0.2.6...0.2.7
 [0.2.6]: https://github.com/thinkjrs/cutup/compare/0.2.5...0.2.6
 [0.2.5]: https://github.com/thinkjrs/cutup/compare/0.2.4...0.2.5
 [0.2.4]: https://github.com/thinkjrs/cutup/compare/0.2.3...0.2.4
