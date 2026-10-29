@@ -7,8 +7,8 @@
 
 use nalgebra::DMatrix;
 
-/// How the distance between two clusters is measured when HRP builds its hierarchy. See
-/// [`HrpConfig`](crate::HrpConfig).
+/// How the distance between two clusters is measured when HRP or HERC builds its hierarchy.
+/// See [`Hrp::linkage`](crate::Hrp::linkage) and [`Herc::linkage`](crate::Herc::linkage).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Linkage {

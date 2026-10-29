@@ -52,6 +52,7 @@ mod allocation;
 mod black_litterman;
 mod cluster;
 mod cvar;
+mod deprecated;
 mod eigen;
 mod lp;
 mod qp;
@@ -64,6 +65,11 @@ pub use allocation::{
 pub use black_litterman::{BlackLitterman, View};
 pub use cluster::Linkage;
 pub use cvar::MinCvar;
+#[allow(deprecated)]
+pub use deprecated::{
+    run_portfolio_allocation, HercConfig, HrpConfig, MaxSharpeConfig, MeanVarianceConfig,
+    MeanVarianceObjective, RiskParityConfig,
+};
 
 use eigen::SymmetricEigen;
 
@@ -304,7 +310,7 @@ impl std::error::Error for CutupError {}
 /// # Example
 ///
 /// ```
-/// use cutup::PortfolioAllocator;
+/// use cutup::{EqualWeight, PortfolioAllocator};
 /// use nalgebra::dmatrix;
 ///
 /// let prices = dmatrix![
@@ -313,7 +319,7 @@ impl std::error::Error for CutupError {}
 ///     121.0, 209.0
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_prices(prices)?.ew_allocation();
+/// let weights = PortfolioAllocator::from_prices(prices)?.allocate(&EqualWeight)?;
 ///
 /// assert_eq!(weights.len(), 2);
 /// assert_eq!(weights[0], 0.5);
@@ -393,9 +399,9 @@ impl From<Vec<f64>> for Weights {
     }
 }
 
-/// Adjustments applied to the sample covariance matrix before it is used by
-/// [`PortfolioAllocator::min_variance_allocation_with_config`] and
-/// [`PortfolioAllocator::mean_variance_allocation`].
+/// Adjustments applied to the sample covariance matrix before a method uses it, set with its
+/// `covariance` setter, such as [`MinVariance::covariance`]. Each method also has `shrinkage`
+/// and `regularization` setters for each adjustment on its own.
 ///
 /// The default applies no adjustment. Build one with the `with_*` methods:
 ///
@@ -444,79 +450,17 @@ impl CovarianceConfig {
     }
 }
 
-/// What a mean-variance optimization trades off. See
-/// [`PortfolioAllocator::mean_variance_allocation`] and
-/// [`PortfolioAllocator::long_only_mean_variance_allocation`].
+/// What a mean-variance optimization trades off, for [`MeanVariance`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-pub enum MeanVarianceObjective {
-    /// Maximize `μᵀw − (γ/2) wᵀΣw` for a risk aversion `γ > 0`. Larger values favor lower
-    /// variance; as `γ → ∞` the result approaches the minimum variance portfolio.
+enum Objective {
+    /// Maximize `μᵀw − (γ/2) wᵀΣw` for a risk aversion `γ > 0`.
     RiskAversion(f64),
     /// Minimize `wᵀΣw` subject to an expected portfolio return `μᵀw` equal to this value.
     TargetReturn(f64),
 }
 
-/// Configuration for [`PortfolioAllocator::mean_variance_allocation`] and
-/// [`PortfolioAllocator::long_only_mean_variance_allocation`].
-///
-/// Start from [`MeanVarianceConfig::risk_aversion`] or [`MeanVarianceConfig::target_return`]:
-///
-/// ```
-/// use cutup::{CovarianceConfig, MeanVarianceConfig};
-/// use nalgebra::dvector;
-///
-/// let config = MeanVarianceConfig::target_return(0.01)
-///     .with_expected_returns(dvector![0.008, 0.012, 0.010])
-///     .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct MeanVarianceConfig {
-    /// The objective to optimize.
-    pub objective: MeanVarianceObjective,
-    /// Expected return per asset, in the same units and period as the returns. When `None`, the
-    /// sample mean of the returns is used.
-    pub expected_returns: Option<DVector<f64>>,
-    /// Adjustments applied to the covariance matrix.
-    pub covariance: CovarianceConfig,
-}
-
-impl MeanVarianceConfig {
-    /// Maximizes `μᵀw − (γ/2) wᵀΣw` with risk aversion `gamma`.
-    pub fn risk_aversion(gamma: f64) -> Self {
-        Self::new(MeanVarianceObjective::RiskAversion(gamma))
-    }
-
-    /// Minimizes variance subject to an expected portfolio return of `target`.
-    pub fn target_return(target: f64) -> Self {
-        Self::new(MeanVarianceObjective::TargetReturn(target))
-    }
-
-    fn new(objective: MeanVarianceObjective) -> Self {
-        Self {
-            objective,
-            expected_returns: None,
-            covariance: CovarianceConfig::default(),
-        }
-    }
-
-    /// Uses `expected_returns` instead of the sample mean of the returns.
-    pub fn with_expected_returns(mut self, expected_returns: DVector<f64>) -> Self {
-        self.expected_returns = Some(expected_returns);
-        self
-    }
-
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-}
-
-/// Lower and upper limits on each asset's weight, for
-/// [`PortfolioAllocator::long_only_min_variance_allocation_with_bounds`] and
-/// [`PortfolioAllocator::long_only_mean_variance_allocation_with_bounds`].
+/// Lower and upper limits on each asset's weight, for [`MinVariance::bounds`],
+/// [`MeanVariance::bounds`] and [`MinCvar::bounds`].
 ///
 /// Lower bounds must be finite and nonnegative, and each upper bound at least its lower bound.
 /// An upper bound of `f64::INFINITY` means no cap. The default, `0 ≤ w` with no cap, is the
@@ -631,171 +575,6 @@ impl WeightBounds {
             upper[i].min(1.0 - (lower_sum - lower[i])).max(lower[i])
         });
         Ok(qp::Bounds { lower, upper })
-    }
-}
-
-/// Configuration for [`PortfolioAllocator::max_sharpe_allocation`] and
-/// [`PortfolioAllocator::long_only_max_sharpe_allocation`].
-///
-/// The default uses a risk-free rate of 0, the sample mean of the returns as expected
-/// returns, and the unadjusted sample covariance:
-///
-/// ```
-/// use cutup::{CovarianceConfig, MaxSharpeConfig};
-///
-/// // 4% a year, for daily returns.
-/// let config = MaxSharpeConfig::default()
-///     .with_risk_free_rate(0.04 / 252.0)
-///     .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-/// ```
-#[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
-pub struct MaxSharpeConfig {
-    /// The risk-free rate per period, in the same units as the returns (a daily rate for
-    /// daily returns).
-    pub risk_free_rate: f64,
-    /// Expected return per asset, in the same units and period as the returns. When `None`, the
-    /// sample mean of the returns is used.
-    pub expected_returns: Option<DVector<f64>>,
-    /// Adjustments applied to the covariance matrix.
-    pub covariance: CovarianceConfig,
-}
-
-impl MaxSharpeConfig {
-    /// Sets the risk-free rate per period.
-    pub fn with_risk_free_rate(mut self, risk_free_rate: f64) -> Self {
-        self.risk_free_rate = risk_free_rate;
-        self
-    }
-
-    /// Uses `expected_returns` instead of the sample mean of the returns.
-    pub fn with_expected_returns(mut self, expected_returns: DVector<f64>) -> Self {
-        self.expected_returns = Some(expected_returns);
-        self
-    }
-
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-}
-
-/// Configuration for [`PortfolioAllocator::hrp_allocation_with_config`] and
-/// [`PortfolioAllocator::hrp_cluster_order`].
-///
-/// ```
-/// use cutup::{HrpConfig, Linkage};
-///
-/// let config = HrpConfig::default().with_linkage(Linkage::Average);
-/// assert_eq!(config.linkage, Linkage::Average);
-/// ```
-#[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
-pub struct HrpConfig {
-    /// How the distance between clusters is measured. Defaults to [`Linkage::Single`].
-    pub linkage: Linkage,
-}
-
-impl HrpConfig {
-    /// Sets the linkage used to build the clustering hierarchy.
-    pub fn with_linkage(mut self, linkage: Linkage) -> Self {
-        self.linkage = linkage;
-        self
-    }
-}
-
-/// Configuration for [`PortfolioAllocator::risk_parity_allocation_with_config`].
-///
-/// The default gives every asset the same risk budget and uses the unadjusted sample
-/// covariance:
-///
-/// ```
-/// use cutup::{CovarianceConfig, RiskParityConfig};
-/// use nalgebra::dvector;
-///
-/// // Asset 0 carries half the risk, assets 1 and 2 a quarter each.
-/// let config = RiskParityConfig::default()
-///     .with_risk_budgets(dvector![2.0, 1.0, 1.0])
-///     .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-/// ```
-#[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
-pub struct RiskParityConfig {
-    /// Each asset's share of the portfolio's risk. Must be positive and finite, one per asset;
-    /// only the ratios matter, so they needn't sum to 1. When `None`, every asset gets the same
-    /// share.
-    pub risk_budgets: Option<DVector<f64>>,
-    /// Adjustments applied to the covariance matrix.
-    pub covariance: CovarianceConfig,
-}
-
-impl RiskParityConfig {
-    /// Sets each asset's risk budget.
-    pub fn with_risk_budgets(mut self, risk_budgets: DVector<f64>) -> Self {
-        self.risk_budgets = Some(risk_budgets);
-        self
-    }
-
-    /// Applies `covariance` adjustments to the covariance matrix.
-    pub fn with_covariance(mut self, covariance: CovarianceConfig) -> Self {
-        self.covariance = covariance;
-        self
-    }
-}
-
-/// Configuration for [`PortfolioAllocator::herc_allocation_with_config`].
-///
-/// The defaults match riskfolio-lib's `HCPortfolio.optimization(model="HERC")`: single
-/// linkage, and the number of clusters chosen by the two-difference gap statistic from at
-/// most 10.
-///
-/// ```
-/// use cutup::{HercConfig, Linkage};
-///
-/// let config = HercConfig::default().with_linkage(Linkage::Ward).with_clusters(3);
-/// assert_eq!(config.clusters, Some(3));
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct HercConfig {
-    /// How the distance between clusters is measured. Defaults to [`Linkage::Single`].
-    pub linkage: Linkage,
-    /// How many clusters to cut the hierarchy into, from 1 to the number of assets. When
-    /// `None`, the two-difference gap statistic chooses.
-    pub clusters: Option<usize>,
-    /// The most clusters the gap statistic may choose, at least 1. Defaults to 10. It also
-    /// never chooses more than `√n` for `n` assets.
-    pub max_clusters: usize,
-}
-
-impl Default for HercConfig {
-    fn default() -> Self {
-        Self {
-            linkage: Linkage::default(),
-            clusters: None,
-            max_clusters: 10,
-        }
-    }
-}
-
-impl HercConfig {
-    /// Sets the linkage used to build the clustering hierarchy.
-    pub fn with_linkage(mut self, linkage: Linkage) -> Self {
-        self.linkage = linkage;
-        self
-    }
-
-    /// Cuts the hierarchy into `clusters` clusters instead of choosing the number.
-    pub fn with_clusters(mut self, clusters: usize) -> Self {
-        self.clusters = Some(clusters);
-        self
-    }
-
-    /// Sets the most clusters the gap statistic may choose.
-    pub fn with_max_clusters(mut self, max_clusters: usize) -> Self {
-        self.max_clusters = max_clusters;
-        self
     }
 }
 
@@ -1074,101 +853,9 @@ impl PortfolioAllocator {
         Ok(adjusted)
     }
 
-    /// Computes the global minimum variance (GMV) portfolio: minimize `wᵀΣw` subject to
-    /// `1ᵀw = 1`. When Σ is invertible this is `w = Σ⁻¹1 / 1ᵀΣ⁻¹1`.
-    ///
-    /// This uses only the covariance matrix, not expected returns, and has no long-only
-    /// constraint. For one without short positions, use
-    /// [`PortfolioAllocator::long_only_min_variance_allocation`]. For a portfolio that also
-    /// accounts for expected returns, use [`PortfolioAllocator::mean_variance_allocation`].
-    ///
-    /// When Σ is singular (no more rows of returns than assets, or perfectly collinear assets),
-    /// many portfolios share the minimum variance and the one with the smallest norm in
-    /// correlation units, `diag(σ)w`, is returned, so the choice doesn't depend on each asset's
-    /// units. That minimum is often zero, an artifact of fitting too little data. Add
-    /// shrinkage with [`PortfolioAllocator::min_variance_allocation_with_config`] for a unique,
-    /// better-conditioned answer.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1. Weights can be negative (short positions).
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// let prices = dmatrix![
-    ///     100.0, 200.0, 300.0;
-    ///     110.0, 210.0, 310.0;
-    ///     120.0, 220.0, 320.0
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_prices(prices)?;
-    /// let weights = allocator.min_variance_allocation()?;
-    ///
-    /// let total: f64 = weights.iter().sum();
-    /// assert!((total - 1.0).abs() < 1e-6);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn min_variance_allocation(&self) -> Result<Weights, CutupError> {
-        self.min_variance_allocation_with_config(&CovarianceConfig::default())
-    }
-
-    /// Computes the global minimum variance portfolio after applying shrinkage and/or
-    /// regularization to the covariance matrix. See
-    /// [`PortfolioAllocator::min_variance_allocation`].
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Adjustments applied to the covariance matrix.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1. Weights can be negative (short positions).
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
-    ///   `shrinkage` is outside `[0, 1]`.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{CovarianceConfig, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// let prices = dmatrix![
-    ///     100.0, 200.0, 300.0;
-    ///     110.0, 210.0, 310.0;
-    ///     120.0, 220.0, 320.0
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_prices(prices)?;
-    ///
-    /// // Full shrinkage replaces Σ with its average variance times I, giving equal weights.
-    /// let config = CovarianceConfig::default().with_shrinkage(1.0);
-    /// let weights = allocator.min_variance_allocation_with_config(&config)?;
-    ///
-    /// for w in &weights {
-    ///     assert!((w - 1.0 / 3.0).abs() < 1e-9);
-    /// }
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn min_variance_allocation_with_config(
-        &self,
-        config: &CovarianceConfig,
-    ) -> Result<Weights, CutupError> {
-        let cov = self.adjusted_covariance(config)?;
+    /// The minimum variance portfolio with short positions allowed, for [`MinVariance`].
+    fn min_variance(&self, covariance: &CovarianceConfig) -> Result<Weights, CutupError> {
+        let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         let ones = DMatrix::from_element(n, 1, 1.0);
 
@@ -1185,179 +872,14 @@ impl PortfolioAllocator {
         Ok(Weights(weights.iter().copied().collect()))
     }
 
-    /// Computes the long-only minimum variance portfolio: minimize `wᵀΣw` subject to
-    /// `1ᵀw = 1` and `w ≥ 0`.
-    ///
-    /// Where [`PortfolioAllocator::min_variance_allocation`] would short an asset, this
-    /// leaves it out instead and reweights the rest. When the unconstrained portfolio has no
-    /// negative weights, the two agree. There is no closed form, so the weights come from an
-    /// active-set solver, which finds the exact optimum in a finite number of steps.
-    ///
-    /// When Σ is singular, several long-only portfolios can share the minimum variance, and
-    /// which one is returned depends on the solver's path. Add shrinkage with
-    /// [`PortfolioAllocator::long_only_min_variance_allocation_with_config`] for a unique
-    /// answer.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// // The second asset moves with the first but twice as far, so the unconstrained minimum
-    /// // variance portfolio shorts it as a hedge.
-    /// let returns = dmatrix![
-    ///      0.010,  0.021,  0.004;
-    ///     -0.008, -0.015, -0.002;
-    ///      0.004,  0.009,  0.006;
-    ///     -0.002, -0.006, -0.003;
-    ///      0.006,  0.011,  0.001
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// assert!(allocator.min_variance_allocation()?[1] < 0.0);
-    ///
-    /// let weights = allocator.long_only_min_variance_allocation()?;
-    /// assert_eq!(weights[1], 0.0);
-    /// assert!(weights.iter().all(|&w| w >= 0.0));
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_min_variance_allocation(&self) -> Result<Weights, CutupError> {
-        self.long_only_min_variance_allocation_with_config(&CovarianceConfig::default())
-    }
-
-    /// Computes the long-only minimum variance portfolio after applying shrinkage and/or
-    /// regularization to the covariance matrix. See
-    /// [`PortfolioAllocator::long_only_min_variance_allocation`].
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Adjustments applied to the covariance matrix.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
-    ///   `shrinkage` is outside `[0, 1]`.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{CovarianceConfig, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// let returns = dmatrix![
-    ///      0.010,  0.021,  0.004;
-    ///     -0.008, -0.015, -0.002;
-    ///      0.004,  0.009,  0.006;
-    ///     -0.002, -0.006, -0.003;
-    ///      0.006,  0.011,  0.001
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    ///
-    /// // Full shrinkage leaves no correlations to hedge, so every asset is held equally.
-    /// let config = CovarianceConfig::default().with_shrinkage(1.0);
-    /// let weights = allocator.long_only_min_variance_allocation_with_config(&config)?;
-    ///
-    /// for w in &weights {
-    ///     assert!((w - 1.0 / 3.0).abs() < 1e-12);
-    /// }
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_min_variance_allocation_with_config(
+    /// The minimum variance portfolio within `bounds`, for [`MinVariance`].
+    fn bounded_min_variance(
         &self,
-        config: &CovarianceConfig,
-    ) -> Result<Weights, CutupError> {
-        self.long_only_min_variance_allocation_with_bounds(config, &WeightBounds::default())
-    }
-
-    /// Computes the minimum variance portfolio with each asset's weight between its bounds,
-    /// `lᵢ ≤ wᵢ ≤ uᵢ`, and the budget constraint `1ᵀw = 1`. With the default bounds, `w ≥ 0`,
-    /// this is [`PortfolioAllocator::long_only_min_variance_allocation_with_config`].
-    ///
-    /// Solved exactly by the same active-set method, which holds each asset at its lower
-    /// bound, at its upper bound, or between them.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Adjustments applied to the covariance matrix.
-    /// * `bounds` - The lower and upper bound on each asset's weight.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, within the bounds and summing to 1, up to rounding.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if a lower bound is negative or not finite, an upper
-    ///   bound is below its lower bound or NaN, `regularization` is negative or not finite, or
-    ///   `shrinkage` is outside `[0, 1]`.
-    /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
-    /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
-    ///   bounds to less, by more than `1e-12`.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{CovarianceConfig, PortfolioAllocator, WeightBounds};
-    /// use nalgebra::dmatrix;
-    ///
-    /// let returns = dmatrix![
-    ///      0.010,  0.021,  0.004;
-    ///     -0.008, -0.015, -0.002;
-    ///      0.004,  0.009,  0.006;
-    ///     -0.002, -0.006, -0.003;
-    ///      0.006,  0.011,  0.001
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let config = CovarianceConfig::default();
-    /// let unbounded = allocator.long_only_min_variance_allocation_with_config(&config)?;
-    /// assert!(unbounded[2] > 0.9);
-    ///
-    /// // Capping every asset at 50% moves the rest of the weight to the next least risky.
-    /// let bounds = WeightBounds::uniform(0.0, 0.5);
-    /// let weights = allocator.long_only_min_variance_allocation_with_bounds(&config, &bounds)?;
-    /// assert!((weights[2] - 0.5).abs() < 1e-12);
-    /// assert!(weights.iter().all(|&w| w <= 0.5 + 1e-12));
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_min_variance_allocation_with_bounds(
-        &self,
-        config: &CovarianceConfig,
+        covariance: &CovarianceConfig,
         bounds: &WeightBounds,
     ) -> Result<Weights, CutupError> {
         let bounds = bounds.resolve(self.cov_matrix.ncols())?;
-        let cov = self.adjusted_covariance(config)?;
+        let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         // From a point strictly inside the bounds, the solver's first step is to the
         // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
@@ -1372,80 +894,22 @@ impl PortfolioAllocator {
         )
     }
 
-    /// Computes a Markowitz mean-variance portfolio with the budget constraint `1ᵀw = 1`.
-    ///
-    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
-    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
-    ///
-    /// When Σ is invertible, with `S = Σ⁻¹`, `A = 1ᵀS1`, `B = 1ᵀSμ`, `C = μᵀSμ` and
-    /// `D = AC − B²`, the solutions are `w = (1/γ) S(μ − η1)` with `η = (B − γ) / A`, and
-    /// `w = [(C − Bρ) S1 + (Aρ − B) Sμ] / D` (Merton, 1972). Both are computed through the
-    /// KKT system instead, so a singular Σ gives an exact optimum (as in
-    /// [`PortfolioAllocator::min_variance_allocation`]) or an error when there is none.
-    ///
-    /// There is no long-only constraint, so weights can be negative (short positions).
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The objective, optional expected returns (default: the sample mean of the
-    ///   returns), and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
-    ///   target return or an expected return is not finite, or the covariance config is invalid.
-    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
-    /// * [`CutupError::DegenerateExpectedReturns`] for a target return when every asset has the
-    ///   same expected return and the target differs from it.
-    /// * [`CutupError::Unbounded`] for a risk aversion when Σ is singular and some fully invested
-    ///   portfolio gains expected return without adding variance.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
-    ///   times the risk aversion, isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{MeanVarianceConfig, PortfolioAllocator};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// let returns = dmatrix![
-    ///      0.010, -0.020,  0.005;
-    ///     -0.004,  0.015,  0.002;
-    ///      0.007,  0.003, -0.006;
-    ///      0.002, -0.001,  0.004;
-    ///     -0.003,  0.006,  0.001
-    /// ];
-    /// let expected = dvector![0.004, 0.006, 0.002];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let config = MeanVarianceConfig::target_return(0.005).with_expected_returns(expected.clone());
-    /// let weights = allocator.mean_variance_allocation(&config)?;
-    ///
-    /// let portfolio_return: f64 = weights.iter().zip(expected.iter()).map(|(w, m)| w * m).sum();
-    /// assert!((portfolio_return - 0.005).abs() < 1e-12);
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn mean_variance_allocation(
+    /// The mean-variance portfolio with short positions allowed, for [`MeanVariance`].
+    fn mean_variance(
         &self,
-        config: &MeanVarianceConfig,
+        objective: Objective,
+        expected_returns: Option<&DVector<f64>>,
+        covariance: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
-        check_objective(config.objective)?;
+        check_objective(objective)?;
         let n = self.cov_matrix.ncols();
-        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let mu = self.expected_returns(expected_returns)?;
 
-        let cov = self.adjusted_covariance(&config.covariance)?;
+        let cov = self.adjusted_covariance(covariance)?;
         let ones = DVector::from_element(n, 1.0);
 
-        let weights = match config.objective {
-            MeanVarianceObjective::RiskAversion(gamma) => {
+        let weights = match objective {
+            Objective::RiskAversion(gamma) => {
                 qp::solve_kkt(
                     &(cov * gamma),
                     &mu,
@@ -1455,7 +919,7 @@ impl PortfolioAllocator {
                 .ok_or(CutupError::Unbounded)?
                 .0
             }
-            MeanVarianceObjective::TargetReturn(target) => {
+            Objective::TargetReturn(target) => {
                 qp::solve_kkt(
                     &cov,
                     &DVector::zeros(n),
@@ -1469,160 +933,16 @@ impl PortfolioAllocator {
         Ok(Weights(weights.iter().copied().collect()))
     }
 
-    /// Computes a Markowitz mean-variance portfolio with no short positions: the budget
-    /// constraint `1ᵀw = 1` and `w ≥ 0`.
-    ///
-    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
-    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
-    ///   Only targets between the lowest and highest expected return of any asset can be
-    ///   reached; one within rounding of either end counts as at it.
-    ///
-    /// Solved exactly by the same active-set method as
-    /// [`PortfolioAllocator::long_only_min_variance_allocation`]. When Σ is invertible and
-    /// [`PortfolioAllocator::mean_variance_allocation`] returns weights with no short
-    /// positions, the two agree. Unlike it, a risk aversion always has an optimum, since no
-    /// long-only portfolio can gain expected return without limit.
-    ///
-    /// When Σ is singular, several long-only portfolios can share the optimum, and which one
-    /// is returned depends on the solver's path. Add shrinkage or regularization for a unique
-    /// answer.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The objective, optional expected returns (default: the sample mean of the
-    ///   returns), and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
-    ///   target return or an expected return is not finite, or the covariance config is invalid.
-    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
-    /// * [`CutupError::TargetReturnOutOfRange`] for a target return below the lowest or above
-    ///   the highest expected return, by more than `1e-12` of the larger in magnitude.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
-    ///   times the risk aversion, isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{MeanVarianceConfig, PortfolioAllocator};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// let returns = dmatrix![
-    ///      0.010, -0.020,  0.005;
-    ///     -0.004,  0.015,  0.002;
-    ///      0.007,  0.003, -0.006;
-    ///      0.002, -0.001,  0.004;
-    ///     -0.003,  0.006,  0.001
-    /// ];
-    /// let expected = dvector![0.004, 0.006, 0.002];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let config = MeanVarianceConfig::risk_aversion(1.0).with_expected_returns(expected);
-    ///
-    /// // With little aversion to risk, the unconstrained portfolio leverages up on the
-    /// // highest expected returns and shorts the lowest.
-    /// assert!(allocator.mean_variance_allocation(&config)?.iter().any(|&w| w < 0.0));
-    ///
-    /// let weights = allocator.long_only_mean_variance_allocation(&config)?;
-    /// assert!(weights.iter().all(|&w| w >= 0.0));
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_mean_variance_allocation(
+    /// The mean-variance portfolio within `bounds`, for [`MeanVariance`].
+    fn bounded_mean_variance(
         &self,
-        config: &MeanVarianceConfig,
-    ) -> Result<Weights, CutupError> {
-        self.long_only_mean_variance_allocation_with_bounds(config, &WeightBounds::default())
-    }
-
-    /// Computes a Markowitz mean-variance portfolio with each asset's weight between its
-    /// bounds, `lᵢ ≤ wᵢ ≤ uᵢ`, and the budget constraint `1ᵀw = 1`. With the default bounds,
-    /// `w ≥ 0`, this is [`PortfolioAllocator::long_only_mean_variance_allocation`].
-    ///
-    /// * [`MeanVarianceObjective::RiskAversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
-    /// * [`MeanVarianceObjective::TargetReturn`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
-    ///   Only targets between the lowest and highest expected return of any portfolio within
-    ///   the bounds can be reached. Those come from filling the bounds in order of expected
-    ///   return, lowest or highest first. A target within rounding of either end counts as at
-    ///   it.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The objective, optional expected returns (default: the sample mean of the
-    ///   returns), and covariance adjustments.
-    /// * `bounds` - The lower and upper bound on each asset's weight.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, within the bounds and summing to 1, up to rounding.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if a lower bound is negative or not finite, an upper
-    ///   bound is below its lower bound or NaN, the risk aversion is not finite and positive,
-    ///   the target return or an expected return is not finite, or the covariance config is
-    ///   invalid.
-    /// * [`CutupError::DimensionMismatch`] if per-asset bounds or `expected_returns` don't have
-    ///   one entry per asset.
-    /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
-    ///   bounds to less, by more than `1e-12`.
-    /// * [`CutupError::TargetReturnOutOfRange`] for a target return below the lowest or above
-    ///   the highest reachable within the bounds, by more than `1e-12` of the larger in
-    ///   magnitude.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance
-    ///   times the risk aversion, isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{MeanVarianceConfig, PortfolioAllocator, WeightBounds};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// let returns = dmatrix![
-    ///      0.010, -0.020,  0.005;
-    ///     -0.004,  0.015,  0.002;
-    ///      0.007,  0.003, -0.006;
-    ///      0.002, -0.001,  0.004;
-    ///     -0.003,  0.006,  0.001
-    /// ];
-    /// let expected = dvector![0.004, 0.006, 0.002];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let config = MeanVarianceConfig::target_return(0.005).with_expected_returns(expected);
-    ///
-    /// // With at most 40% in any asset, the highest reachable return is
-    /// // 0.4 · 0.006 + 0.4 · 0.004 + 0.2 · 0.002 = 0.0044.
-    /// let bounds = WeightBounds::uniform(0.0, 0.4);
-    /// assert!(allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds).is_err());
-    ///
-    /// let bounds = WeightBounds::uniform(0.1, 0.6);
-    /// let weights = allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds)?;
-    /// assert!(weights.iter().all(|&w| (0.1 - 1e-12..=0.6 + 1e-12).contains(&w)));
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_mean_variance_allocation_with_bounds(
-        &self,
-        config: &MeanVarianceConfig,
+        objective: Objective,
+        expected_returns: Option<&DVector<f64>>,
+        covariance: &CovarianceConfig,
         bounds: &WeightBounds,
     ) -> Result<Weights, CutupError> {
-        check_objective(config.objective)?;
-        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        check_objective(objective)?;
+        let mu = self.expected_returns(expected_returns)?;
         let bounds = bounds.resolve(mu.len())?;
         let budget = |n: usize| {
             (
@@ -1630,9 +950,9 @@ impl PortfolioAllocator {
                 DVector::from_element(1, 1.0),
             )
         };
-        let target = match config.objective {
-            MeanVarianceObjective::RiskAversion(gamma) => {
-                let cov = self.adjusted_covariance(&config.covariance)?;
+        let target = match objective {
+            Objective::RiskAversion(gamma) => {
+                let cov = self.adjusted_covariance(covariance)?;
                 let (e, b) = budget(cov.ncols());
                 return long_only_weights(
                     &(cov * gamma),
@@ -1643,11 +963,11 @@ impl PortfolioAllocator {
                     interior_start(&bounds),
                 );
             }
-            MeanVarianceObjective::TargetReturn(target) => target,
+            Objective::TargetReturn(target) => target,
         };
         // An unreachable target is rejected before the covariance is built.
         let problem = ReturnRange::target_problem(&mu, bounds, target)?;
-        let cov = self.adjusted_covariance(&config.covariance)?;
+        let cov = self.adjusted_covariance(covariance)?;
         long_only_weights(
             &cov,
             &DVector::zeros(cov.ncols()),
@@ -1677,87 +997,21 @@ impl PortfolioAllocator {
         }
     }
 
-    /// Computes the maximum Sharpe ratio (tangency) portfolio: maximize
-    /// `(μᵀw − r_f) / sqrt(wᵀΣw)` subject to `1ᵀw = 1`.
-    ///
-    /// The solution is `w = Σ⁻¹(μ − r_f·1) / 1ᵀΣ⁻¹(μ − r_f·1)`. There is no long-only
-    /// constraint, so weights can be negative (short positions).
-    ///
-    /// The maximum exists only when the risk-free rate is below the expected return of the
-    /// minimum variance portfolio, `r_mvp = 1ᵀΣ⁻¹μ / 1ᵀΣ⁻¹1`. At or above it, the formula
-    /// would give the portfolio with the *lowest* Sharpe ratio, so an error is returned
-    /// instead. A rate within `1e-10 · Σ |wᵢμᵢ|` of `r_mvp`, for the minimum variance weights
-    /// `w`, counts as at it: the weights there are pure leverage on rounding noise.
-    ///
-    /// When Σ is singular, its null space (portfolio changes that add no variance) decides
-    /// the outcome:
-    ///
-    /// * If some fully invested change adds no variance but does add expected return, or a
-    ///   fully invested zero-variance portfolio beats the risk-free rate, the Sharpe ratio is
-    ///   unbounded: [`CutupError::Unbounded`].
-    /// * If a fully invested zero-variance portfolio exists but doesn't beat the risk-free
-    ///   rate, it is the minimum variance portfolio and the rate isn't below its return:
-    ///   [`CutupError::RiskFreeRateTooHigh`].
-    /// * Otherwise the weights above are computed with the pseudo-inverse, and are the
-    ///   minimum-norm optimum in correlation units, as with
-    ///   [`PortfolioAllocator::min_variance_allocation`].
-    ///
-    /// The null space is that of the correlation matrix `C`, with `Σ = diag(σ) C diag(σ)`, so
-    /// the outcome doesn't depend on each asset's units.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The risk-free rate, optional expected returns (default: the sample mean of
-    ///   the returns), and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not
-    ///   finite, or the covariance config is invalid.
-    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
-    /// * [`CutupError::RiskFreeRateTooHigh`] if the risk-free rate is at or above the minimum
-    ///   variance portfolio's expected return.
-    /// * [`CutupError::Unbounded`] when Σ is singular and the Sharpe ratio has no upper bound.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::SingularCovariance`] if the covariance can't be decomposed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{MaxSharpeConfig, PortfolioAllocator};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// // Uncorrelated assets: the tangency weights are proportional to (μᵢ − r_f) / σᵢ².
-    /// let returns = dmatrix![
-    ///      0.01,  0.02;
-    ///     -0.01, -0.02;
-    ///      0.01, -0.02;
-    ///     -0.01,  0.02
-    /// ];
-    /// let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.002, 0.004]);
-    ///
-    /// let weights = PortfolioAllocator::from_returns(returns)?.max_sharpe_allocation(&config)?;
-    ///
-    /// // σ² is in the ratio 1 : 4 and μ in the ratio 1 : 2, so the weights are 2 : 1.
-    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
-    /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn max_sharpe_allocation(&self, config: &MaxSharpeConfig) -> Result<Weights, CutupError> {
-        let risk_free_rate = config.risk_free_rate;
+    /// The maximum Sharpe ratio portfolio with short positions allowed, for [`MaxSharpe`].
+    fn max_sharpe(
+        &self,
+        risk_free_rate: f64,
+        expected_returns: Option<&DVector<f64>>,
+        covariance: &CovarianceConfig,
+    ) -> Result<Weights, CutupError> {
         if !risk_free_rate.is_finite() {
             return Err(CutupError::InvalidConfig {
                 field: "risk_free_rate",
                 value: risk_free_rate,
             });
         }
-        let mu = self.expected_returns(config.expected_returns.as_ref())?;
-        let cov = self.adjusted_covariance(&config.covariance)?;
+        let mu = self.expected_returns(expected_returns)?;
+        let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         let ones = DVector::from_element(n, 1.0);
         let excess = mu.add_scalar(-risk_free_rate);
@@ -1824,88 +1078,20 @@ impl PortfolioAllocator {
         Ok(Weights(weights.iter().copied().collect()))
     }
 
-    /// Computes the maximum Sharpe ratio portfolio with no short positions: maximize
-    /// `(μᵀw − r_f) / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and `w ≥ 0`.
-    ///
-    /// With `y = w / (μ − r_f·1)ᵀw`, this is the convex problem of minimizing `yᵀΣy` subject
-    /// to `(μ − r_f·1)ᵀy = 1` and `y ≥ 0` (Cornuejols and Tütüncü, 2007, §8.2), and
-    /// `w = y / 1ᵀy`. It is solved exactly by the same active-set method as
-    /// [`PortfolioAllocator::long_only_min_variance_allocation`].
-    ///
-    /// A long-only portfolio has a positive Sharpe ratio only if some asset's expected
-    /// return is above the risk-free rate, so this needs the rate to be below the highest
-    /// expected return, not below the minimum variance portfolio's return as
-    /// [`PortfolioAllocator::max_sharpe_allocation`] does. An expected return within
-    /// `1e-10 · max(|r_f|, |μᵢ|)` of the rate counts as at it, a tolerance in each asset's own
-    /// units. When Σ is
-    /// invertible and [`PortfolioAllocator::max_sharpe_allocation`] returns weights with no
-    /// short positions, the two agree.
-    ///
-    /// When Σ is singular, several long-only portfolios can share the maximum, and which one
-    /// is returned depends on the solver's path. Add shrinkage or regularization for a unique
-    /// answer.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The risk-free rate, optional expected returns (default: the sample mean of
-    ///   the returns), and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not
-    ///   finite, or the covariance config is invalid.
-    /// * [`CutupError::DimensionMismatch`] if `expected_returns` doesn't have one entry per asset.
-    /// * [`CutupError::NoPositiveExcessReturn`] if the risk-free rate is at or above the highest
-    ///   expected return.
-    /// * [`CutupError::Unbounded`] when Σ is singular and some long-only portfolio with a
-    ///   positive excess return lies in its null space (with the cutoff of
-    ///   [`PortfolioAllocator::max_sharpe_allocation`]), so the Sharpe ratio has no upper bound.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
-    /// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{MaxSharpeConfig, PortfolioAllocator};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// // Uncorrelated assets, the second with a negative expected return.
-    /// let returns = dmatrix![
-    ///      0.01,  0.02;
-    ///     -0.01, -0.02;
-    ///      0.01, -0.02;
-    ///     -0.01,  0.02
-    /// ];
-    /// let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.002, -0.001]);
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    ///
-    /// // The tangency portfolio shorts the second asset, which long-only can't.
-    /// assert!(allocator.max_sharpe_allocation(&config)?[1] < 0.0);
-    ///
-    /// let weights = allocator.long_only_max_sharpe_allocation(&config)?;
-    /// assert!((weights[0] - 1.0).abs() < 1e-12 && weights[1] == 0.0);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn long_only_max_sharpe_allocation(
+    /// The long-only maximum Sharpe ratio portfolio, for [`MaxSharpe`].
+    fn long_only_max_sharpe(
         &self,
-        config: &MaxSharpeConfig,
+        risk_free_rate: f64,
+        expected_returns: Option<&DVector<f64>>,
+        covariance: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
-        let risk_free_rate = config.risk_free_rate;
         if !risk_free_rate.is_finite() {
             return Err(CutupError::InvalidConfig {
                 field: "risk_free_rate",
                 value: risk_free_rate,
             });
         }
-        let mu = self.expected_returns(config.expected_returns.as_ref())?;
+        let mu = self.expected_returns(expected_returns)?;
         // Excess returns relative to the largest magnitude, so that neither they nor the
         // tolerance can overflow.
         let (best, highest_return) = mu.argmax();
@@ -1921,148 +1107,22 @@ impl PortfolioAllocator {
                 highest_return,
             });
         }
-        let cov = self.adjusted_covariance(&config.covariance)?;
+        let cov = self.adjusted_covariance(covariance)?;
         // Scaled so that the best asset's excess return is 1.
         long_only_max_ratio(&cov, &(&excess / excess[best]), best)?.ok_or(CutupError::Unbounded)
     }
 
-    /// Computes the maximum diversification portfolio (Choueifaty and Coignard, 2008):
-    /// maximize the diversification ratio `σᵀw / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and
-    /// `w ≥ 0`, where `σ` holds the assets' volatilities.
-    ///
-    /// The ratio is the weighted average volatility over the portfolio's volatility, which
-    /// is at least 1, and is 1 only when the held assets are perfectly correlated. It is
-    /// long-only by definition. This is the long-only max Sharpe problem with `σ` in place of
-    /// the excess returns, solved the same way: with `y = w / σᵀw`, minimize `yᵀΣy` subject to
-    /// `σᵀy = 1` and `y ≥ 0`, then `w = y / 1ᵀy`. The solver works in correlation units
-    /// `diag(σ)·y`, where that is minimizing `vᵀCv` for the correlation matrix `C` subject to
-    /// `1ᵀv = 1`, so assets whose volatilities differ by many orders of magnitude stay
-    /// accurate. For uncorrelated assets it is inverse volatility weighting.
-    ///
-    /// When Σ is singular, several portfolios can share the maximum, and which one is
-    /// returned depends on the solver's path. Use
-    /// [`PortfolioAllocator::max_diversification_allocation_with_config`] with shrinkage for a
-    /// unique answer.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has no variance (in
-    ///   the correlation matrix's null space, with the cutoff of
-    ///   [`PortfolioAllocator::max_sharpe_allocation`]), so the ratio has no upper bound, or no
-    ///   finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Uncorrelated assets, with volatilities in the ratio 1 : 2 : 4.
-    /// let returns = dmatrix![
-    ///      0.01,  0.02,  0.04;
-    ///     -0.01,  0.02, -0.04;
-    ///      0.01, -0.02, -0.04;
-    ///     -0.01, -0.02,  0.04
-    /// ];
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let weights = allocator.max_diversification_allocation()?;
-    ///
-    /// // Inverse volatility: 4 : 2 : 1.
-    /// for (w, expected) in weights.iter().zip([4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]) {
-    ///     assert!((w - expected).abs() < 1e-12);
-    /// }
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn max_diversification_allocation(&self) -> Result<Weights, CutupError> {
-        self.max_diversification_allocation_with_config(&CovarianceConfig::default())
-    }
-
-    /// Computes the maximum diversification portfolio after applying shrinkage and/or
-    /// regularization to the covariance matrix. The volatilities are those of the adjusted
-    /// covariance. See [`PortfolioAllocator::max_diversification_allocation`].
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Adjustments applied to the covariance matrix.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, nonnegative and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
-    ///   `shrinkage` is outside `[0, 1]`.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite.
-    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has no variance, so
-    ///   the ratio has no upper bound, or no finite weights can be computed.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which only extreme inputs
-    ///   should cause.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{CovarianceConfig, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Fewer observations than assets: some long-only portfolio has no variance.
-    /// let returns = dmatrix![
-    ///      0.01, -0.02,  0.03;
-    ///     -0.01,  0.02, -0.03
-    /// ];
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// assert!(allocator.max_diversification_allocation().is_err());
-    ///
-    /// let config = CovarianceConfig::default().with_shrinkage(0.3);
-    /// let weights = allocator.max_diversification_allocation_with_config(&config)?;
-    /// assert!(weights.iter().all(|&w| w >= 0.0));
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn max_diversification_allocation_with_config(
-        &self,
-        config: &CovarianceConfig,
-    ) -> Result<Weights, CutupError> {
-        let cov = self.adjusted_covariance(config)?;
+    /// The maximum diversification portfolio, for [`MaxDiversification`].
+    fn max_diversification(&self, covariance: &CovarianceConfig) -> Result<Weights, CutupError> {
+        let cov = self.adjusted_covariance(covariance)?;
         let volatilities = cov.diagonal().map(f64::sqrt);
         let (best, highest) = volatilities.argmax();
         long_only_max_ratio(&cov, &(volatilities / highest), best)?
             .ok_or(CutupError::SingularCovariance)
     }
 
-    /// Computes Equal Weight (EW) portfolio allocation.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`] where each asset has weight `1 / n`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// let prices = dmatrix![
-    ///     100.0, 200.0, 300.0;
-    ///     110.0, 210.0, 310.0;
-    ///     120.0, 220.0, 320.0
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_prices(prices)?;
-    /// let weights = allocator.ew_allocation();
-    ///
-    /// assert_eq!(weights.len(), 3);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn ew_allocation(&self) -> Weights {
+    /// Equal weights, for [`EqualWeight`].
+    fn equal_weight(&self) -> Weights {
         let n = self.returns.ncols();
         Weights(vec![1.0 / n as f64; n])
     }
@@ -2077,191 +1137,14 @@ impl PortfolioAllocator {
         Ok(Weights(raw.iter().map(|w| w / total).collect()))
     }
 
-    /// Computes inverse volatility weights: `wᵢ ∝ 1 / σᵢ`.
-    ///
-    /// Each asset's weight is inversely proportional to the standard deviation of its returns,
-    /// so riskier assets get less. Correlations are ignored. Compared with
-    /// [`PortfolioAllocator::inverse_variance_allocation`], the tilt away from risky assets is
-    /// milder. When assets are uncorrelated, this gives each asset the same risk contribution.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, positive and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Volatilities in the ratio 1 : 2.
-    /// let returns = dmatrix![
-    ///      0.01,  0.02;
-    ///     -0.01, -0.02;
-    ///      0.01, -0.02;
-    ///     -0.01,  0.02
-    /// ];
-    ///
-    /// let weights = PortfolioAllocator::from_returns(returns)?.inverse_volatility_allocation()?;
-    ///
-    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
-    /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn inverse_volatility_allocation(&self) -> Result<Weights, CutupError> {
-        self.weight_by_variance(|variance| 1.0 / variance.sqrt())
-    }
-
-    /// Computes inverse variance weights: `wᵢ ∝ 1 / σᵢ²`.
-    ///
-    /// Each asset's weight is inversely proportional to the variance of its returns.
-    /// Correlations are ignored. When assets are uncorrelated this is the minimum variance
-    /// portfolio, and it is what [`PortfolioAllocator::hrp_allocation`] uses within each
-    /// cluster.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, positive and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Volatilities in the ratio 1 : 2, so variances in the ratio 1 : 4.
-    /// let returns = dmatrix![
-    ///      0.01,  0.02;
-    ///     -0.01, -0.02;
-    ///      0.01, -0.02;
-    ///     -0.01,  0.02
-    /// ];
-    ///
-    /// let weights = PortfolioAllocator::from_returns(returns)?.inverse_variance_allocation()?;
-    ///
-    /// assert!((weights[0] - 0.8).abs() < 1e-12);
-    /// assert!((weights[1] - 0.2).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn inverse_variance_allocation(&self) -> Result<Weights, CutupError> {
-        self.weight_by_variance(|variance| 1.0 / variance)
-    }
-
-    /// Computes the risk parity (equal risk contribution) portfolio: long-only weights where
-    /// every asset contributes the same share of the portfolio's variance. See
-    /// [`PortfolioAllocator::risk_parity_allocation_with_config`] for the details, risk
-    /// budgets and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, positive and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance, so
-    ///   no portfolio spreads a positive risk.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011;
-    ///     -0.010,  0.010, -0.012;
-    ///      0.020, -0.020,  0.018;
-    ///     -0.015, -0.010, -0.014;
-    ///      0.005,  0.015,  0.004
-    /// ];
-    ///
-    /// let weights = PortfolioAllocator::from_returns(returns)?.risk_parity_allocation()?;
-    ///
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// assert!(weights.iter().all(|&w| w > 0.0));
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn risk_parity_allocation(&self) -> Result<Weights, CutupError> {
-        self.risk_parity_allocation_with_config(&RiskParityConfig::default())
-    }
-
-    /// Computes the risk budgeting portfolio: long-only weights where asset `i` contributes
-    /// the share `bᵢ` of the portfolio's variance, `wᵢ (Σw)ᵢ / wᵀΣw = bᵢ / Σⱼ bⱼ`. With equal
-    /// budgets, the default, this is the equal risk contribution (risk parity) portfolio.
-    ///
-    /// Unlike [`PortfolioAllocator::inverse_volatility_allocation`], which gives equal risk
-    /// contributions only when assets are uncorrelated, this accounts for every correlation.
-    /// The weights are the unique solution, found by minimizing
-    /// `½ yᵀΣy − Σᵢ bᵢ ln yᵢ` over `y > 0` with Newton's method and a backtracking line search
-    /// (Spinu, 2013), then normalizing `y` to sum to 1. The result doesn't depend on the scale
-    /// of the returns or of the budgets.
-    ///
-    /// The solution exists whenever every long-only portfolio has positive variance, which
-    /// holds when Σ is invertible and also for most singular Σ. When some long-only portfolio
-    /// has zero variance, a [`CutupError::SingularCovariance`] is returned; shrinkage or
-    /// regularization removes it. Risk budgets can span many orders of magnitude, up to about
-    /// 10¹⁴ between the largest and the smallest, beyond which the solver may stop early with
-    /// [`CutupError::NotConverged`].
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Optional risk budgets (default: equal) and covariance adjustments.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, positive and summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if a risk budget isn't positive and finite, or the
-    ///   covariance config is invalid.
-    /// * [`CutupError::DimensionMismatch`] if `risk_budgets` doesn't have one entry per asset.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
-    ///   shrinkage nor regularization is applied.
-    /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance.
-    /// * [`CutupError::NotConverged`] if the solver stops early, which takes risk budgets more
-    ///   than about 10¹⁴ apart.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{PortfolioAllocator, RiskParityConfig};
-    /// use nalgebra::{dmatrix, dvector};
-    ///
-    /// // Uncorrelated assets with volatilities in the ratio 1 : 2.
-    /// let returns = dmatrix![
-    ///      0.01,  0.02;
-    ///     -0.01, -0.02;
-    ///      0.01, -0.02;
-    ///     -0.01,  0.02
-    /// ];
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    ///
-    /// // Equal budgets: weights in inverse proportion to volatility, 2 : 1.
-    /// let weights = allocator.risk_parity_allocation()?;
-    /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
-    ///
-    /// // Budgets 1 : 4: wᵢ ∝ sqrt(bᵢ) / σᵢ, so 1 : 1.
-    /// let config = RiskParityConfig::default().with_risk_budgets(dvector![1.0, 4.0]);
-    /// let weights = allocator.risk_parity_allocation_with_config(&config)?;
-    /// assert!((weights[0] - 0.5).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn risk_parity_allocation_with_config(
+    /// The risk budgeting portfolio, for [`RiskParity`].
+    fn risk_parity(
         &self,
-        config: &RiskParityConfig,
+        risk_budgets: Option<&DVector<f64>>,
+        covariance: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
         let n = self.cov_matrix.ncols();
-        let budgets = match &config.risk_budgets {
+        let budgets = match risk_budgets {
             Some(b) if b.len() != n => {
                 return Err(CutupError::DimensionMismatch {
                     expected: n,
@@ -2279,7 +1162,7 @@ impl PortfolioAllocator {
             },
             None => DVector::from_element(n, 1.0),
         };
-        let cov = self.adjusted_covariance(&config.covariance)?;
+        let cov = self.adjusted_covariance(covariance)?;
         PortfolioAllocator::risk_budget_weights(&cov, &budgets)
             .map(|w| Weights(w.iter().copied().collect()))
     }
@@ -2417,52 +1300,13 @@ impl PortfolioAllocator {
         Ok(distance)
     }
 
-    /// Returns the order HRP puts the assets in: the leaves of the clustering hierarchy, left
-    /// to right, so that correlated assets sit next to each other.
-    ///
-    /// Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)` with the linkage in
-    /// `config`. The clustering reproduces SciPy's `linkage` and `to_tree().pre_order()` step
-    /// for step, including the tie-breaking rule, so the order matches SciPy and
-    /// PyPortfolioOpt's `HRPOpt` up to floating-point rounding.
-    ///
-    /// # Returns
-    ///
-    /// * Every asset's column index exactly once, in cluster order.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-    ///   variances are too small.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{HrpConfig, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Assets 0 and 2 move together, as do 1 and 3.
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011,  0.019;
-    ///     -0.010,  0.010, -0.012,  0.012;
-    ///      0.020, -0.020,  0.018, -0.021;
-    ///     -0.015, -0.010, -0.014, -0.009
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let order = allocator.hrp_cluster_order(&HrpConfig::default())?;
-    ///
-    /// let position = |asset| order.iter().position(|&a| a == asset).unwrap();
-    /// assert_eq!(position(0).abs_diff(position(2)), 1);
-    /// assert_eq!(position(1).abs_diff(position(3)), 1);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn hrp_cluster_order(&self, config: &HrpConfig) -> Result<Vec<usize>, CutupError> {
+    /// The order HRP puts the assets in, for [`Hrp::cluster_order`].
+    fn cluster_order(&self, linkage: Linkage) -> Result<Vec<usize>, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
             return Err(CutupError::ZeroVariance { asset });
         }
         let distance = self.correlation_distance()?;
-        Ok(cluster::hierarchy(&distance, config.linkage).leaf_order())
+        Ok(cluster::hierarchy(&distance, linkage).leaf_order())
     }
 
     /// Returns the variance of the inverse-variance portfolio over `cluster`.
@@ -2487,102 +1331,9 @@ impl PortfolioAllocator {
         inverse.iter().map(|w| w / total).collect()
     }
 
-    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016), with
-    /// single linkage. See [`PortfolioAllocator::hrp_allocation_with_config`] for the details
-    /// and to choose another linkage.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-    ///   variances are too small.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// let prices = dmatrix![
-    ///     100.0, 200.0, 300.0;
-    ///     110.0, 210.0, 310.0;
-    ///     120.0, 220.0, 320.0
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_prices(prices)?;
-    /// let weights = allocator.hrp_allocation()?;
-    ///
-    /// let sum: f64 = weights.iter().sum();
-    /// assert!((sum - 1.0).abs() < 1e-6);
-    /// assert!(weights.iter().all(|&w| w >= 0.0));
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn hrp_allocation(&self) -> Result<Weights, CutupError> {
-        self.hrp_allocation_with_config(&HrpConfig::default())
-    }
-
-    /// Computes Hierarchical Risk Parity (HRP) portfolio allocation (López de Prado, 2016).
-    ///
-    /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)`
-    ///    with the linkage in `config`, and ordered so that correlated assets sit next to each
-    ///    other (see [`PortfolioAllocator::hrp_cluster_order`]).
-    /// 2. **Recursive bisection.** The ordered list is split in half, repeatedly. At each
-    ///    split, the two halves share their parent's weight in inverse proportion to their
-    ///    risk: each half's variance is that of its own inverse-variance portfolio, and the
-    ///    first half gets `α = 1 − V₁ / (V₁ + V₂)`.
-    ///
-    /// The clustering follows SciPy and PyPortfolioOpt's `HRPOpt` step for step, including the
-    /// tie-breaking rule, so results match `HRPOpt(returns).optimize(linkage_method)` up to
-    /// floating-point rounding. (The correlations are computed here rather than by pandas, so two distances
-    /// that tie in one may differ by a rounding error in the other and break the tie the other
-    /// way.)
-    ///
-    /// HRP never inverts the covariance matrix, so it works when Σ is singular. Weights are
-    /// never negative. A half with zero variance, such as a perfectly hedged pair, takes its
-    /// parent's whole weight and leaves the other half at zero, as in `HRPOpt`.
-    ///
-    /// Like the original algorithm and `HRPOpt`, the result can depend on the order of the
-    /// input columns. The hierarchy puts the lower-indexed subtree on the left, and the
-    /// bisection splits the ordered list at its midpoint rather than at the tree's branches,
-    /// so reordering the columns can move a split. Correlated assets still end up next to each
-    /// other; only where the halves are cut changes.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-    ///   variances are too small.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{HrpConfig, Linkage, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011,  0.019;
-    ///     -0.010,  0.010, -0.012,  0.012;
-    ///      0.020, -0.020,  0.018, -0.021;
-    ///     -0.015, -0.010, -0.014, -0.009
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let config = HrpConfig::default().with_linkage(Linkage::Ward);
-    /// let weights = allocator.hrp_allocation_with_config(&config)?;
-    ///
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn hrp_allocation_with_config(&self, config: &HrpConfig) -> Result<Weights, CutupError> {
-        let order = self.hrp_cluster_order(config)?;
+    /// The HRP weights, for [`Hrp`].
+    fn hrp(&self, linkage: Linkage) -> Result<Weights, CutupError> {
+        let order = self.cluster_order(linkage)?;
         let mut weights = vec![1.0; order.len()];
         // Clusters are ranges of positions in `order`, bisected one level at a time.
         let mut ranges = vec![(0, order.len())];
@@ -2621,116 +1372,21 @@ impl PortfolioAllocator {
         Ok(Weights(weights))
     }
 
-    /// Computes Hierarchical Equal Risk Contribution (HERC) portfolio allocation (Raffinot,
-    /// 2017) with the defaults of riskfolio-lib. See
-    /// [`PortfolioAllocator::herc_allocation_with_config`] for the details and options.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-    ///   variances are too small.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
-    ///
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011,  0.019;
-    ///     -0.010,  0.010, -0.012,  0.012;
-    ///      0.020, -0.020,  0.018, -0.021;
-    ///     -0.015, -0.010, -0.014, -0.009
-    /// ];
-    ///
-    /// let weights = PortfolioAllocator::from_returns(returns)?.herc_allocation()?;
-    ///
-    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-    /// assert!(weights.iter().all(|&w| w >= 0.0));
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn herc_allocation(&self) -> Result<Weights, CutupError> {
-        self.herc_allocation_with_config(&HercConfig::default())
-    }
-
-    /// Computes Hierarchical Equal Risk Contribution (HERC) portfolio allocation (Raffinot,
-    /// 2017), as riskfolio-lib implements it with the variance as the risk measure.
-    ///
-    /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)`
-    ///    with the linkage in `config`, as for [`PortfolioAllocator::hrp_cluster_order`].
-    /// 2. **Cut.** The hierarchy is cut into `k` clusters: `config.clusters` if set, otherwise
-    ///    the number chosen by the two-difference gap statistic, as in riskfolio-lib.
-    /// 3. **Split down the tree.** Each of the `k − 1` merges above the cut splits its weight
-    ///    between its two branches in inverse proportion to their risk. A branch's risk is
-    ///    the sum of the variances of the clusters under it, each cluster's being that of its
-    ///    own inverse-variance portfolio. The left branch gets `α = 1 − R₁ / (R₁ + R₂)`.
-    /// 4. **Within clusters.** Each cluster's weight is shared by inverse variance.
-    ///
-    /// Unlike HRP, which bisects the ordered list of assets at its midpoint, HERC splits where
-    /// the tree branches, so similar assets are never separated and the result doesn't depend
-    /// on the order of the input columns. Results match riskfolio-lib's
-    /// `HCPortfolio.optimization(model="HERC", rm="MV")` up to floating-point rounding.
-    ///
-    /// Both hold except when merges tie in distance at the cut, for example when assets are
-    /// duplicated. The cut is then made after exactly `n − k` merges, taking tied merges in
-    /// the order the clustering found them, which depends on column order. riskfolio-lib
-    /// instead takes the `k − 1` highest merges in the order of an unstable sort, and builds
-    /// the clusters with SciPy's `fcluster`, which can return fewer than `k` clusters at a
-    /// tie, so its weights can differ there.
-    ///
-    /// HERC never inverts the covariance matrix, so it works when Σ is singular, and weights
-    /// are never negative. Two branches that both have zero risk split their weight evenly.
-    ///
-    /// # Returns
-    ///
-    /// * [`Weights`], one per asset, summing to 1.
-    ///
-    /// # Errors
-    ///
-    /// * [`CutupError::InvalidConfig`] if `clusters` is 0 or more than the number of assets,
-    ///   or `max_clusters` is 0.
-    /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-    ///   variances are too small.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use cutup::{HercConfig, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
-    ///
-    /// // Assets 0 and 2 move together, as do 1 and 3.
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011,  0.019;
-    ///     -0.010,  0.010, -0.012,  0.012;
-    ///      0.020, -0.020,  0.018, -0.021;
-    ///     -0.015, -0.010, -0.014, -0.009
-    /// ];
-    ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
-    /// let weights = allocator.herc_allocation_with_config(&HercConfig::default().with_clusters(2))?;
-    ///
-    /// // With two clusters, {0, 2} and {1, 3}, each pair is weighted by inverse variance.
-    /// let inverse_variance = allocator.inverse_variance_allocation()?;
-    /// let ratio = |a: usize, b: usize| weights[a] / weights[b];
-    /// assert!((ratio(0, 2) - inverse_variance[0] / inverse_variance[2]).abs() < 1e-12);
-    /// assert!((ratio(1, 3) - inverse_variance[1] / inverse_variance[3]).abs() < 1e-12);
-    /// # Ok::<(), cutup::CutupError>(())
-    /// ```
-    pub fn herc_allocation_with_config(&self, config: &HercConfig) -> Result<Weights, CutupError> {
+    /// The HERC weights, for [`Herc`].
+    fn herc(
+        &self,
+        linkage: Linkage,
+        clusters: Option<usize>,
+        max_clusters: usize,
+    ) -> Result<Weights, CutupError> {
         let n = self.cov_matrix.ncols();
-        if let Some(k) = config.clusters.filter(|k| !(1..=n).contains(k)) {
+        if let Some(k) = clusters.filter(|k| !(1..=n).contains(k)) {
             return Err(CutupError::InvalidConfig {
                 field: "clusters",
                 value: k as f64,
             });
         }
-        if config.clusters.is_none() && config.max_clusters == 0 {
+        if clusters.is_none() && max_clusters == 0 {
             return Err(CutupError::InvalidConfig {
                 field: "max_clusters",
                 value: 0.0,
@@ -2740,10 +1396,8 @@ impl PortfolioAllocator {
             return Err(CutupError::ZeroVariance { asset });
         }
         let distance = self.correlation_distance()?;
-        let hierarchy = cluster::hierarchy(&distance, config.linkage);
-        let k = config
-            .clusters
-            .unwrap_or_else(|| hierarchy.cluster_count(&distance, config.max_clusters));
+        let hierarchy = cluster::hierarchy(&distance, linkage);
+        let k = clusters.unwrap_or_else(|| hierarchy.cluster_count(&distance, max_clusters));
 
         // Each cluster below the cut, by the node that formed it.
         let clusters = hierarchy.cut(k);
@@ -2780,42 +1434,6 @@ impl PortfolioAllocator {
         }
         Ok(Weights(weights))
     }
-}
-
-/// Runs a global minimum variance allocation on a matrix of prices.
-///
-/// # Arguments
-///
-/// * `prices` - A `DMatrix<f64>` of asset price history.
-///
-/// # Returns
-///
-/// * [`Weights`] from [`PortfolioAllocator::min_variance_allocation`].
-///
-/// # Errors
-///
-/// * Any error from [`PortfolioAllocator::from_prices`] or
-///   [`PortfolioAllocator::min_variance_allocation`].
-///
-/// # Example
-///
-/// ```
-/// use cutup::run_portfolio_allocation;
-/// use nalgebra::dmatrix;
-///
-/// let prices = dmatrix![
-///     125.0, 1500.0, 210.0, 600.0;
-///     123.0, 1520.0, 215.0, 620.0;
-///     130.0, 1510.0, 220.0, 610.0;
-///     128.0, 1530.0, 225.0, 630.0
-/// ];
-///
-/// let weights = run_portfolio_allocation(prices)?;
-/// assert_eq!(weights.len(), 4);
-/// # Ok::<(), cutup::CutupError>(())
-/// ```
-pub fn run_portfolio_allocation(prices: DMatrix<f64>) -> Result<Weights, CutupError> {
-    PortfolioAllocator::from_prices(prices)?.min_variance_allocation()
 }
 
 /// Splits a covariance into the correlation matrix `C` and the volatilities `σ`, with
@@ -2895,7 +1513,7 @@ fn long_only_max_ratio(
 }
 
 /// Whether `u` lies in the null space of the correlation matrix `c`, with the cutoff
-/// max_sharpe_allocation uses: a Rayleigh quotient `uᵀCu / uᵀu` within n·ε of the largest
+/// long-short max Sharpe uses: a Rayleigh quotient `uᵀCu / uᵀu` within n·ε of the largest
 /// eigenvalue. The trace, n, bounds that eigenvalue, so the decomposition is only needed near
 /// the cutoff.
 fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, CutupError> {
@@ -3062,20 +1680,18 @@ impl ReturnRange {
 }
 
 /// Checks a mean-variance objective's parameter.
-fn check_objective(objective: MeanVarianceObjective) -> Result<(), CutupError> {
+fn check_objective(objective: Objective) -> Result<(), CutupError> {
     match objective {
-        MeanVarianceObjective::RiskAversion(gamma) if !(gamma.is_finite() && gamma > 0.0) => {
+        Objective::RiskAversion(gamma) if !(gamma.is_finite() && gamma > 0.0) => {
             Err(CutupError::InvalidConfig {
                 field: "risk_aversion",
                 value: gamma,
             })
         }
-        MeanVarianceObjective::TargetReturn(target) if !target.is_finite() => {
-            Err(CutupError::InvalidConfig {
-                field: "target_return",
-                value: target,
-            })
-        }
+        Objective::TargetReturn(target) if !target.is_finite() => Err(CutupError::InvalidConfig {
+            field: "target_return",
+            value: target,
+        }),
         _ => Ok(()),
     }
 }
@@ -3315,13 +1931,17 @@ mod tests {
         assert!(base.cov_matrix.clone().try_inverse().is_some());
 
         assert_weights_close(
-            &base.min_variance_allocation().unwrap(),
-            &rescaled.min_variance_allocation().unwrap(),
+            &base
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
+            &rescaled
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-9,
         );
         assert_weights_close(
-            &base.hrp_allocation().unwrap(),
-            &rescaled.hrp_allocation().unwrap(),
+            &base.allocate(&Hrp::default()).unwrap(),
+            &rescaled.allocate(&Hrp::default()).unwrap(),
             1e-9,
         );
     }
@@ -3334,7 +1954,7 @@ mod tests {
             120.0, 220.0, 320.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let ew_weights = allocator.ew_allocation();
+        let ew_weights = allocator.allocate(&EqualWeight).unwrap();
         assert_eq!(ew_weights.as_slice(), &[1.0 / 3.0; 3]);
     }
 
@@ -3346,7 +1966,9 @@ mod tests {
             120.0, 220.0, 320.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-6);
     }
@@ -3363,13 +1985,17 @@ mod tests {
             0.0, 0.0, 1.0
         ];
         assert_eq!(
-            allocator.min_variance_allocation().err(),
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .err(),
             Some(CutupError::NonFiniteCovariance)
         );
 
         allocator.cov_matrix = DMatrix::from_element(3, 3, f64::NAN);
         assert_eq!(
-            allocator.min_variance_allocation().err(),
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .err(),
             Some(CutupError::NonFiniteCovariance)
         );
     }
@@ -3382,7 +2008,7 @@ mod tests {
             120.0, 220.0, 320.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let hrp_weights = allocator.hrp_allocation().unwrap();
+        let hrp_weights = allocator.allocate(&Hrp::default()).unwrap();
         assert_eq!(hrp_weights.len(), 3);
         assert!((hrp_weights.iter().sum::<f64>() - 1.0).abs() < 1e-6);
     }
@@ -3396,7 +2022,7 @@ mod tests {
             103.0, 203.0, 303.0, 403.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let weights = allocator.hrp_allocation().unwrap();
+        let weights = allocator.allocate(&Hrp::default()).unwrap();
 
         assert_eq!(weights.len(), 4);
         for &w in &weights {
@@ -3416,14 +2042,16 @@ mod tests {
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
         assert_eq!(
-            allocator.hrp_allocation().err(),
+            allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 1 })
         );
         assert_eq!(
-            allocator.min_variance_allocation().err(),
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .err(),
             Some(CutupError::ZeroVariance { asset: 1 })
         );
-        assert_eq!(allocator.ew_allocation().len(), 3);
+        assert_eq!(allocator.allocate(&EqualWeight).unwrap().len(), 3);
     }
 
     #[test]
@@ -3447,11 +2075,13 @@ mod tests {
         let allocator =
             PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
-            allocator.hrp_allocation().err(),
+            allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
         assert_eq!(
-            allocator.min_variance_allocation().err(),
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
 
@@ -3459,7 +2089,7 @@ mod tests {
         let prices = dmatrix![100.0, 50.0; 110.0, 49.0; 121.0, 51.5; 133.1, 51.0];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
         assert_eq!(
-            allocator.hrp_allocation().err(),
+            allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
@@ -3480,7 +2110,11 @@ mod tests {
                 regularization,
                 shrinkage,
             };
-            match allocator.min_variance_allocation_with_config(&config) {
+            match allocator.allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(config.clone()),
+            ) {
                 Err(CutupError::InvalidConfig { field: f, .. }) => assert_eq!(f, field),
                 other => panic!("{config:?} gave {other:?}"),
             }
@@ -3491,7 +2125,11 @@ mod tests {
             shrinkage: Some(1.0),
         };
         assert!(allocator
-            .min_variance_allocation_with_config(&edges)
+            .allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(edges.clone())
+            )
             .is_ok());
     }
 
@@ -3525,9 +2163,13 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().with_shrinkage(1.0);
         let weights = allocator
-            .min_variance_allocation_with_config(&config)
+            .allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(config.clone()),
+            )
             .unwrap();
-        assert_weights_close(&weights, &allocator.ew_allocation(), 1e-12);
+        assert_weights_close(&weights, &allocator.allocate(&EqualWeight).unwrap(), 1e-12);
     }
 
     #[test]
@@ -3541,8 +2183,20 @@ mod tests {
         let scaled = PortfolioAllocator::from_returns(returns * 100.0).unwrap();
 
         assert_weights_close(
-            &base.min_variance_allocation_with_config(&config).unwrap(),
-            &scaled.min_variance_allocation_with_config(&config).unwrap(),
+            &base
+                .allocate(
+                    &MinVariance::default()
+                        .allow_short()
+                        .covariance(config.clone()),
+                )
+                .unwrap(),
+            &scaled
+                .allocate(
+                    &MinVariance::default()
+                        .allow_short()
+                        .covariance(config.clone()),
+                )
+                .unwrap(),
             1e-12,
         );
     }
@@ -3559,7 +2213,9 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
 
         let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
         let total: f64 = inverse.iter().sum();
@@ -3571,7 +2227,9 @@ mod tests {
     fn test_min_variance_two_asset_closed_form() {
         let prices = full_rank_prices().columns(0, 2).into_owned();
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
 
         let cov = &allocator.cov_matrix;
         let (s11, s22, s12) = (cov[(0, 0)], cov[(1, 1)], cov[(0, 1)]);
@@ -3582,8 +2240,10 @@ mod tests {
     #[test]
     fn test_min_variance_beats_equal_weight() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let min_variance = allocator.min_variance_allocation().unwrap();
-        let equal = allocator.ew_allocation();
+        let min_variance = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
+        let equal = allocator.allocate(&EqualWeight).unwrap();
         assert!(
             portfolio_variance(&allocator, &min_variance) <= portfolio_variance(&allocator, &equal)
         );
@@ -3600,13 +2260,16 @@ mod tests {
             128.0, 1530.0, 225.0, 630.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
 
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
         assert!(weights.iter().all(|w| w.is_finite() && w.abs() < 10.0));
         assert!(
             portfolio_variance(&allocator, &weights)
-                <= portfolio_variance(&allocator, &allocator.ew_allocation()) + 1e-15
+                <= portfolio_variance(&allocator, &allocator.allocate(&EqualWeight).unwrap())
+                    + 1e-15
         );
     }
 
@@ -3616,7 +2279,7 @@ mod tests {
         let mu = sample_mean(&allocator);
         let target = mu.mean() * 1.5;
         let weights = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .allocate(&MeanVariance::target_return(target).allow_short())
             .unwrap();
 
         let w = DVector::from_column_slice(weights.as_slice());
@@ -3627,12 +2290,14 @@ mod tests {
     #[test]
     fn test_mean_variance_target_at_min_variance_return_is_min_variance() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let min_variance = allocator.min_variance_allocation().unwrap();
+        let min_variance = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
         let mu = sample_mean(&allocator);
         let target = mu.dot(&DVector::from_column_slice(min_variance.as_slice()));
 
         let weights = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .allocate(&MeanVariance::target_return(target).allow_short())
             .unwrap();
         assert_weights_close(&weights, &min_variance, 1e-9);
     }
@@ -3643,7 +2308,7 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let gamma = 3.0;
         let weights = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(gamma))
+            .allocate(&MeanVariance::risk_aversion(gamma).allow_short())
             .unwrap();
 
         let w = DVector::from_column_slice(weights.as_slice());
@@ -3656,11 +2321,13 @@ mod tests {
     fn test_mean_variance_high_risk_aversion_approaches_min_variance() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let weights = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(1e9))
+            .allocate(&MeanVariance::risk_aversion(1e9).allow_short())
             .unwrap();
         assert_weights_close(
             &weights,
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-6,
         );
     }
@@ -3671,17 +2338,19 @@ mod tests {
         let flat = DVector::from_element(3, 0.01);
 
         // With nothing to choose between on return, risk aversion reduces to minimum variance.
-        let config = MeanVarianceConfig::risk_aversion(2.0).with_expected_returns(flat.clone());
+        let config = MeanVariance::risk_aversion(2.0).expected_returns(flat.as_slice());
         assert_weights_close(
-            &allocator.mean_variance_allocation(&config).unwrap(),
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator.allocate(&config.clone().allow_short()).unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-9,
         );
 
         // And no portfolio can target any other return.
-        let config = MeanVarianceConfig::target_return(0.02).with_expected_returns(flat);
+        let config = MeanVariance::target_return(0.02).expected_returns(flat.as_slice());
         assert_eq!(
-            allocator.mean_variance_allocation(&config).err(),
+            allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::DegenerateExpectedReturns)
         );
     }
@@ -3689,31 +2358,31 @@ mod tests {
     #[test]
     fn test_mean_variance_defaults_to_sample_mean() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let default = MeanVarianceConfig::risk_aversion(5.0);
+        let default = MeanVariance::risk_aversion(5.0);
         let explicit = default
             .clone()
-            .with_expected_returns(sample_mean(&allocator));
+            .expected_returns(sample_mean(&allocator).as_slice());
         assert_eq!(
-            allocator.mean_variance_allocation(&default).unwrap(),
-            allocator.mean_variance_allocation(&explicit).unwrap()
+            allocator.allocate(&default.clone().allow_short()).unwrap(),
+            allocator.allocate(&explicit.clone().allow_short()).unwrap()
         );
     }
 
     #[test]
     fn test_mean_variance_applies_covariance_config() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let plain = MeanVarianceConfig::risk_aversion(5.0);
+        let plain = MeanVariance::risk_aversion(5.0);
         let shrunk = plain
             .clone()
-            .with_covariance(CovarianceConfig::default().with_shrinkage(0.5));
+            .covariance(CovarianceConfig::default().with_shrinkage(0.5));
         assert_ne!(
-            allocator.mean_variance_allocation(&plain).unwrap(),
-            allocator.mean_variance_allocation(&shrunk).unwrap()
+            allocator.allocate(&plain.clone().allow_short()).unwrap(),
+            allocator.allocate(&shrunk.clone().allow_short()).unwrap()
         );
 
-        let invalid = plain.with_covariance(CovarianceConfig::default().with_shrinkage(2.0));
+        let invalid = plain.covariance(CovarianceConfig::default().with_shrinkage(2.0));
         assert_eq!(
-            allocator.mean_variance_allocation(&invalid).err(),
+            allocator.allocate(&invalid.clone().allow_short()).err(),
             Some(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 2.0
@@ -3725,27 +2394,27 @@ mod tests {
     fn test_mean_variance_rejects_invalid_config() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         for gamma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            match allocator.mean_variance_allocation(&MeanVarianceConfig::risk_aversion(gamma)) {
+            match allocator.allocate(&MeanVariance::risk_aversion(gamma).allow_short()) {
                 Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_aversion"),
                 other => panic!("gamma {gamma} gave {other:?}"),
             }
         }
-        match allocator.mean_variance_allocation(&MeanVarianceConfig::target_return(f64::NAN)) {
+        match allocator.allocate(&MeanVariance::target_return(f64::NAN).allow_short()) {
             Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "target_return"),
             other => panic!("NaN target gave {other:?}"),
         }
 
-        let config = MeanVarianceConfig::target_return(0.01)
-            .with_expected_returns(DVector::from_vec(vec![0.01, f64::NAN, 0.02]));
-        match allocator.mean_variance_allocation(&config) {
+        let config = MeanVariance::target_return(0.01)
+            .expected_returns(DVector::from_vec(vec![0.01, f64::NAN, 0.02]).as_slice());
+        match allocator.allocate(&config.clone().allow_short()) {
             Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "expected_returns"),
             other => panic!("NaN expected return gave {other:?}"),
         }
 
-        let config = MeanVarianceConfig::target_return(0.01)
-            .with_expected_returns(DVector::from_vec(vec![0.01, 0.02]));
+        let config = MeanVariance::target_return(0.01)
+            .expected_returns(DVector::from_vec(vec![0.01, 0.02]).as_slice());
         assert_eq!(
-            allocator.mean_variance_allocation(&config).err(),
+            allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::DimensionMismatch {
                 expected: 3,
                 actual: 2
@@ -3759,7 +2428,7 @@ mod tests {
             PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator
-                .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(1.0))
+                .allocate(&MeanVariance::risk_aversion(1.0).allow_short())
                 .err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
@@ -3777,7 +2446,9 @@ mod tests {
     #[test]
     fn test_min_variance_finds_zero_variance_portfolio_on_singular_covariance() {
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(portfolio_variance(&allocator, &weights) < 1e-18);
     }
@@ -3787,7 +2458,9 @@ mod tests {
         // 1 lies in Σ's null space, so 1ᵀΣ⁺1 is rounding noise; the hedged pair has zero variance.
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let weights = allocator.min_variance_allocation().unwrap();
+        let weights = allocator
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
         assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
     }
 
@@ -3855,7 +2528,11 @@ mod tests {
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let config = CovarianceConfig::default().with_shrinkage(0.9832865013278819);
         let weights = allocator
-            .min_variance_allocation_with_config(&config)
+            .allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(config.clone()),
+            )
             .unwrap();
         let cov = allocator.adjusted_covariance(&config).unwrap();
         let marginal = &cov * DVector::from_column_slice(weights.as_slice());
@@ -3863,7 +2540,7 @@ mod tests {
         assert!(marginal.max() - marginal.min() < 1e-14 * marginal.amax());
         assert_weights_close(
             &allocator
-                .long_only_min_variance_allocation_with_config(&config)
+                .allocate(&MinVariance::default().covariance(config.clone()))
                 .unwrap(),
             &weights,
             1e-14,
@@ -3877,15 +2554,19 @@ mod tests {
         let returns = dmatrix![0.01, 0.02; 0.01, 0.02; 0.01, 0.02];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let shrunk = CovarianceConfig::default().with_shrinkage(0.5);
-        let mean_variance = MeanVarianceConfig::risk_aversion(10.0).with_covariance(shrunk.clone());
-        let max_sharpe = MaxSharpeConfig::default().with_covariance(shrunk.clone());
-        let risk_parity = RiskParityConfig::default().with_covariance(shrunk.clone());
+        let mean_variance = MeanVariance::risk_aversion(10.0).covariance(shrunk.clone());
+        let max_sharpe = MaxSharpe::default().covariance(shrunk.clone());
+        let risk_parity = RiskParity::default().covariance(shrunk.clone());
         for result in [
-            allocator.min_variance_allocation_with_config(&shrunk),
-            allocator.long_only_min_variance_allocation_with_config(&shrunk),
-            allocator.mean_variance_allocation(&mean_variance),
-            allocator.max_sharpe_allocation(&max_sharpe),
-            allocator.risk_parity_allocation_with_config(&risk_parity),
+            allocator.allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(shrunk.clone()),
+            ),
+            allocator.allocate(&MinVariance::default().covariance(shrunk.clone())),
+            allocator.allocate(&mean_variance.clone().allow_short()),
+            allocator.allocate(&max_sharpe.clone().allow_short()),
+            allocator.allocate(&risk_parity),
         ] {
             assert_eq!(result, Err(CutupError::SingularCovariance));
         }
@@ -3919,11 +2600,13 @@ mod tests {
         // units u = diag(σ)w.
         let expected = Weights(vec![0.275093649, 0.331571165, 0.219203116, 0.174132070]);
         assert_weights_close(
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             &expected,
             1e-9,
         );
-        let weights = allocator.long_only_min_variance_allocation().unwrap();
+        let weights = allocator.allocate(&MinVariance::default()).unwrap();
         assert!(portfolio_variance(&allocator, &weights) < 1e-18);
     }
 
@@ -3940,8 +2623,10 @@ mod tests {
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_weights_close(
-            &allocator.long_only_min_variance_allocation().unwrap(),
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator.allocate(&MinVariance::default()).unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-12,
         );
     }
@@ -3951,9 +2636,14 @@ mod tests {
         // Unconstrained, (2, −1) hedges the collinear pair to zero variance. Long-only, any mix
         // of the two has more variance than the first asset alone.
         let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
-        assert!(allocator.min_variance_allocation().unwrap()[1] < 0.0);
+        assert!(
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap()[1]
+                < 0.0
+        );
         assert_eq!(
-            allocator.long_only_min_variance_allocation().unwrap(),
+            allocator.allocate(&MinVariance::default()).unwrap(),
             Weights(vec![1.0, 0.0])
         );
     }
@@ -3962,7 +2652,7 @@ mod tests {
     fn test_long_only_min_variance_on_singular_covariance() {
         // [4/7, 0, 3/7] is long-only with zero variance, so the minimum is zero.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let weights = allocator.long_only_min_variance_allocation().unwrap();
+        let weights = allocator.allocate(&MinVariance::default()).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(portfolio_variance(&allocator, &weights) < 1e-18);
@@ -3970,7 +2660,7 @@ mod tests {
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_weights_close(
-            &allocator.long_only_min_variance_allocation().unwrap(),
+            &allocator.allocate(&MinVariance::default()).unwrap(),
             &Weights(vec![0.5, 0.5]),
             1e-12,
         );
@@ -3993,7 +2683,7 @@ mod tests {
             let rows = 2 + case % (assets - 1);
             let returns = DMatrix::from_fn(rows, assets, |_, _| next());
             let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-            let weights = allocator.long_only_min_variance_allocation().unwrap();
+            let weights = allocator.allocate(&MinVariance::default()).unwrap();
             let w = DVector::from_column_slice(weights.as_slice());
             let marginal = &allocator.cov_matrix * &w;
             let v = w.dot(&marginal);
@@ -4011,7 +2701,7 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().with_shrinkage(1.5);
         assert_eq!(
-            allocator.long_only_min_variance_allocation_with_config(&config),
+            allocator.allocate(&MinVariance::default().covariance(config.clone())),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 1.5
@@ -4021,7 +2711,7 @@ mod tests {
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(
-            allocator.long_only_min_variance_allocation(),
+            allocator.allocate(&MinVariance::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
         );
     }
@@ -4040,19 +2730,13 @@ mod tests {
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let expected = dvector![0.001, 0.002, 0.003];
         for config in [
-            MeanVarianceConfig::risk_aversion(100.0),
-            MeanVarianceConfig::target_return(0.0015),
+            MeanVariance::risk_aversion(100.0),
+            MeanVariance::target_return(0.0015),
         ] {
-            let config = config.with_expected_returns(expected.clone());
-            let unconstrained = allocator.mean_variance_allocation(&config).unwrap();
+            let config = config.expected_returns(expected.as_slice());
+            let unconstrained = allocator.allocate(&config.clone().allow_short()).unwrap();
             assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
-            assert_weights_close(
-                &allocator
-                    .long_only_mean_variance_allocation(&config)
-                    .unwrap(),
-                &unconstrained,
-                1e-12,
-            );
+            assert_weights_close(&allocator.allocate(&config).unwrap(), &unconstrained, 1e-12);
         }
     }
 
@@ -4062,22 +2746,17 @@ mod tests {
         let expected = dvector![0.001, 0.003, 0.002];
 
         // With almost no aversion to risk, everything goes to the highest expected return.
-        let config =
-            MeanVarianceConfig::risk_aversion(1e-9).with_expected_returns(expected.clone());
+        let config = MeanVariance::risk_aversion(1e-9).expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap(),
+            &allocator.allocate(&config).unwrap(),
             &Weights(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
         // Only the asset with the highest expected return reaches it.
-        let config = MeanVarianceConfig::target_return(0.003).with_expected_returns(expected);
+        let config = MeanVariance::target_return(0.003).expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap(),
+            &allocator.allocate(&config).unwrap(),
             &Weights(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
@@ -4088,11 +2767,8 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         for target in [0.001, 0.0012, 0.0025, 0.0029] {
-            let config =
-                MeanVarianceConfig::target_return(target).with_expected_returns(expected.clone());
-            let weights = allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap();
+            let config = MeanVariance::target_return(target).expected_returns(expected.as_slice());
+            let weights = allocator.allocate(&config).unwrap();
             let w = DVector::from_column_slice(weights.as_slice());
             assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
             assert!((w.sum() - 1.0).abs() < 1e-12);
@@ -4108,12 +2784,10 @@ mod tests {
         // Returns of 100, 100 + 5e-11 and 100: the whole range is within rounding, and a
         // target at its top is only reached by the second asset.
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = MeanVarianceConfig::target_return(100.0 + 5e-11)
-            .with_expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0]);
+        let config = MeanVariance::target_return(100.0 + 5e-11)
+            .expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0].as_slice());
         assert_weights_close(
-            &allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap(),
+            &allocator.allocate(&config).unwrap(),
             &Weights(vec![0.0, 1.0, 0.0]),
             1e-15,
         );
@@ -4122,10 +2796,10 @@ mod tests {
     #[test]
     fn test_long_only_mean_variance_rejects_unreachable_targets() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = MeanVarianceConfig::target_return(0.004)
-            .with_expected_returns(dvector![0.001, 0.003, 0.002]);
+        let config = MeanVariance::target_return(0.004)
+            .expected_returns(dvector![0.001, 0.003, 0.002].as_slice());
         assert_eq!(
-            allocator.long_only_mean_variance_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::TargetReturnOutOfRange {
                 target_return: 0.004,
                 lowest: 0.001,
@@ -4135,17 +2809,15 @@ mod tests {
 
         // With equal expected returns, only that return can be targeted, by any portfolio.
         let flat = dvector![0.002, 0.002, 0.002];
-        let config = MeanVarianceConfig::target_return(0.001).with_expected_returns(flat.clone());
+        let config = MeanVariance::target_return(0.001).expected_returns(flat.as_slice());
         assert!(matches!(
-            allocator.long_only_mean_variance_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
-        let config = MeanVarianceConfig::target_return(0.002).with_expected_returns(flat);
+        let config = MeanVariance::target_return(0.002).expected_returns(flat.as_slice());
         assert_weights_close(
-            &allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap(),
-            &allocator.long_only_min_variance_allocation().unwrap(),
+            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&MinVariance::default()).unwrap(),
             1e-12,
         );
     }
@@ -4168,7 +2840,7 @@ mod tests {
         let config = CovarianceConfig::default();
         assert_weights_close(
             &allocator
-                .long_only_min_variance_allocation_with_config(&config)
+                .allocate(&MinVariance::default().covariance(config.clone()))
                 .unwrap(),
             &Weights(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
             1e-12,
@@ -4178,21 +2850,33 @@ mod tests {
         // inverse variance, 1/3 and 1/6.
         let capped = WeightBounds::per_asset(vec![0.0; 3], vec![0.5, 1.0, 1.0]);
         let weights = allocator
-            .long_only_min_variance_allocation_with_bounds(&config, &capped)
+            .allocate(
+                &MinVariance::default()
+                    .covariance(config.clone())
+                    .bounds(capped.clone()),
+            )
             .unwrap();
         assert_weights_close(&weights, &Weights(vec![0.5, 1.0 / 3.0, 1.0 / 6.0]), 1e-12);
 
         // A floor of 25% on the last asset leaves 75% to split 2 : 1.
         let floored = WeightBounds::per_asset(vec![0.0, 0.0, 0.25], vec![0.5, 1.0, 1.0]);
         let weights = allocator
-            .long_only_min_variance_allocation_with_bounds(&config, &floored)
+            .allocate(
+                &MinVariance::default()
+                    .covariance(config.clone())
+                    .bounds(floored.clone()),
+            )
             .unwrap();
         assert_weights_close(&weights, &Weights(vec![0.5, 0.25, 0.25]), 1e-12);
 
         // Floors and caps of 1/3 leave equal weights as the only portfolio.
         let pinned = WeightBounds::uniform(1.0 / 3.0, 1.0 / 3.0);
         let weights = allocator
-            .long_only_min_variance_allocation_with_bounds(&config, &pinned)
+            .allocate(
+                &MinVariance::default()
+                    .covariance(config.clone())
+                    .bounds(pinned.clone()),
+            )
             .unwrap();
         assert_weights_close(&weights, &Weights(vec![1.0 / 3.0; 3]), 1e-15);
     }
@@ -4204,24 +2888,26 @@ mod tests {
         let loose = WeightBounds::uniform(0.0, 1.0);
         assert_eq!(
             allocator
-                .long_only_min_variance_allocation_with_bounds(&config, &loose)
+                .allocate(
+                    &MinVariance::default()
+                        .covariance(config.clone())
+                        .bounds(loose.clone())
+                )
                 .unwrap(),
             allocator
-                .long_only_min_variance_allocation_with_config(&config)
+                .allocate(&MinVariance::default().covariance(config.clone()))
                 .unwrap()
         );
         for config in [
-            MeanVarianceConfig::risk_aversion(5.0),
-            MeanVarianceConfig::target_return(0.004),
+            MeanVariance::risk_aversion(5.0),
+            MeanVariance::target_return(0.004),
         ] {
-            let config = config.with_expected_returns(dvector![0.002, 0.006, 0.003]);
+            let config = config.expected_returns(dvector![0.002, 0.006, 0.003].as_slice());
             assert_eq!(
                 allocator
-                    .long_only_mean_variance_allocation_with_bounds(&config, &loose)
+                    .allocate(&config.clone().bounds(loose.clone()))
                     .unwrap(),
-                allocator
-                    .long_only_mean_variance_allocation(&config)
-                    .unwrap()
+                allocator.allocate(&config).unwrap()
             );
         }
     }
@@ -4233,8 +2919,8 @@ mod tests {
         let bounds = WeightBounds::uniform(0.0, 0.6);
 
         // The lowest return fills the last asset to 60% first, then the first to 40%.
-        let config = MeanVarianceConfig::target_return(0.004).with_expected_returns(mu.clone());
-        match allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds) {
+        let config = MeanVariance::target_return(0.004).expected_returns(mu.as_slice());
+        match allocator.allocate(&config.clone().bounds(bounds.clone())) {
             Err(CutupError::TargetReturnOutOfRange {
                 target_return,
                 lowest,
@@ -4249,16 +2935,16 @@ mod tests {
 
         // At the highest return the last asset holds nothing, and the two tied assets split
         // the weight by minimum variance, 2/3 and 1/3, until the 60% cap binds.
-        let config = MeanVarianceConfig::target_return(0.003).with_expected_returns(mu.clone());
+        let config = MeanVariance::target_return(0.003).expected_returns(mu.as_slice());
         let weights = allocator
-            .long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+            .allocate(&config.clone().bounds(bounds.clone()))
             .unwrap();
         assert_weights_close(&weights, &Weights(vec![0.6, 0.4, 0.0]), 1e-12);
 
         // In between, the target holds and the weights stay within the bounds.
-        let config = MeanVarianceConfig::target_return(0.0025).with_expected_returns(mu.clone());
+        let config = MeanVariance::target_return(0.0025).expected_returns(mu.as_slice());
         let weights = allocator
-            .long_only_mean_variance_allocation_with_bounds(&config, &bounds)
+            .allocate(&config.clone().bounds(bounds.clone()))
             .unwrap();
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - 0.0025).abs() < 1e-15, "{achieved}");
@@ -4275,7 +2961,11 @@ mod tests {
         let n = full_rank_prices().ncols();
         let config = CovarianceConfig::default();
         let solve = |bounds: WeightBounds| {
-            allocator.long_only_min_variance_allocation_with_bounds(&config, &bounds)
+            allocator.allocate(
+                &MinVariance::default()
+                    .covariance(config.clone())
+                    .bounds(bounds.clone()),
+            )
         };
         let infeasible = |lower_sum: f64, upper_sum: f64| {
             Err(CutupError::InfeasibleBounds {
@@ -4353,9 +3043,10 @@ mod tests {
         }))
         .unwrap();
         let weights = ten
-            .long_only_min_variance_allocation_with_bounds(
-                &config,
-                &WeightBounds::uniform(0.0, 0.1),
+            .allocate(
+                &MinVariance::default()
+                    .covariance(config.clone())
+                    .bounds(WeightBounds::uniform(0.0, 0.1)),
             )
             .unwrap();
         assert_weights_close(&weights, &Weights(vec![0.1; 10]), 1e-15);
@@ -4367,23 +3058,18 @@ mod tests {
 
         // A target a rounding error above the highest expected return is that return.
         let expected = dvector![0.001, 0.003, 0.002];
-        let config = MeanVarianceConfig::target_return(0.003 * (1.0 + 4.0 * f64::EPSILON))
-            .with_expected_returns(expected);
+        let config = MeanVariance::target_return(0.003 * (1.0 + 4.0 * f64::EPSILON))
+            .expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator
-                .long_only_mean_variance_allocation(&config)
-                .unwrap(),
+            &allocator.allocate(&config).unwrap(),
             &Weights(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
         // highest − lowest overflows here, which mustn't spoil the starting point.
         let expected = dvector![-1e308, 1e308, 0.0];
-        let config =
-            MeanVarianceConfig::target_return(5e307).with_expected_returns(expected.clone());
-        let weights = allocator
-            .long_only_mean_variance_allocation(&config)
-            .unwrap();
+        let config = MeanVariance::target_return(5e307).expected_returns(expected.as_slice());
+        let weights = allocator.allocate(&config).unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
         assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
         assert!(
@@ -4394,9 +3080,9 @@ mod tests {
         // An unreachable target is reported before the covariance is checked.
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let config = MeanVarianceConfig::target_return(1.0);
+        let config = MeanVariance::target_return(1.0);
         assert!(matches!(
-            allocator.long_only_mean_variance_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
     }
@@ -4413,16 +3099,12 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let config = MaxSharpeConfig::default()
-            .with_risk_free_rate(0.0005)
-            .with_expected_returns(dvector![0.001, 0.002, 0.003]);
-        let unconstrained = allocator.max_sharpe_allocation(&config).unwrap();
+        let config = MaxSharpe::default()
+            .risk_free_rate(0.0005)
+            .expected_returns(dvector![0.001, 0.002, 0.003].as_slice());
+        let unconstrained = allocator.allocate(&config.clone().allow_short()).unwrap();
         assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
-        assert_weights_close(
-            &allocator.long_only_max_sharpe_allocation(&config).unwrap(),
-            &unconstrained,
-            1e-12,
-        );
+        assert_weights_close(&allocator.allocate(&config).unwrap(), &unconstrained, 1e-12);
     }
 
     #[test]
@@ -4430,12 +3112,12 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         let at = |rate: f64| {
-            let config = MaxSharpeConfig::default()
-                .with_risk_free_rate(rate)
-                .with_expected_returns(expected.clone());
+            let config = MaxSharpe::default()
+                .risk_free_rate(rate)
+                .expected_returns(expected.as_slice());
             (
-                allocator.max_sharpe_allocation(&config),
-                allocator.long_only_max_sharpe_allocation(&config),
+                allocator.allocate(&config.clone().allow_short()),
+                allocator.allocate(&config),
             )
         };
 
@@ -4463,10 +3145,10 @@ mod tests {
     fn test_long_only_max_sharpe_extreme_returns() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let at = |rate: f64, expected: DVector<f64>| {
-            let config = MaxSharpeConfig::default()
-                .with_risk_free_rate(rate)
-                .with_expected_returns(expected);
-            allocator.long_only_max_sharpe_allocation(&config)
+            let config = MaxSharpe::default()
+                .risk_free_rate(rate)
+                .expected_returns(expected.as_slice());
+            allocator.allocate(&config)
         };
 
         // A subnormal excess return mustn't make the starting point infinite. With a zero
@@ -4512,7 +3194,7 @@ mod tests {
         let w = v.component_div(&sigma);
         let expected = Weights((&w / w.sum()).iter().copied().collect());
 
-        let weights = allocator.max_diversification_allocation().unwrap();
+        let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
         assert_weights_close(&weights, &expected, 1e-12);
         assert_weights_close(
             &weights,
@@ -4548,38 +3230,40 @@ mod tests {
         for s in [1e-4, 1e-8, 1e-12] {
             let returns = dmatrix![1.0, s; -1.0, s; 1.0, -s; -1.0, -s];
             let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-            let inverse_volatility = allocator.inverse_volatility_allocation().unwrap();
-            let inverse_variance = allocator.inverse_variance_allocation().unwrap();
+            let inverse_volatility = allocator.allocate(&InverseVolatility::default()).unwrap();
+            let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
             close(
-                &allocator.max_diversification_allocation().unwrap(),
+                &allocator.allocate(&MaxDiversification::default()).unwrap(),
                 &inverse_volatility,
                 s,
             );
             close(
-                &allocator.risk_parity_allocation().unwrap(),
+                &allocator.allocate(&RiskParity::default()).unwrap(),
                 &inverse_volatility,
                 s,
             );
             absolute(
-                &allocator.min_variance_allocation().unwrap(),
+                &allocator
+                    .allocate(&MinVariance::default().allow_short())
+                    .unwrap(),
                 &inverse_variance,
                 s,
             );
             absolute(
-                &allocator.long_only_min_variance_allocation().unwrap(),
+                &allocator.allocate(&MinVariance::default()).unwrap(),
                 &inverse_variance,
                 s,
             );
 
             // Equal Sharpe ratios: μᵢ ∝ σᵢ gives weights ∝ 1 / σᵢ.
-            let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.1, 0.1 * s]);
+            let config = MaxSharpe::default().expected_returns(dvector![0.1, 0.1 * s].as_slice());
             close(
-                &allocator.max_sharpe_allocation(&config).unwrap(),
+                &allocator.allocate(&config.clone().allow_short()).unwrap(),
                 &inverse_volatility,
                 s,
             );
             close(
-                &allocator.long_only_max_sharpe_allocation(&config).unwrap(),
+                &allocator.allocate(&config).unwrap(),
                 &inverse_volatility,
                 s,
             );
@@ -4591,14 +3275,14 @@ mod tests {
         // [4/7, 0, 3/7] is long-only with zero variance, so the ratio has no upper bound.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
         assert_eq!(
-            allocator.max_diversification_allocation(),
+            allocator.allocate(&MaxDiversification::default()),
             Err(CutupError::SingularCovariance)
         );
 
         // Shrinkage gives every portfolio some variance.
         let config = CovarianceConfig::default().with_shrinkage(0.3);
         let weights = allocator
-            .max_diversification_allocation_with_config(&config)
+            .allocate(&MaxDiversification::default().covariance(config.clone()))
             .unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -4606,7 +3290,7 @@ mod tests {
         // The collinear pair's zero-variance hedge shorts one asset, so long-only the ratio
         // is bounded: every mix of perfectly correlated assets has a ratio of 1.
         let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
-        let weights = allocator.max_diversification_allocation().unwrap();
+        let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
     }
 
@@ -4615,7 +3299,7 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().with_shrinkage(1.5);
         assert_eq!(
-            allocator.max_diversification_allocation_with_config(&config),
+            allocator.allocate(&MaxDiversification::default().covariance(config.clone())),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 1.5
@@ -4625,7 +3309,7 @@ mod tests {
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(
-            allocator.max_diversification_allocation(),
+            allocator.allocate(&MaxDiversification::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
         );
     }
@@ -4635,15 +3319,12 @@ mod tests {
         // [4/7, 0, 3/7] is long-only with zero variance, and with these expected returns its
         // excess return is positive, so the Sharpe ratio grows without limit.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.01, 0.0, 0.01]);
-        assert_eq!(
-            allocator.long_only_max_sharpe_allocation(&config),
-            Err(CutupError::Unbounded)
-        );
+        let config = MaxSharpe::default().expected_returns(dvector![0.01, 0.0, 0.01].as_slice());
+        assert_eq!(allocator.allocate(&config), Err(CutupError::Unbounded));
 
         // Shrinkage gives every portfolio some variance.
-        let config = config.with_covariance(CovarianceConfig::default().with_shrinkage(0.3));
-        let weights = allocator.long_only_max_sharpe_allocation(&config).unwrap();
+        let config = config.covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let weights = allocator.allocate(&config).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -4651,17 +3332,17 @@ mod tests {
     #[test]
     fn test_long_only_max_sharpe_rejects_bad_input() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = MaxSharpeConfig::default().with_risk_free_rate(f64::NAN);
+        let config = MaxSharpe::default().risk_free_rate(f64::NAN);
         assert!(matches!(
-            allocator.long_only_max_sharpe_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::InvalidConfig {
                 field: "risk_free_rate",
                 ..
             })
         ));
-        let config = MaxSharpeConfig::default().with_expected_returns(dvector![0.01]);
+        let config = MaxSharpe::default().expected_returns(dvector![0.01].as_slice());
         assert_eq!(
-            allocator.long_only_max_sharpe_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::DimensionMismatch {
                 expected: 3,
                 actual: 1
@@ -4674,14 +3355,12 @@ mod tests {
         // Unconstrained, utility grows without limit (see the next test). Long-only, the
         // weights can't grow, so there is always an optimum.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let config = MeanVarianceConfig::risk_aversion(2.0);
+        let config = MeanVariance::risk_aversion(2.0);
         assert_eq!(
-            allocator.mean_variance_allocation(&config),
+            allocator.allocate(&config.clone().allow_short()),
             Err(CutupError::Unbounded)
         );
-        let weights = allocator
-            .long_only_mean_variance_allocation(&config)
-            .unwrap();
+        let weights = allocator.allocate(&config).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -4690,24 +3369,22 @@ mod tests {
     fn test_long_only_mean_variance_rejects_bad_input() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         assert_eq!(
-            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::risk_aversion(0.0)),
+            allocator.allocate(&MeanVariance::risk_aversion(0.0)),
             Err(CutupError::InvalidConfig {
                 field: "risk_aversion",
                 value: 0.0
             })
         );
         assert_eq!(
-            allocator.long_only_mean_variance_allocation(&MeanVarianceConfig::target_return(
-                f64::INFINITY
-            )),
+            allocator.allocate(&MeanVariance::target_return(f64::INFINITY)),
             Err(CutupError::InvalidConfig {
                 field: "target_return",
                 value: f64::INFINITY
             })
         );
-        let config = MeanVarianceConfig::risk_aversion(1.0).with_expected_returns(dvector![0.01]);
+        let config = MeanVariance::risk_aversion(1.0).expected_returns(dvector![0.01].as_slice());
         assert_eq!(
-            allocator.long_only_mean_variance_allocation(&config),
+            allocator.allocate(&config),
             Err(CutupError::DimensionMismatch {
                 expected: 3,
                 actual: 1
@@ -4720,14 +3397,14 @@ mod tests {
         // With Σ singular, d = [5, -7, 2] has Σd = 0 and 1ᵀd = 0, but μᵀd ≠ 0 for the sample
         // mean, so utility grows without limit along d.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let config = MeanVarianceConfig::risk_aversion(2.0);
+        let config = MeanVariance::risk_aversion(2.0);
         assert_eq!(
-            allocator.mean_variance_allocation(&config).err(),
+            allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::Unbounded)
         );
 
-        let shrunk = config.with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-        assert!(allocator.mean_variance_allocation(&shrunk).is_ok());
+        let shrunk = config.covariance(CovarianceConfig::default().with_shrinkage(0.1));
+        assert!(allocator.allocate(&shrunk.clone().allow_short()).is_ok());
     }
 
     #[test]
@@ -4735,7 +3412,7 @@ mod tests {
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
         let target = 0.004;
         let weights = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .allocate(&MeanVariance::target_return(target).allow_short())
             .unwrap();
 
         let w = DVector::from_column_slice(weights.as_slice());
@@ -4749,11 +3426,13 @@ mod tests {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = MeanVarianceConfig::target_return(0.01)
-            .with_expected_returns(DVector::from_element(3, 0.01));
+        let config = MeanVariance::target_return(0.01)
+            .expected_returns(DVector::from_element(3, 0.01).as_slice());
         assert_weights_close(
-            &allocator.mean_variance_allocation(&config).unwrap(),
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator.allocate(&config.clone().allow_short()).unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-9,
         );
     }
@@ -4763,27 +3442,37 @@ mod tests {
         let returns = dmatrix![0.1, 0.01, 0.02; 0.1, -0.02, 0.01; 0.1, 0.03, -0.01];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(
-            allocator.min_variance_allocation().err(),
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
 
         let shrunk = CovarianceConfig::default().with_shrinkage(1.0);
         assert_weights_close(
             &allocator
-                .min_variance_allocation_with_config(&shrunk)
+                .allocate(
+                    &MinVariance::default()
+                        .allow_short()
+                        .covariance(shrunk.clone()),
+                )
                 .unwrap(),
-            &allocator.ew_allocation(),
+            &allocator.allocate(&EqualWeight).unwrap(),
             1e-12,
         );
 
         let regularized = CovarianceConfig::default().with_regularization(1e-6);
         let weights = allocator
-            .min_variance_allocation_with_config(&regularized)
+            .allocate(
+                &MinVariance::default()
+                    .allow_short()
+                    .covariance(regularized.clone()),
+            )
             .unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
 
-        let config = MeanVarianceConfig::risk_aversion(2.0).with_covariance(shrunk);
-        assert!(allocator.mean_variance_allocation(&config).is_ok());
+        let config = MeanVariance::risk_aversion(2.0).covariance(shrunk);
+        assert!(allocator.allocate(&config.clone().allow_short()).is_ok());
     }
 
     /// Five assets driven by two factors, interleaved: assets 0, 2 and 4 follow the first
@@ -4808,7 +3497,11 @@ mod tests {
             0.23653580200415913,
             0.3314082162724219,
         ]);
-        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-12);
+        assert_weights_close(
+            &allocator.allocate(&Hrp::default()).unwrap(),
+            &expected,
+            1e-12,
+        );
     }
 
     #[test]
@@ -4818,7 +3511,7 @@ mod tests {
         let (v1, v2) = (allocator.cov_matrix[(0, 0)], allocator.cov_matrix[(1, 1)]);
         let w1 = (1.0 / v1) / (1.0 / v1 + 1.0 / v2);
         assert_weights_close(
-            &allocator.hrp_allocation().unwrap(),
+            &allocator.allocate(&Hrp::default()).unwrap(),
             &Weights(vec![w1, 1.0 - w1]),
             1e-12,
         );
@@ -4839,13 +3532,17 @@ mod tests {
         let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
         let total: f64 = inverse.iter().sum();
         let expected = Weights(inverse.iter().map(|x| x / total).collect());
-        assert_weights_close(&allocator.hrp_allocation().unwrap(), &expected, 1e-12);
+        assert_weights_close(
+            &allocator.allocate(&Hrp::default()).unwrap(),
+            &expected,
+            1e-12,
+        );
     }
 
     #[test]
     fn test_hrp_order_groups_correlated_assets() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let order = allocator.hrp_cluster_order(&HrpConfig::default()).unwrap();
+        let order = Hrp::default().cluster_order(&allocator).unwrap();
 
         let mut sorted = order.clone();
         sorted.sort_unstable();
@@ -4866,8 +3563,8 @@ mod tests {
             Linkage::Average,
             Linkage::Ward,
         ] {
-            let config = HrpConfig::default().with_linkage(linkage);
-            let order = allocator.hrp_cluster_order(&config).unwrap();
+            let config = Hrp::default().linkage(linkage);
+            let order = config.cluster_order(&allocator).unwrap();
 
             let mut sorted = order.clone();
             sorted.sort_unstable();
@@ -4878,7 +3575,7 @@ mod tests {
             first_block.sort_unstable();
             assert_eq!(first_block[2] - first_block[0], 2, "{linkage:?}: {order:?}");
 
-            let weights = allocator.hrp_allocation_with_config(&config).unwrap();
+            let weights = allocator.allocate(&config).unwrap();
             assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
             assert!(weights.iter().all(|&w| w >= 0.0));
         }
@@ -4887,11 +3584,11 @@ mod tests {
     #[test]
     fn test_hrp_defaults_to_single_linkage() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        assert_eq!(HrpConfig::default().linkage, Linkage::Single);
+        assert_eq!(Hrp::default(), Hrp::default().linkage(Linkage::Single));
         assert_eq!(
-            allocator.hrp_allocation().unwrap(),
+            allocator.allocate(&Hrp::default()).unwrap(),
             allocator
-                .hrp_allocation_with_config(&HrpConfig::default().with_linkage(Linkage::Single))
+                .allocate(&Hrp::default().linkage(Linkage::Single))
                 .unwrap()
         );
     }
@@ -4907,11 +3604,11 @@ mod tests {
 
         let base = PortfolioAllocator::from_returns(returns)
             .unwrap()
-            .hrp_allocation()
+            .allocate(&Hrp::default())
             .unwrap();
         let shuffled = PortfolioAllocator::from_returns(permuted)
             .unwrap()
-            .hrp_allocation()
+            .allocate(&Hrp::default())
             .unwrap();
 
         for (j, &asset) in permutation.iter().enumerate() {
@@ -4920,20 +3617,32 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_hrp_cluster_order_matches_hrp() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        for linkage in [Linkage::Single, Linkage::Ward] {
+            assert_eq!(
+                allocator.hrp_cluster_order(&HrpConfig::default().with_linkage(linkage)),
+                Hrp::default().linkage(linkage).cluster_order(&allocator)
+            );
+        }
+    }
+
+    #[test]
     fn test_hrp_single_asset() {
         let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
+        assert_eq!(Hrp::default().cluster_order(&allocator).unwrap(), vec![0]);
         assert_eq!(
-            allocator.hrp_cluster_order(&HrpConfig::default()).unwrap(),
-            vec![0]
+            allocator.allocate(&Hrp::default()).unwrap().as_slice(),
+            &[1.0]
         );
-        assert_eq!(allocator.hrp_allocation().unwrap().as_slice(), &[1.0]);
     }
 
     #[test]
     fn test_hrp_singular_covariance() {
         // HRP never inverts Σ, so rank-deficient data still gives positive weights.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
-        let weights = allocator.hrp_allocation().unwrap();
+        let weights = allocator.allocate(&Hrp::default()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
     }
@@ -4953,7 +3662,7 @@ mod tests {
         });
         let weights = PortfolioAllocator::from_returns(returns)
             .unwrap()
-            .hrp_allocation()
+            .allocate(&Hrp::default())
             .unwrap();
 
         assert!((weights[0] - 0.5).abs() < 1e-12 && (weights[1] - 0.5).abs() < 1e-12);
@@ -4971,7 +3680,7 @@ mod tests {
         for returns in [infinite, nan] {
             let allocator = PortfolioAllocator::from_returns(returns).unwrap();
             assert_eq!(
-                allocator.hrp_allocation().err(),
+                allocator.allocate(&Hrp::default()).err(),
                 Some(CutupError::NonFiniteCovariance)
             );
         }
@@ -4984,7 +3693,7 @@ mod tests {
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_weights_close(
-            &allocator.hrp_allocation().unwrap(),
+            &allocator.allocate(&Hrp::default()).unwrap(),
             &Weights(vec![0.5, 0.5]),
             1e-12,
         );
@@ -5007,12 +3716,12 @@ mod tests {
             Weights(raw.iter().map(|x| x / total).collect())
         };
         assert_weights_close(
-            &allocator.inverse_volatility_allocation().unwrap(),
+            &allocator.allocate(&InverseVolatility::default()).unwrap(),
             &normalize([1.0 / s1, 1.0 / s2, 1.0 / s3]),
             1e-12,
         );
         assert_weights_close(
-            &allocator.inverse_variance_allocation().unwrap(),
+            &allocator.allocate(&InverseVariance::default()).unwrap(),
             &normalize([1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)]),
             1e-12,
         );
@@ -5028,15 +3737,17 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let inverse_variance = allocator.inverse_variance_allocation().unwrap();
+        let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
         assert_weights_close(
             &inverse_variance,
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             1e-12,
         );
         assert_weights_close(
             &inverse_variance,
-            &allocator.hrp_allocation().unwrap(),
+            &allocator.allocate(&Hrp::default()).unwrap(),
             1e-12,
         );
     }
@@ -5053,7 +3764,7 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let weights = allocator.inverse_volatility_allocation().unwrap();
+        let weights = allocator.allocate(&InverseVolatility::default()).unwrap();
         let contributions: Vec<f64> = (0..3)
             .map(|i| weights[i] * weights[i] * allocator.cov_matrix[(i, i)])
             .collect();
@@ -5070,12 +3781,12 @@ mod tests {
 
         for (a, b) in [
             (
-                base.inverse_volatility_allocation().unwrap(),
-                scaled.inverse_volatility_allocation().unwrap(),
+                base.allocate(&InverseVolatility::default()).unwrap(),
+                scaled.allocate(&InverseVolatility::default()).unwrap(),
             ),
             (
-                base.inverse_variance_allocation().unwrap(),
-                scaled.inverse_variance_allocation().unwrap(),
+                base.allocate(&InverseVariance::default()).unwrap(),
+                scaled.allocate(&InverseVariance::default()).unwrap(),
             ),
         ] {
             assert_weights_close(&a, &b, 1e-12);
@@ -5089,11 +3800,11 @@ mod tests {
         let allocator =
             PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
-            allocator.inverse_volatility_allocation().err(),
+            allocator.allocate(&InverseVolatility::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
         assert_eq!(
-            allocator.inverse_variance_allocation().err(),
+            allocator.allocate(&InverseVariance::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
@@ -5105,7 +3816,12 @@ mod tests {
     }
 
     fn min_variance_return(allocator: &PortfolioAllocator) -> f64 {
-        let w = DVector::from_column_slice(allocator.min_variance_allocation().unwrap().as_slice());
+        let w = DVector::from_column_slice(
+            allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap()
+                .as_slice(),
+        );
         sample_mean(allocator).dot(&w)
     }
 
@@ -5113,8 +3829,8 @@ mod tests {
     fn test_max_sharpe_closed_form() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
-        let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
-        let weights = allocator.max_sharpe_allocation(&config).unwrap();
+        let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
+        let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
 
         let excess = sample_mean(&allocator).add_scalar(-risk_free_rate);
         let z = allocator.cov_matrix.clone().try_inverse().unwrap() * excess;
@@ -5126,21 +3842,23 @@ mod tests {
     fn test_max_sharpe_beats_every_other_method() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
-        let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
+        let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
         let best = sharpe(
             &allocator,
-            &allocator.max_sharpe_allocation(&config).unwrap(),
+            &allocator.allocate(&config.clone().allow_short()).unwrap(),
             risk_free_rate,
         );
 
         let others = [
-            allocator.ew_allocation(),
-            allocator.inverse_volatility_allocation().unwrap(),
-            allocator.inverse_variance_allocation().unwrap(),
-            allocator.min_variance_allocation().unwrap(),
-            allocator.hrp_allocation().unwrap(),
+            allocator.allocate(&EqualWeight).unwrap(),
+            allocator.allocate(&InverseVolatility::default()).unwrap(),
+            allocator.allocate(&InverseVariance::default()).unwrap(),
             allocator
-                .mean_variance_allocation(&MeanVarianceConfig::risk_aversion(50.0))
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
+            allocator.allocate(&Hrp::default()).unwrap(),
+            allocator
+                .allocate(&MeanVariance::risk_aversion(50.0).allow_short())
                 .unwrap(),
         ];
         for weights in &others {
@@ -5154,11 +3872,15 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
         let tangency = allocator
-            .max_sharpe_allocation(&MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate))
+            .allocate(
+                &MaxSharpe::default()
+                    .risk_free_rate(risk_free_rate)
+                    .allow_short(),
+            )
             .unwrap();
         let target = sample_mean(&allocator).dot(&DVector::from_column_slice(tangency.as_slice()));
         let frontier = allocator
-            .mean_variance_allocation(&MeanVarianceConfig::target_return(target))
+            .allocate(&MeanVariance::target_return(target).allow_short())
             .unwrap();
         assert_weights_close(&tangency, &frontier, 1e-9);
     }
@@ -5168,8 +3890,8 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
         for risk_free_rate in [threshold, threshold + 0.001] {
-            let config = MaxSharpeConfig::default().with_risk_free_rate(risk_free_rate);
-            match allocator.max_sharpe_allocation(&config) {
+            let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
+            match allocator.allocate(&config.clone().allow_short()) {
                 Err(CutupError::RiskFreeRateTooHigh {
                     risk_free_rate: got,
                     min_variance_return,
@@ -5189,15 +3911,15 @@ mod tests {
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
         assert_eq!(
             allocator
-                .max_sharpe_allocation(&MaxSharpeConfig::default())
+                .allocate(&MaxSharpe::default().allow_short())
                 .err(),
             Some(CutupError::Unbounded)
         );
 
-        let shrunk = MaxSharpeConfig::default()
-            .with_risk_free_rate(-0.01)
-            .with_covariance(CovarianceConfig::default().with_shrinkage(0.5));
-        let weights = allocator.max_sharpe_allocation(&shrunk).unwrap();
+        let shrunk = MaxSharpe::default()
+            .risk_free_rate(-0.01)
+            .covariance(CovarianceConfig::default().with_shrinkage(0.5));
+        let weights = allocator.allocate(&shrunk.clone().allow_short()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
 
@@ -5220,14 +3942,16 @@ mod tests {
 
         // The zero-variance portfolio is the minimum variance portfolio.
         assert_weights_close(
-            &allocator.min_variance_allocation().unwrap(),
+            &allocator
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
             &Weights(vec![2.0, -1.0]),
             1e-9,
         );
 
         // It returns −0.001, below a risk-free rate of 0: no maximum, and the threshold reported
         // is its return.
-        match allocator.max_sharpe_allocation(&MaxSharpeConfig::default()) {
+        match allocator.allocate(&MaxSharpe::default().allow_short()) {
             Err(CutupError::RiskFreeRateTooHigh {
                 min_variance_return,
                 ..
@@ -5237,9 +3961,9 @@ mod tests {
 
         // Below its return, the zero-variance portfolio has excess return and no risk, so the
         // Sharpe ratio is unbounded.
-        let config = MaxSharpeConfig::default().with_risk_free_rate(-0.01);
+        let config = MaxSharpe::default().risk_free_rate(-0.01);
         assert_eq!(
-            allocator.max_sharpe_allocation(&config).err(),
+            allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::Unbounded)
         );
     }
@@ -5250,24 +3974,22 @@ mod tests {
         // maximum, however leveraged.
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
-        let config = MaxSharpeConfig::default().with_risk_free_rate(threshold - 1e-6);
-        let weights = allocator.max_sharpe_allocation(&config).unwrap();
+        let config = MaxSharpe::default().risk_free_rate(threshold - 1e-6);
+        let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_max_sharpe_rejects_invalid_config() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        match allocator
-            .max_sharpe_allocation(&MaxSharpeConfig::default().with_risk_free_rate(f64::NAN))
-        {
+        match allocator.allocate(&MaxSharpe::default().risk_free_rate(f64::NAN).allow_short()) {
             Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_free_rate"),
             other => panic!("NaN risk-free rate gave {other:?}"),
         }
         let config =
-            MaxSharpeConfig::default().with_expected_returns(DVector::from_vec(vec![0.01]));
+            MaxSharpe::default().expected_returns(DVector::from_vec(vec![0.01]).as_slice());
         assert_eq!(
-            allocator.max_sharpe_allocation(&config).err(),
+            allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::DimensionMismatch {
                 expected: 3,
                 actual: 1
@@ -5277,9 +3999,7 @@ mod tests {
         let constant =
             PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
-            constant
-                .max_sharpe_allocation(&MaxSharpeConfig::default())
-                .err(),
+            constant.allocate(&MaxSharpe::default().allow_short()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
@@ -5292,11 +4012,12 @@ mod tests {
             120.0
         ];
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
-        let ew_weights = allocator.ew_allocation();
+        let ew_weights = allocator.allocate(&EqualWeight).unwrap();
         assert_eq!(ew_weights.as_slice(), &[1.0]);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_run_portfolio_allocation() {
         let prices = DMatrix::from_row_slice(
             4,
@@ -5307,7 +4028,14 @@ mod tests {
             ],
         );
 
-        let weights = run_portfolio_allocation(prices).unwrap();
+        let weights = run_portfolio_allocation(prices.clone()).unwrap();
+        assert_eq!(
+            weights,
+            PortfolioAllocator::from_prices(prices)
+                .unwrap()
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap()
+        );
 
         let total_weight: f64 = weights.iter().sum();
         assert!(
@@ -5319,6 +4047,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_run_portfolio_allocation_propagates_errors() {
         assert_eq!(
             run_portfolio_allocation(dmatrix![100.0; 0.0; 110.0]).err(),
@@ -5357,7 +4086,11 @@ mod tests {
 
         for config in &configs {
             let weights = allocator
-                .min_variance_allocation_with_config(config)
+                .allocate(
+                    &MinVariance::default()
+                        .allow_short()
+                        .covariance(config.clone()),
+                )
                 .unwrap();
             assert_eq!(weights.len(), 3, "{config:?}");
             assert!(
@@ -5378,7 +4111,7 @@ mod tests {
     #[test]
     fn test_risk_parity_equalizes_risk_contributions() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let weights = allocator.risk_parity_allocation().unwrap();
+        let weights = allocator.allocate(&RiskParity::default()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
         for share in risk_shares(&allocator, &weights) {
@@ -5392,10 +4125,8 @@ mod tests {
         // Spanning eight orders of magnitude, and not summing to 1.
         let budgets = [1e-8, 3.0, 1.0];
         let config =
-            RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(&budgets));
-        let weights = allocator
-            .risk_parity_allocation_with_config(&config)
-            .unwrap();
+            RiskParity::default().risk_budgets(DVector::from_row_slice(&budgets).as_slice());
+        let weights = allocator.allocate(&config).unwrap();
         let total: f64 = budgets.iter().sum();
         for (share, budget) in risk_shares(&allocator, &weights).iter().zip(budgets) {
             assert!(
@@ -5427,34 +4158,29 @@ mod tests {
             ],
         );
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let config = RiskParityConfig::default()
-            .with_risk_budgets(DVector::from_row_slice(&[
-                0.8571666963481355,
-                0.45606979884293564,
-            ]))
-            .with_covariance(CovarianceConfig::default().with_shrinkage(0.29613802865778266));
-        assert!(allocator
-            .risk_parity_allocation_with_config(&config)
-            .is_ok());
+        let config = RiskParity::default()
+            .risk_budgets(
+                DVector::from_row_slice(&[0.8571666963481355, 0.45606979884293564]).as_slice(),
+            )
+            .covariance(CovarianceConfig::default().with_shrinkage(0.29613802865778266));
+        assert!(allocator.allocate(&config).is_ok());
     }
 
     #[test]
     fn test_risk_parity_extreme_budgets() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let budgets =
-            |b: &[f64]| RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(b));
+            |b: &[f64]| RiskParity::default().risk_budgets(DVector::from_row_slice(b).as_slice());
         // Budgets whose sum overflows give the same weights as equal budgets.
         assert_weights_close(
             &allocator
-                .risk_parity_allocation_with_config(&budgets(&[1e308, 1e308, 1e308]))
+                .allocate(&budgets(&[1e308, 1e308, 1e308]))
                 .unwrap(),
-            &allocator.risk_parity_allocation().unwrap(),
+            &allocator.allocate(&RiskParity::default()).unwrap(),
             1e-15,
         );
         // Budgets 10¹⁴ apart still converge.
-        let weights = allocator
-            .risk_parity_allocation_with_config(&budgets(&[1.0, 1e-14, 1e-14]))
-            .unwrap();
+        let weights = allocator.allocate(&budgets(&[1.0, 1e-14, 1e-14])).unwrap();
         let shares = risk_shares(&allocator, &weights);
         // Rounding in (Σw)ᵢ limits a tiny share's relative accuracy, so compare absolutely.
         for (share, budget) in shares.iter().zip([1.0, 1e-14, 1e-14]) {
@@ -5462,7 +4188,7 @@ mod tests {
         }
         // Far beyond that the solver can stop early, which isn't a singular covariance.
         assert_eq!(
-            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1e-200, 1.0])),
+            allocator.allocate(&budgets(&[1.0, 1e-200, 1.0])),
             Err(CutupError::NotConverged)
         );
     }
@@ -5473,8 +4199,8 @@ mod tests {
         let allocator =
             PortfolioAllocator::from_prices(full_rank_prices().columns(0, 2).into_owned()).unwrap();
         assert_weights_close(
-            &allocator.risk_parity_allocation().unwrap(),
-            &allocator.inverse_volatility_allocation().unwrap(),
+            &allocator.allocate(&RiskParity::default()).unwrap(),
+            &allocator.allocate(&InverseVolatility::default()).unwrap(),
             1e-12,
         );
     }
@@ -5484,15 +4210,11 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let scaled = PortfolioAllocator::from_returns(&allocator.returns * 1e-3).unwrap();
         let budgets = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
-        let config = RiskParityConfig::default().with_risk_budgets(budgets.clone());
-        let scaled_config = RiskParityConfig::default().with_risk_budgets(budgets * 7.0);
+        let config = RiskParity::default().risk_budgets(budgets.as_slice());
+        let scaled_config = RiskParity::default().risk_budgets((budgets * 7.0).as_slice());
         assert_weights_close(
-            &allocator
-                .risk_parity_allocation_with_config(&config)
-                .unwrap(),
-            &scaled
-                .risk_parity_allocation_with_config(&scaled_config)
-                .unwrap(),
+            &allocator.allocate(&config).unwrap(),
+            &scaled.allocate(&scaled_config).unwrap(),
             1e-12,
         );
     }
@@ -5501,20 +4223,18 @@ mod tests {
     fn test_risk_parity_on_singular_covariance() {
         // Positively collinear assets have a singular Σ, but every long-only portfolio is risky.
         let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
-        let weights = allocator.risk_parity_allocation().unwrap();
+        let weights = allocator.allocate(&RiskParity::default()).unwrap();
         assert_weights_close(&weights, &Weights(vec![2.0 / 3.0, 1.0 / 3.0]), 1e-12);
 
         // Here the long-only portfolio (1, 1, 1) / 3 has zero variance.
         let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
         assert_eq!(
-            allocator.risk_parity_allocation(),
+            allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
         );
-        let config = RiskParityConfig::default()
-            .with_covariance(CovarianceConfig::default().with_shrinkage(0.3));
-        let weights = allocator
-            .risk_parity_allocation_with_config(&config)
-            .unwrap();
+        let config =
+            RiskParity::default().covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let weights = allocator.allocate(&config).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
     }
@@ -5524,14 +4244,12 @@ mod tests {
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.015, -0.015];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(
-            allocator.risk_parity_allocation(),
+            allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
         );
-        let config = RiskParityConfig::default()
-            .with_covariance(CovarianceConfig::default().with_regularization(1e-6));
-        let weights = allocator
-            .risk_parity_allocation_with_config(&config)
-            .unwrap();
+        let config =
+            RiskParity::default().covariance(CovarianceConfig::default().with_regularization(1e-6));
+        let weights = allocator.allocate(&config).unwrap();
         assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
     }
 
@@ -5539,9 +4257,9 @@ mod tests {
     fn test_risk_parity_rejects_invalid_config() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let budgets =
-            |b: &[f64]| RiskParityConfig::default().with_risk_budgets(DVector::from_row_slice(b));
+            |b: &[f64]| RiskParity::default().risk_budgets(DVector::from_row_slice(b).as_slice());
         assert_eq!(
-            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1.0])),
+            allocator.allocate(&budgets(&[1.0, 1.0])),
             Err(CutupError::DimensionMismatch {
                 expected: 3,
                 actual: 2
@@ -5549,7 +4267,7 @@ mod tests {
         );
         for bad in [0.0, -1.0, f64::INFINITY] {
             assert_eq!(
-                allocator.risk_parity_allocation_with_config(&budgets(&[1.0, bad, 1.0])),
+                allocator.allocate(&budgets(&[1.0, bad, 1.0])),
                 Err(CutupError::InvalidConfig {
                     field: "risk_budgets",
                     value: bad
@@ -5557,16 +4275,16 @@ mod tests {
             );
         }
         assert!(matches!(
-            allocator.risk_parity_allocation_with_config(&budgets(&[1.0, 1.0, f64::NAN])),
+            allocator.allocate(&budgets(&[1.0, 1.0, f64::NAN])),
             Err(CutupError::InvalidConfig {
                 field: "risk_budgets",
                 ..
             })
         ));
-        let config = RiskParityConfig::default()
-            .with_covariance(CovarianceConfig::default().with_shrinkage(2.0));
+        let config =
+            RiskParity::default().covariance(CovarianceConfig::default().with_shrinkage(2.0));
         assert_eq!(
-            allocator.risk_parity_allocation_with_config(&config),
+            allocator.allocate(&config),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 2.0
@@ -5579,25 +4297,23 @@ mod tests {
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         assert_eq!(
-            allocator.risk_parity_allocation(),
+            allocator.allocate(&RiskParity::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
         );
         // Regularization gives the constant asset a variance, and nearly all the weight.
-        let config = RiskParityConfig::default()
-            .with_covariance(CovarianceConfig::default().with_regularization(1e-8));
-        let weights = allocator
-            .risk_parity_allocation_with_config(&config)
-            .unwrap();
+        let config =
+            RiskParity::default().covariance(CovarianceConfig::default().with_regularization(1e-8));
+        let weights = allocator.allocate(&config).unwrap();
         assert!(weights[1] > 0.99);
     }
 
     #[test]
     fn test_herc_with_one_cluster_is_inverse_variance() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let config = HercConfig::default().with_clusters(1);
+        let config = Herc::default().clusters(1);
         assert_weights_close(
-            &allocator.herc_allocation_with_config(&config).unwrap(),
-            &allocator.inverse_variance_allocation().unwrap(),
+            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&InverseVariance::default()).unwrap(),
             1e-15,
         );
     }
@@ -5605,9 +4321,7 @@ mod tests {
     #[test]
     fn test_herc_splits_between_blocks_by_risk() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let weights = allocator
-            .herc_allocation_with_config(&HercConfig::default().with_clusters(2))
-            .unwrap();
+        let weights = allocator.allocate(&Herc::default().clusters(2)).unwrap();
         let (a, b) = ([0, 2, 4], [1, 3]);
         let (risk_a, risk_b) = (
             allocator.cluster_variance(&a),
@@ -5616,7 +4330,7 @@ mod tests {
         let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
         assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
         // Within a block, inverse variance.
-        let iv = allocator.inverse_variance_allocation().unwrap();
+        let iv = allocator.allocate(&InverseVariance::default()).unwrap();
         assert!((weights[0] / weights[4] - iv[0] / iv[4]).abs() < 1e-12);
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -5624,26 +4338,22 @@ mod tests {
     #[test]
     fn test_herc_chooses_the_blocks() {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        let config = HercConfig::default().with_clusters(2);
+        let config = Herc::default().clusters(2);
         assert_eq!(
-            allocator.herc_allocation(),
-            allocator.herc_allocation_with_config(&config)
+            allocator.allocate(&Herc::default()),
+            allocator.allocate(&config)
         );
     }
 
     #[test]
     fn test_herc_two_assets_is_inverse_variance() {
         let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
-        let iv = allocator.inverse_variance_allocation().unwrap();
+        let iv = allocator.allocate(&InverseVariance::default()).unwrap();
         for clusters in [1, 2] {
-            let config = HercConfig::default().with_clusters(clusters);
-            assert_weights_close(
-                &allocator.herc_allocation_with_config(&config).unwrap(),
-                &iv,
-                1e-15,
-            );
+            let config = Herc::default().clusters(clusters);
+            assert_weights_close(&allocator.allocate(&config).unwrap(), &iv, 1e-15);
         }
-        assert_weights_close(&allocator.herc_allocation().unwrap(), &iv, 1e-15);
+        assert_weights_close(&allocator.allocate(&Herc::default()).unwrap(), &iv, 1e-15);
     }
 
     #[test]
@@ -5655,8 +4365,8 @@ mod tests {
             0.015, -0.015, -0.01, 0.01
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let config = HercConfig::default().with_clusters(4);
-        let weights = allocator.herc_allocation_with_config(&config).unwrap();
+        let config = Herc::default().clusters(4);
+        let weights = allocator.allocate(&config).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w >= 0.0));
     }
@@ -5666,8 +4376,7 @@ mod tests {
         let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
         for clusters in [0, 6] {
             assert_eq!(
-                allocator
-                    .herc_allocation_with_config(&HercConfig::default().with_clusters(clusters)),
+                allocator.allocate(&Herc::default().clusters(clusters)),
                 Err(CutupError::InvalidConfig {
                     field: "clusters",
                     value: clusters as f64
@@ -5675,10 +4384,10 @@ mod tests {
             );
         }
         // max_clusters only limits the gap statistic, so it's ignored when clusters is set.
-        let fixed = HercConfig::default().with_clusters(2).with_max_clusters(0);
-        assert!(allocator.herc_allocation_with_config(&fixed).is_ok());
+        let fixed = Herc::default().clusters(2).max_clusters(0);
+        assert!(allocator.allocate(&fixed).is_ok());
         assert_eq!(
-            allocator.herc_allocation_with_config(&HercConfig::default().with_max_clusters(0)),
+            allocator.allocate(&Herc::default().max_clusters(0)),
             Err(CutupError::InvalidConfig {
                 field: "max_clusters",
                 value: 0.0
@@ -5688,7 +4397,7 @@ mod tests {
         assert_eq!(
             PortfolioAllocator::from_returns(returns)
                 .unwrap()
-                .herc_allocation(),
+                .allocate(&Herc::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
         );
     }
