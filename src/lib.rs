@@ -626,7 +626,10 @@ impl WeightBounds {
         } else {
             upper
         };
-        let upper = DVector::from_fn(n, |i, _| upper[i].min(1.0 - (lower_sum - lower[i])));
+        // Rounding can put that room a hair below lᵢ when the lower bounds sum to 1.
+        let upper = DVector::from_fn(n, |i, _| {
+            upper[i].min(1.0 - (lower_sum - lower[i])).max(lower[i])
+        });
         Ok(qp::Bounds { lower, upper })
     }
 }
