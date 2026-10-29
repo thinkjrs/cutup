@@ -243,11 +243,11 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
-Three other changes in 0.3.0 can need edits:
+Three other changes in 0.3.0:
 
 | 0.2 | 0.3 |
 | --- | --- |
-| `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private, so set it only through these. |
+| `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
 | `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
 

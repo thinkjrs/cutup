@@ -15,12 +15,13 @@ All notable changes to this project are documented here. The format follows
   `PortfolioAllocator::allocate` with the method values, and `Hrp::cluster_order`; the
   README's "Upgrading from 0.2" section maps each one to its replacement.
 - `Weights::to_hashmap`, left over from when methods returned a `HashMap`. Use
-  `weights.iter().copied().enumerate().collect()`, or `as_slice()`.
+  `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `as_slice()`.
 
 ### Changed
 
 - `CovarianceConfig`'s setters are `shrinkage(λ)` and `regularization(ε)`, without `with_`,
-  like every other setter. Its fields are private, so it's set only through them.
+  like every other setter. Its fields are private: set them through the setters, and read
+  them with the new `lambda()` and `epsilon()`, which return the λ and ε set, or `None`.
 - `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
   written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
   `default()` still works.
