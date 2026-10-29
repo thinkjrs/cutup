@@ -3,7 +3,7 @@
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, HercConfig, Hrp, HrpConfig,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MaxSharpeConfig,
-    MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParity,
+    MeanVariance, MeanVarianceConfig, MinCvar, MinVariance, PortfolioAllocator, RiskParity,
     RiskParityConfig, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
@@ -1421,5 +1421,78 @@ proptest! {
         };
         let (cheap, dear) = (trade(cost), trade(cost + more));
         prop_assert!(dear <= cheap + 1e-9, "{dear} > {cheap}");
+    }
+
+    #[test]
+    fn min_cvar_beats_every_long_only_portfolio_tried(
+        returns in returns(),
+        beta in 0.5f64..0.99,
+        tries in prop::collection::vec(prop::collection::vec(0.0f64..1.0, 6), 30),
+    ) {
+        let n = returns.ncols();
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let weights = allocator.allocate(&MinCvar::default().confidence(beta)).unwrap();
+        prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        prop_assert!(weights.iter().all(|&w| w >= 0.0));
+        let best = allocator.cvar(&weights, beta).unwrap();
+        let scale = best.abs().max(1e-3);
+        let mut candidates: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        candidates.push(vec![1.0 / n as f64; n]);
+        candidates.extend(tries.iter().map(|t| current_weights(&t.iter().map(|x| x + 1e-3).collect::<Vec<_>>(), n)));
+        for candidate in candidates {
+            let other = allocator.cvar(&Weights::from(candidate.clone()), beta).unwrap();
+            prop_assert!(best <= other + 1e-12 * scale, "{best} > {other} at {candidate:?}");
+        }
+    }
+
+    #[test]
+    fn min_cvar_meets_its_bounds_and_target(
+        returns in returns(),
+        beta in 0.5f64..0.99,
+        fractions in bounds(),
+        mix in 0.0f64..1.0,
+    ) {
+        let n = returns.ncols();
+        let mu = returns.row_mean();
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let bounded = MinCvar::default()
+            .confidence(beta)
+            .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
+        let weights = allocator.allocate(&bounded).unwrap();
+        for i in 0..n {
+            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+        }
+        // A target between the bounded portfolio's own return and the highest asset mean
+        // inside the bounds is reachable, so ask for one between them.
+        let own: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        let lowest = own.min(mu.min());
+        let target = lowest + mix * (own - lowest);
+        match allocator.allocate(&bounded.target_return(target)) {
+            Ok(targeted) => {
+                let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+                prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
+                prop_assert!(allocator.cvar(&targeted, beta).unwrap() >= allocator.cvar(&weights, beta).unwrap() - 1e-12);
+            }
+            Err(CutupError::TargetReturnOutOfRange { .. }) => {}
+            Err(other) => prop_assert!(false, "{other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_cvar_ignores_scenario_and_column_order(
+        returns in returns(),
+        beta in 0.5f64..0.99,
+    ) {
+        let (t, n) = returns.shape();
+        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let best = base.cvar(&base.allocate(&MinCvar::default().confidence(beta)).unwrap(), beta).unwrap();
+        // The optimal CVaR, not the weights, which needn't be unique.
+        let reversed = DMatrix::from_fn(t, n, |s, i| returns[(t - 1 - s, n - 1 - i)]);
+        let other = PortfolioAllocator::from_returns(reversed).unwrap();
+        let again = other.cvar(&other.allocate(&MinCvar::default().confidence(beta)).unwrap(), beta).unwrap();
+        prop_assert!((best - again).abs() <= 1e-12 * best.abs().max(1e-3), "{best} vs {again}");
     }
 }
