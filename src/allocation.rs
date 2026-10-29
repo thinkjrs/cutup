@@ -1034,7 +1034,10 @@ impl Allocation for Hrp {
     }
 }
 
-/// Hierarchical Equal Risk Contribution (Raffinot, 2017), as riskfolio-lib implements it with
+/// The most clusters [`Herc`]'s gap statistic may choose, unless set.
+pub(crate) const HERC_MAX_CLUSTERS: usize = 10;
+
+/// Hierarchical Equal Risk Contribution (Raffinot, 2018), as riskfolio-lib implements it with
 /// the variance as the risk measure.
 ///
 /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)` with
@@ -1069,7 +1072,7 @@ impl Allocation for Hrp {
 /// # Errors
 ///
 /// * [`CutupError::InvalidConfig`] if the number of clusters is 0 or more than the number of
-///   assets, or the most clusters is 0.
+///   assets, or, when the number isn't set, the most clusters is 0.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
 /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
 ///   variances are too small.
@@ -1110,7 +1113,7 @@ impl Default for Herc {
         Self {
             linkage: Linkage::default(),
             clusters: None,
-            max_clusters: 10,
+            max_clusters: HERC_MAX_CLUSTERS,
         }
     }
 }

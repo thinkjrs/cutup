@@ -38,6 +38,7 @@
 
 #![allow(deprecated)]
 
+use crate::allocation::HERC_MAX_CLUSTERS;
 use crate::{
     CovarianceConfig, CutupError, Herc, Hrp, InverseVariance, InverseVolatility, Linkage,
     MaxDiversification, MaxSharpe, MeanVariance, MinVariance, PortfolioAllocator, RiskParity,
@@ -241,7 +242,7 @@ impl Default for HercConfig {
         Self {
             linkage: Linkage::default(),
             clusters: None,
-            max_clusters: 10,
+            max_clusters: HERC_MAX_CLUSTERS,
         }
     }
 }

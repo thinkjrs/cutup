@@ -3597,7 +3597,7 @@ mod tests {
     fn test_hrp_groups_follow_clustering_not_columns() {
         // On this block-structured input the clustering, not the input order, decides how
         // assets are grouped, so this shuffle leaves the weights unchanged. (In general HRP
-        // can depend on column order: see hrp_allocation_with_config.)
+        // can depend on column order: see `Hrp`.)
         let returns = two_block_returns();
         let permutation = [3, 0, 4, 1, 2];
         let permuted = DMatrix::from_fn(returns.nrows(), 5, |t, j| returns[(t, permutation[j])]);
