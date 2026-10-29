@@ -127,7 +127,7 @@ fn main() -> Result<(), CutupError> {
     let mean_variance_weights =
         allocator.allocate(&MeanVariance::risk_aversion(100.0).shrinkage(0.1))?;
     let ew_weights = allocator.allocate(&EqualWeight)?;
-    let inverse_volatility_weights = allocator.allocate(&InverseVolatility::default())?;
+    let inverse_volatility_weights = allocator.allocate(&InverseVolatility)?;
     let hrp_weights = allocator.allocate(&Hrp::default())?;
 
     println!("Min Variance Weights: {:?}", min_variance_weights.as_slice());
@@ -214,8 +214,8 @@ fn main() -> Result<(), CutupError> {
 | Removed | Replacement |
 | --- | --- |
 | `allocator.ew_allocation()` | `allocator.allocate(&EqualWeight)?` |
-| `inverse_volatility_allocation()` | `allocate(&InverseVolatility::default())` |
-| `inverse_variance_allocation()` | `allocate(&InverseVariance::default())` |
+| `inverse_volatility_allocation()` | `allocate(&InverseVolatility)` |
+| `inverse_variance_allocation()` | `allocate(&InverseVariance)` |
 | `min_variance_allocation()` | `allocate(&MinVariance::default().allow_short())` |
 | `min_variance_allocation_with_config(&c)` | `allocate(&MinVariance::default().allow_short().covariance(c))` |
 | `long_only_min_variance_allocation()` | `allocate(&MinVariance::default())` |
@@ -242,6 +242,14 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_covariance(c)` | `.covariance(c)`, or `.shrinkage(λ)` and `.regularization(ε)` directly |
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
+
+Three other changes in 0.3.0 can need edits:
+
+| 0.2 | 0.3 |
+| --- | --- |
+| `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private, so set it only through these. |
+| `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
+| `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
 
 ## Testing
 

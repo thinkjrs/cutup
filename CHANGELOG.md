@@ -14,6 +14,16 @@ All notable changes to this project are documented here. The format follows
   `MaxSharpeConfig`, `RiskParityConfig`, `HrpConfig` and `HercConfig`. Use
   `PortfolioAllocator::allocate` with the method values, and `Hrp::cluster_order`; the
   README's "Upgrading from 0.2" section maps each one to its replacement.
+- `Weights::to_hashmap`, left over from when methods returned a `HashMap`. Use
+  `weights.iter().copied().enumerate().collect()`, or `as_slice()`.
+
+### Changed
+
+- `CovarianceConfig`'s setters are `shrinkage(λ)` and `regularization(ε)`, without `with_`,
+  like every other setter. Its fields are private, so it's set only through them.
+- `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
+  written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
+  `default()` still works.
 
 ## [0.2.8] - 2026-10-29
 
