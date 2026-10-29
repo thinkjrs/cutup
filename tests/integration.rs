@@ -1,6 +1,6 @@
 use cutup::{
-    run_portfolio_allocation, Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp,
-    InverseVolatility, MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, Weights,
+    Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
+    MinVariance, PortfolioAllocator, Weights,
 };
 use nalgebra::dmatrix;
 
@@ -12,30 +12,29 @@ fn test_portfolio_allocations() {
         120.0, 220.0, 320.0
     ];
 
-    let allocator = PortfolioAllocator::from_prices(prices.clone()).unwrap();
+    let allocator = PortfolioAllocator::from_prices(prices).unwrap();
 
-    let ew = allocator.ew_allocation();
+    let ew = allocator.allocate(&EqualWeight).unwrap();
     assert_eq!(ew.len(), 3);
     assert!((ew.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
-    let min_variance = allocator.min_variance_allocation().unwrap();
+    let min_variance = allocator
+        .allocate(&MinVariance::default().allow_short())
+        .unwrap();
     assert_eq!(min_variance.len(), 3);
     assert!((min_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
     // Two rows of returns for three assets is too little data for an unshrunk covariance.
-    let config = MeanVarianceConfig::risk_aversion(2.0)
-        .with_covariance(CovarianceConfig::default().with_shrinkage(0.1));
-    let mean_variance = allocator.mean_variance_allocation(&config).unwrap();
+    let method = MeanVariance::risk_aversion(2.0)
+        .covariance(CovarianceConfig::default().with_shrinkage(0.1))
+        .allow_short();
+    let mean_variance = allocator.allocate(&method).unwrap();
     assert_eq!(mean_variance.len(), 3);
     assert!((mean_variance.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 
-    let hrp = allocator.hrp_allocation().unwrap();
+    let hrp = allocator.allocate(&Hrp::default()).unwrap();
     assert_eq!(hrp.len(), 3);
     assert!((hrp.iter().sum::<f64>() - 1.0).abs() < 1e-6);
-
-    let external = run_portfolio_allocation(prices).unwrap();
-    assert_eq!(external.len(), 3);
-    assert!((external.iter().sum::<f64>() - 1.0).abs() < 1e-6);
 }
 
 /// A method defined outside the crate: all weight on the lowest-volatility asset.

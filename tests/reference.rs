@@ -5,11 +5,11 @@
 //! `reference/README.md`). Every case is checked and all failures are reported together.
 
 use cutup::{
-    BlackLitterman, CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVariance, MeanVarianceConfig, MinCvar, MinVariance, PortfolioAllocator, RiskParityConfig,
-    View, WeightBounds, Weights,
+    BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
+    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
+    PortfolioAllocator, RiskParity, View, WeightBounds, Weights,
 };
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DMatrix;
 use serde_json::Value;
 
 const DATASETS: &str = include_str!("fixtures/datasets.json");
@@ -83,40 +83,40 @@ fn weight_bounds(params: &Value) -> Option<WeightBounds> {
     })
 }
 
-fn mean_variance_config(params: &Value) -> MeanVarianceConfig {
-    let config = match (
+fn mean_variance(params: &Value) -> MeanVariance {
+    let method = match (
         params["risk_aversion"].as_f64(),
         params["target_return"].as_f64(),
     ) {
-        (Some(gamma), None) => MeanVarianceConfig::risk_aversion(gamma),
-        (None, Some(target)) => MeanVarianceConfig::target_return(target),
+        (Some(gamma), None) => MeanVariance::risk_aversion(gamma),
+        (None, Some(target)) => MeanVariance::target_return(target),
         _ => panic!("mean_variance needs exactly one of risk_aversion or target_return"),
     };
-    let config = config.with_covariance(covariance_config(params));
+    let method = method.covariance(covariance_config(params));
     if params["expected_returns"].is_array() {
-        config.with_expected_returns(DVector::from_vec(floats(&params["expected_returns"])))
+        method.expected_returns(floats(&params["expected_returns"]))
     } else {
-        config
+        method
     }
 }
 
-fn max_sharpe_config(params: &Value) -> MaxSharpeConfig {
-    let config = MaxSharpeConfig::default()
-        .with_risk_free_rate(params["risk_free_rate"].as_f64().unwrap_or(0.0))
-        .with_covariance(covariance_config(params));
+fn max_sharpe(params: &Value) -> MaxSharpe {
+    let method = MaxSharpe::default()
+        .risk_free_rate(params["risk_free_rate"].as_f64().unwrap_or(0.0))
+        .covariance(covariance_config(params));
     if params["expected_returns"].is_array() {
-        config.with_expected_returns(DVector::from_vec(floats(&params["expected_returns"])))
+        method.expected_returns(floats(&params["expected_returns"]))
     } else {
-        config
+        method
     }
 }
 
-fn risk_parity_config(params: &Value) -> RiskParityConfig {
-    let config = RiskParityConfig::default().with_covariance(covariance_config(params));
+fn risk_parity(params: &Value) -> RiskParity {
+    let method = RiskParity::default().covariance(covariance_config(params));
     if params["risk_budgets"].is_array() {
-        config.with_risk_budgets(DVector::from_vec(floats(&params["risk_budgets"])))
+        method.risk_budgets(floats(&params["risk_budgets"]))
     } else {
-        config
+        method
     }
 }
 
@@ -130,15 +130,15 @@ fn linkage(params: &Value) -> Linkage {
     }
 }
 
-fn hrp_config(params: &Value) -> HrpConfig {
-    HrpConfig::default().with_linkage(linkage(params))
+fn hrp(params: &Value) -> Hrp {
+    Hrp::default().linkage(linkage(params))
 }
 
-fn herc_config(params: &Value) -> HercConfig {
-    let config = HercConfig::default().with_linkage(linkage(params));
+fn herc(params: &Value) -> Herc {
+    let method = Herc::default().linkage(linkage(params));
     match params["clusters"].as_u64() {
-        Some(k) => config.with_clusters(k as usize),
-        None => config,
+        Some(k) => method.clusters(k as usize),
+        None => method,
     }
 }
 
@@ -259,35 +259,37 @@ fn run(
     params: &Value,
 ) -> Result<Weights, CutupError> {
     match method {
-        "equal_weight" => Ok(allocator.ew_allocation()),
-        "inverse_volatility" => allocator.inverse_volatility_allocation(),
-        "inverse_variance" => allocator.inverse_variance_allocation(),
-        "min_variance" => allocator.min_variance_allocation_with_config(&covariance_config(params)),
+        "equal_weight" => allocator.allocate(&EqualWeight),
+        "inverse_volatility" => allocator.allocate(&InverseVolatility::default()),
+        "inverse_variance" => allocator.allocate(&InverseVariance::default()),
+        "min_variance" => allocator.allocate(
+            &MinVariance::default()
+                .allow_short()
+                .covariance(covariance_config(params)),
+        ),
         "long_only_min_variance" => match weight_bounds(params) {
-            Some(bounds) => allocator
-                .long_only_min_variance_allocation_with_bounds(&covariance_config(params), &bounds),
+            Some(bounds) => allocator.allocate(
+                &MinVariance::default()
+                    .covariance(covariance_config(params))
+                    .bounds(bounds),
+            ),
             None => {
-                allocator.long_only_min_variance_allocation_with_config(&covariance_config(params))
+                allocator.allocate(&MinVariance::default().covariance(covariance_config(params)))
             }
         },
         "long_only_mean_variance" => match weight_bounds(params) {
-            Some(bounds) => allocator.long_only_mean_variance_allocation_with_bounds(
-                &mean_variance_config(params),
-                &bounds,
-            ),
-            None => allocator.long_only_mean_variance_allocation(&mean_variance_config(params)),
+            Some(bounds) => allocator.allocate(&mean_variance(params).bounds(bounds)),
+            None => allocator.allocate(&mean_variance(params)),
         },
-        "mean_variance" => allocator.mean_variance_allocation(&mean_variance_config(params)),
-        "max_sharpe" => allocator.max_sharpe_allocation(&max_sharpe_config(params)),
-        "long_only_max_sharpe" => {
-            allocator.long_only_max_sharpe_allocation(&max_sharpe_config(params))
-        }
+        "mean_variance" => allocator.allocate(&mean_variance(params).allow_short()),
+        "max_sharpe" => allocator.allocate(&max_sharpe(params).allow_short()),
+        "long_only_max_sharpe" => allocator.allocate(&max_sharpe(params)),
         "max_diversification" => {
-            allocator.max_diversification_allocation_with_config(&covariance_config(params))
+            allocator.allocate(&MaxDiversification::default().covariance(covariance_config(params)))
         }
-        "risk_parity" => allocator.risk_parity_allocation_with_config(&risk_parity_config(params)),
-        "hrp" => allocator.hrp_allocation_with_config(&hrp_config(params)),
-        "herc" => allocator.herc_allocation_with_config(&herc_config(params)),
+        "risk_parity" => allocator.allocate(&risk_parity(params)),
+        "hrp" => allocator.allocate(&hrp(params)),
+        "herc" => allocator.allocate(&herc(params)),
         "rebalance_min_variance" => allocator.allocate(&rebalance!(MinVariance::default(), params)),
         "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
         "min_cvar" => allocator.allocate(&min_cvar(params)),
