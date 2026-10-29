@@ -38,9 +38,9 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **EW Allocation**: Assigns equal weights to all assets.
 - **Inverse Volatility / Inverse Variance**: Weights each asset by `1 / σ` or `1 / σ²`, ignoring correlations. Simple risk-based weights that are always positive.
 - **Maximum Diversification**: The long-only portfolio with the highest ratio of weighted average volatility to portfolio volatility, using only the covariance matrix.
-- **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
-- **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
-- **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
+- **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with `RiskParity::risk_budgets`.
+- **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `Hrp::linkage`, and inspect the cluster order with `Hrp::cluster_order`.
+- **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `Herc::clusters`, then splits risk down the tree and by inverse variance within each group.
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
@@ -83,14 +83,14 @@ cutup = "0.2.7"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
-Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods such as `min_variance_allocation` still work, and will be deprecated before 0.3.0.
+Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods such as `min_variance_allocation`, their config structs and `run_portfolio_allocation` are deprecated since 0.2.8 and will be removed in 0.3.0: see [Upgrading from the method API](#upgrading-from-the-method-api).
 
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
 ```rust
 use cutup::{
-    run_portfolio_allocation, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
-    MinVariance, PortfolioAllocator, WeightBounds,
+    CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance, MinVariance,
+    PortfolioAllocator, WeightBounds,
 };
 use nalgebra::DMatrix;
 
@@ -115,7 +115,7 @@ fn main() -> Result<(), CutupError> {
         ],
     );
 
-    let allocator = PortfolioAllocator::from_prices(prices.clone())?;
+    let allocator = PortfolioAllocator::from_prices(prices)?;
 
     let min_variance_weights = allocator.allocate(&MinVariance::default().allow_short())?;
     // No asset above 40%.
@@ -136,11 +136,6 @@ fn main() -> Result<(), CutupError> {
     println!("EW Weights: {:?}", ew_weights.as_slice());
     println!("Inverse Volatility Weights: {:?}", inverse_volatility_weights.as_slice());
     println!("HRP Weights: {:?}", hrp_weights.as_slice());
-
-    // or run a long-short minimum variance allocation in one go
-
-    let weights = run_portfolio_allocation(prices)?;
-    println!("Portfolio Weights: {:?}", weights.as_slice());
 
     Ok(())
 }
@@ -211,6 +206,42 @@ fn main() -> Result<(), CutupError> {
     Ok(())
 }
 ```
+
+### Upgrading from the method API
+
+Each deprecated method returns exactly what `allocate` returns for its replacement, so switching changes no weights. The old methods are long-short unless their name starts with `long_only_`, and the new values are long-only unless you call `.allow_short()`.
+
+| Deprecated | Replacement |
+| --- | --- |
+| `allocator.ew_allocation()` | `allocator.allocate(&EqualWeight)?` |
+| `inverse_volatility_allocation()` | `allocate(&InverseVolatility::default())` |
+| `inverse_variance_allocation()` | `allocate(&InverseVariance::default())` |
+| `min_variance_allocation()` | `allocate(&MinVariance::default().allow_short())` |
+| `min_variance_allocation_with_config(&c)` | `allocate(&MinVariance::default().allow_short().covariance(c))` |
+| `long_only_min_variance_allocation()` | `allocate(&MinVariance::default())` |
+| `long_only_min_variance_allocation_with_config(&c)` | `allocate(&MinVariance::default().covariance(c))` |
+| `long_only_min_variance_allocation_with_bounds(&c, &b)` | `allocate(&MinVariance::default().covariance(c).bounds(b))` |
+| `mean_variance_allocation(&MeanVarianceConfig::risk_aversion(γ))` | `allocate(&MeanVariance::risk_aversion(γ).allow_short())` |
+| `long_only_mean_variance_allocation(&MeanVarianceConfig::target_return(ρ))` | `allocate(&MeanVariance::target_return(ρ))` |
+| `long_only_mean_variance_allocation_with_bounds(&config, &b)` | `allocate(&MeanVariance::risk_aversion(γ).bounds(b))`, or `target_return(ρ)` |
+| `max_sharpe_allocation(&config)` | `allocate(&MaxSharpe::default().allow_short())` |
+| `long_only_max_sharpe_allocation(&config)` | `allocate(&MaxSharpe::default())` |
+| `max_diversification_allocation()`, `_with_config(&c)` | `allocate(&MaxDiversification::default())`, `.covariance(c)` |
+| `risk_parity_allocation()`, `_with_config(&config)` | `allocate(&RiskParity::default())` |
+| `hrp_allocation()`, `_with_config(&config)` | `allocate(&Hrp::default())` |
+| `hrp_cluster_order(&config)` | `Hrp::default().cluster_order(&allocator)` |
+| `herc_allocation()`, `_with_config(&config)` | `allocate(&Herc::default())` |
+| `run_portfolio_allocation(prices)` | `PortfolioAllocator::from_prices(prices)?.allocate(&MinVariance::default().allow_short())` |
+
+The config structs' settings are setters on the values, without the `with_`:
+
+| Deprecated | Replacement |
+| --- | --- |
+| `.with_expected_returns(dvector![..])` | `.expected_returns([..])`, which takes a `Vec<f64>`, an array or a slice, such as `mu.as_slice()` for a `DVector` |
+| `.with_risk_budgets(dvector![..])` | `.risk_budgets([..])` |
+| `.with_covariance(c)` | `.covariance(c)`, or `.shrinkage(λ)` and `.regularization(ε)` directly |
+| `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
+| `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
 ## Testing
 

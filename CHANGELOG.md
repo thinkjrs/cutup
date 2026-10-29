@@ -28,6 +28,10 @@ All notable changes to this project are documented here. The format follows
   cross-checked against PyPortfolioOpt and riskfolio-lib, and property tests: the optimum
   beats every long-only portfolio tried, meets its bounds and target, and doesn't depend on
   the order of scenarios or assets.
+- `Hrp::cluster_order`, the order HRP puts the assets in, replacing
+  `PortfolioAllocator::hrp_cluster_order`.
+- An "Upgrading from the method API" table in the README, from each deprecated method and
+  config setting to its replacement.
 - Target-return rebalancing reference cases, with the target as a second equality in the
   support enumeration and the least turnover from `linprog`, cross-checked against
   PyPortfolioOpt, and a property test that a capped target return meets its target within
@@ -42,6 +46,20 @@ All notable changes to this project are documented here. The format follows
 - A turnover cap that the solver's arithmetic breaks down short of, on extreme inputs,
   returns `CutupError::NotConverged`, as documented, rather than an error such as
   `NonFiniteCovariance` from the breakdown.
+- The method docs, with each method's algorithm, errors and examples, are on the method
+  values, such as `MinVariance` and `Hrp`, rather than on the deprecated methods.
+- The reference, integration and unit tests run through `allocate`. The property test that
+  every method value matches the method it wraps still calls the deprecated methods.
+
+### Deprecated
+
+- Every `PortfolioAllocator::*_allocation*` method, `PortfolioAllocator::hrp_cluster_order`
+  and `run_portfolio_allocation`, with the config structs only they take:
+  `MeanVarianceConfig`, `MeanVarianceObjective`, `MaxSharpeConfig`, `RiskParityConfig`,
+  `HrpConfig` and `HercConfig`. Use `PortfolioAllocator::allocate` with the method values
+  instead. Each deprecation note names the replacement, and each method still returns
+  exactly what its replacement does. They'll be removed in 0.3.0. `CovarianceConfig` and
+  `WeightBounds` stay, since the method values take them.
 
 ## [0.2.7] - 2026-10-28
 
