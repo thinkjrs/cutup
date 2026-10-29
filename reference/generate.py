@@ -499,9 +499,11 @@ def kinked(
     lower: np.ndarray,
     upper: np.ndarray,
     cap: float | None,
+    target: tuple[np.ndarray, float] | None = None,
 ) -> np.ndarray | None:
-    """Minimizes ½wᵀKw − cᵀw + Σᵢ costsᵢ|wᵢ − currentᵢ| subject to 1ᵀw = 1, l ≤ w ≤ u and,
-    with a cap, Σᵢ|wᵢ − currentᵢ| ≤ cap, by support enumeration over five states per asset."""
+    """Minimizes ½wᵀKw − cᵀw + Σᵢ costsᵢ|wᵢ − currentᵢ| subject to 1ᵀw = 1, l ≤ w ≤ u, with a
+    target (μ, ρ) μᵀw = ρ, and with a cap Σᵢ|wᵢ − currentᵢ| ≤ cap, by support enumeration
+    over five states per asset."""
     n = len(c)
     # 0: lower bound, 1: upper bound, 2: at current, 3: free above it, 4: free below it.
     def choices(i):
@@ -535,6 +537,9 @@ def kinked(
             else:
                 columns = [np.ones(len(free))]
                 rhs = [1.0 - w[held].sum()]
+                if target is not None:
+                    columns.append(target[0][free])
+                    rhs.append(target[1] - target[0][held] @ w[held])
                 if capped:
                     columns.append(sign)
                     rhs.append(cap - np.abs(w[held] - current[held]).sum() + sign @ current[free])
@@ -549,6 +554,8 @@ def kinked(
             for candidate in candidates:
                 tolerance = 1e-12 * max(1.0, np.abs(candidate).max())
                 if abs(candidate.sum() - 1.0) > 1e-9:
+                    continue
+                if target is not None and abs(target[0] @ candidate - target[1]) > 1e-9 * np.abs(target[0]).max():
                     continue
                 if np.any(candidate < lower - tolerance) or np.any(candidate > upper + tolerance):
                     continue
@@ -565,7 +572,8 @@ def kinked(
 
 def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool) -> np.ndarray | str:
     """Min variance, wᵀΣw + κ‖w − w₀‖², or mean-variance, −μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖²
-    + Σcᵢ|wᵢ − w₀ᵢ|, from current weights w₀, as ½wᵀKw − cᵀw plus the costs."""
+    + Σcᵢ|wᵢ − w₀ᵢ|, from current weights w₀, as ½wᵀKw − cᵀw plus the costs. With a target
+    return ρ, mean-variance is min variance subject to μᵀw = ρ, and only takes a cap."""
     n = cov.shape[0]
     current = np.array(params["current_weights"], dtype=float)
     kappa = params.get("turnover_penalty", 0.0)
@@ -579,19 +587,50 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
         # Each cap lowered to what the other floors leave, as cutup resolves them.
         upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
-    if mean_variance:
+    target = None
+    if mean_variance and "target_return" in params:
+        rho = params["target_return"]
+        if np.all(np.isfinite(lower)):
+            lowest, highest = return_range(mu, (lower, upper))
+            if not lowest - 1e-12 * max(abs(lowest), abs(highest)) <= rho <= highest + 1e-12 * max(abs(lowest), abs(highest)):
+                return "TargetReturnOutOfRange"
+        target = (mu, rho)
+        k, c = 2 * cov, np.zeros(n)
+    elif mean_variance:
         gamma = params["risk_aversion"]
         k, c = gamma * cov + 2 * kappa * np.eye(n), mu + 2 * kappa * current
     else:
         k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
     if cap is not None:
-        clipped = np.clip(current, lower, upper)
-        minimum = np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
+        if target is None:
+            clipped = np.clip(current, lower, upper)
+            minimum = np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
+        else:
+            minimum = least_turnover(current, mu, target[1], lower, upper)
         if minimum > cap + 1e-12:
             return "InfeasibleTurnover"
-    weights = kinked(k, c, current, costs, lower, upper, cap)
+    weights = kinked(k, c, current, costs, lower, upper, cap, target)
     cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, params if mean_variance else None)
     return weights
+
+
+def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.ndarray, upper: np.ndarray) -> float:
+    """The least Σᵢ|wᵢ − currentᵢ| over portfolios summing to 1 with μᵀw = ρ within the bounds,
+    from scipy.optimize.linprog over w and the purchases and sales w − current = p − s."""
+    n = len(current)
+    c = np.concatenate([np.zeros(n), np.ones(2 * n)])
+    a_eq = np.vstack([
+        np.hstack([np.eye(n), -np.eye(n), np.eye(n)]),
+        np.concatenate([np.ones(n), np.zeros(2 * n)]),
+        np.concatenate([mu, np.zeros(2 * n)]),
+    ])
+    b_eq = np.concatenate([current, [1.0, rho]])
+    box = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(0, None)] * (2 * n)
+    tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
+    result = linprog(c, A_eq=a_eq, b_eq=b_eq, bounds=box, method="highs", options=tight)
+    if result.status != 0:
+        raise ValueError(f"least turnover: {result.message}")
+    return result.fun
 
 
 def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, mean_variance) -> None:
@@ -607,7 +646,11 @@ def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, wei
         frontier.add_objective(lambda w: kappa * cp.sum_squares(w - current))
     if cap is not None:
         frontier.add_constraint(lambda w: cp.norm(w - current, 1) <= cap)
-    if mean_variance is not None:
+    if mean_variance is not None and "target_return" in mean_variance:
+        rho = mean_variance["target_return"]
+        frontier.add_constraint(lambda w: mu @ w == rho)
+        frontier.min_volatility()
+    elif mean_variance is not None:
         frontier.max_quadratic_utility(mean_variance["risk_aversion"])
     else:
         frontier.min_volatility()
@@ -1035,6 +1078,19 @@ def cases(datasets: dict) -> list[dict]:
         ("two_blocks5", {"risk_aversion": 20.0, "expected_returns": mu5, "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "transaction_costs": 0.0003, "max_turnover": 0.4, "long_short": True}),
         ("orthogonal3", {"risk_aversion": 100.0, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "transaction_costs": 0.0002, "bounds": [0.0, 0.5]}),
         ("near_singular4", {"risk_aversion": 100.0, "current_weights": [0.25] * 4, "transaction_costs": 0.0001, "max_turnover": 0.1}),
+        # A target return with a cap: binding, too small for the target, slack, at the current
+        # weights' own return, long-short, at the top of the bounded range, and out of range.
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.6}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.3}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 2.0}),
+        ("two_blocks5", {"target_return": 0.00068, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.0}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.0}),
+        ("two_blocks5", {"target_return": 0.0011, "expected_returns": mu5, "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "max_turnover": 0.8, "long_short": True}),
+        ("orthogonal3", {"target_return": 0.0012, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "max_turnover": 1.2, "bounds": [0.0, 0.5]}),
+        ("orthogonal3", {"target_return": 0.0015, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "max_turnover": 1.6, "bounds": [0.0, 0.5]}),
+        ("orthogonal3", {"target_return": 0.0015, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "max_turnover": 1.0, "bounds": [0.0, 0.5]}),
+        ("near_singular4", {"target_return": 0.0013, "expected_returns": [0.001, 0.002, 0.0015, 0.0005], "current_weights": [0.1, 0.2, 0.3, 0.4], "max_turnover": 0.25}),
+        ("two_blocks5", {"target_return": 0.002, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.3}),
     ]:
         out.append({"dataset": name, "method": "rebalance_mean_variance", "params": params, "tolerance": solver})
 

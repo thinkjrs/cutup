@@ -2232,6 +2232,153 @@
       "condition_number": 8216000.0
     },
     {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 0.6
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4999999999999997, 0.2, 0.2, 0.06000000000000017, 0.03999999999999979],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 0.3
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleTurnover",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 2.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.556217172594446, 0.3337303035567384, 0.11005252384881571, 0.0, 0.0],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.00068,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 0.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1999999999998914, 0.2, 0.20000000000010865, 0.2000000000000001, 0.2],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 0.0
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleTurnover",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0011,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1],
+        "max_turnover": 0.8,
+        "long_short": true
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7999999999999995, 0.3, 0.1, -0.13999999999999815, -0.060000000000001864],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0012,
+        "expected_returns": [0.002, 0.001, 0.0],
+        "current_weights": [0.1, 0.1, 0.8],
+        "max_turnover": 1.2,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.3999999999999946, 0.40000000000000585, 0.19999999999999998],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0015,
+        "expected_returns": [0.002, 0.001, 0.0],
+        "current_weights": [0.1, 0.1, 0.8],
+        "max_turnover": 1.6,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.5, 0.49999999999999956, 0.0],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0015,
+        "expected_returns": [0.002, 0.001, 0.0],
+        "current_weights": [0.1, 0.1, 0.8],
+        "max_turnover": 1.0,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleTurnover",
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0013,
+        "expected_returns": [0.001, 0.002, 0.0015, 0.0005],
+        "current_weights": [0.1, 0.2, 0.3, 0.4],
+        "max_turnover": 0.25
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.1, 0.32500000000000007, 0.26249999999999907, 0.3125000000000012],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.002,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "max_turnover": 0.3
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 82.05
+    },
+    {
       "dataset": "orthogonal3",
       "method": "min_cvar",
       "tolerance": 1e-09,

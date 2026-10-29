@@ -202,10 +202,11 @@ macro_rules! rebalance {
 }
 
 fn rebalance_mean_variance(params: &Value) -> MeanVariance {
-    let mut method = rebalance!(
-        MeanVariance::risk_aversion(params["risk_aversion"].as_f64().unwrap()),
-        params
-    );
+    let objective = match params["target_return"].as_f64() {
+        Some(target) => MeanVariance::target_return(target),
+        None => MeanVariance::risk_aversion(params["risk_aversion"].as_f64().unwrap()),
+    };
+    let mut method = rebalance!(objective, params);
     if params["expected_returns"].is_array() {
         method = method.expected_returns(floats(&params["expected_returns"]));
     }
