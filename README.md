@@ -21,6 +21,7 @@ Here are some of the allocation methods included in this library:
 - **Risk Parity (Equal Risk Contribution) and Risk Budgeting**
 - **Hierarchical Risk Parity (HRP)**
 - **Hierarchical Equal Risk Contribution (HERC)**
+- **Minimum CVaR (expected shortfall)**, from historical scenarios
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 - **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
 
@@ -40,6 +41,7 @@ This library leverages `nalgebra` for efficient matrix operations and is designe
 - **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with risk budgets in `RiskParityConfig`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `HrpConfig`, and inspect the cluster order with `hrp_cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `HercConfig`, then splits risk down the tree and by inverse variance within each group.
+- **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
@@ -56,6 +58,7 @@ Each method is a value you pass to `PortfolioAllocator::allocate`. Methods that 
 | `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. From `.current_weights(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` limit trading. |
 | `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds allow; `.bounds(..)` caps or floors each asset. With a risk aversion, `.transaction_costs(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` rebalance from `.current_weights(..)`. |
 | `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
+| `MinCvar` | return scenarios | ✅ | The lowest average loss in the worst `1 − β` of the scenarios, 5% by default. Looks at the losses themselves rather than a covariance, so it reacts to skew and fat tails; needs enough scenarios for a tail, at least 20 at 95%. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
 | `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `RiskParity` | covariance | ✅ | Every asset contributes the same risk, or the shares set by `.risk_budgets(..)`. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `Hrp` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
@@ -215,7 +218,7 @@ fn main() -> Result<(), CutupError> {
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, support enumeration for rebalancing with turnover caps and transaction costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps and transaction costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 

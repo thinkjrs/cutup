@@ -8,10 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- An internal linear program solver, `src/lp.rs`, for CVaR next: a two-phase revised simplex
-  method with bounded variables and Bland's rule. It's checked against
-  `scipy.optimize.linprog` on 70 random problems (`reference/lp.py`, run in CI), and by a
-  property test that every optimum satisfies the optimality conditions.
+- `MinCvar`, the long-only portfolio with the lowest conditional value at risk (expected
+  shortfall) over the historical return scenarios, at a confidence of 0.95 by default, with
+  `.bounds(..)` and `.target_return(..)`. It's solved exactly as the dual of the
+  Rockafellar-Uryasev linear program, which has a row per asset rather than per scenario.
+  `PortfolioAllocator::cvar` measures any portfolio's CVaR.
+- An internal linear program solver, `src/lp.rs`: a two-phase revised simplex method with
+  bounded variables, taking the most improving variable and falling back to Bland's rule
+  when degenerate pivots stall it. It's checked against `scipy.optimize.linprog` on 70
+  random problems (`reference/lp.py`, run in CI), and by a property test that every optimum
+  satisfies the optimality conditions.
+- Min CVaR reference cases on every dataset, against `linprog` on the primal program and
+  cross-checked against PyPortfolioOpt and riskfolio-lib, and property tests: the optimum
+  beats every long-only portfolio tried, meets its bounds and target, and doesn't depend on
+  the order of scenarios or assets.
 
 ## [0.2.7] - 2026-10-28
 
