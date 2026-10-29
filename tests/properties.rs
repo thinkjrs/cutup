@@ -1377,6 +1377,68 @@ proptest! {
     }
 
     #[test]
+    fn capped_target_returns_hold_their_target_within_the_cap(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        cap in 0.0f64..1.0,
+        looser in 0.0f64..1.0,
+        mix in prop_oneof![Just(0.0), Just(1.0), 0.0f64..1.0],
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        // Long-only, every return from the lowest asset mean to the highest is reachable,
+        // the ends only by the assets tied there.
+        let target = mu.min() + mix * (mu.max() - mu.min());
+        // A cap within this of the least turnover counts as at it.
+        let rounding = 1e-12;
+        let method = |cap: Option<f64>| {
+            let mut method = MeanVariance::target_return(target).current_weights(current.clone());
+            if let Some(cap) = cap {
+                method = method.max_turnover(cap);
+            }
+            if long_short {
+                method = method.allow_short();
+            }
+            method
+        };
+        let free = allocator.allocate(&method(None)).unwrap();
+        let capped = match allocator.allocate(&method(Some(cap))) {
+            Ok(capped) => capped,
+            Err(CutupError::InfeasibleTurnover { minimum, cap: given }) => {
+                prop_assert!(minimum > given && given == cap);
+                // The least turnover is reachable: a cap of exactly that is met, unless the
+                // expected returns are so close that the target's constraint is resolved no
+                // better than the rounding the cap allows.
+                match allocator.allocate(&method(Some(minimum))) {
+                    Ok(least) => prop_assert!(turnover(&least, &current) <= minimum + 2.0 * rounding),
+                    Err(CutupError::NotConverged) => prop_assert!(mu.max() - mu.min() < 1e-6 * mu.amax(), "{mu:?}"),
+                    Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
+                }
+                return Ok(());
+            }
+            Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
+        };
+        let used = turnover(&capped, &current);
+        prop_assert!(used <= cap + 2.0 * rounding, "turned over {used} past {cap}");
+        let achieved = mu.dot(&DVector::from_column_slice(capped.as_slice()));
+        prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
+        prop_assert!(long_short || capped.iter().all(|&w| w >= 0.0), "{capped:?}");
+        if turnover(&free, &current) > cap + 1e-9 {
+            prop_assert!((used - cap).abs() <= 1e-9, "turned over {used}, cap {cap}");
+        }
+        // A looser cap never has more variance, nor less than no cap.
+        let loose = allocator.allocate(&method(Some(cap + looser))).unwrap();
+        let v = |w: &Weights| variance(&cov, w);
+        prop_assert!(v(&loose) <= v(&capped) * (1.0 + 1e-12) + 1e-18, "{} > {}", v(&loose), v(&capped));
+        prop_assert!(v(&free) <= v(&loose) * (1.0 + 1e-12) + 1e-18, "{} > {}", v(&free), v(&loose));
+    }
+
+    #[test]
     fn trading_settings_that_cost_nothing_change_nothing(
         returns in returns(),
         fractions in prop::collection::vec(0.05f64..1.0, 6),

@@ -1646,41 +1646,15 @@ impl PortfolioAllocator {
             MeanVarianceObjective::TargetReturn(target) => target,
         };
         // An unreachable target is rejected before the covariance is built.
-        let range = ReturnRange::new(&mu, &bounds);
-        let target = range.reachable(target)?;
+        let problem = ReturnRange::target_problem(&mu, bounds, target)?;
         let cov = self.adjusted_covariance(&config.covariance)?;
-        let n = cov.ncols();
-
-        if target == range.lowest || target == range.highest {
-            // Only the portfolios that fill the bounds in order of expected return reach an
-            // end of the range, so every asset but those tied at the margin is fixed, and the
-            // target needs no constraint of its own.
-            let bounds = range.face(&mu, &bounds, target == range.highest);
-            let (e, b) = budget(n);
-            return long_only_weights(
-                &cov,
-                &DVector::zeros(n),
-                &e,
-                &b,
-                &bounds,
-                interior_start(&bounds),
-            );
-        }
-        // Mixing the lowest and highest return portfolios reaches any target in between.
-        // Dividing by the larger in magnitude first keeps the differences from overflowing.
-        let scale = range.lowest.abs().max(range.highest.abs());
-        let t = ((target / scale - range.lowest / scale)
-            / (range.highest / scale - range.lowest / scale))
-            .clamp(0.0, 1.0);
-        let start = &range.lowest_weights * (1.0 - t) + &range.highest_weights * t;
-        let ones = DVector::from_element(n, 1.0);
         long_only_weights(
             &cov,
-            &DVector::zeros(n),
-            &DMatrix::from_columns(&[ones, mu]),
-            &DVector::from_vec(vec![1.0, target]),
-            &bounds,
-            start,
+            &DVector::zeros(cov.ncols()),
+            &problem.e,
+            &problem.b,
+            &problem.bounds,
+            problem.start,
         )
     }
 
@@ -2946,6 +2920,14 @@ fn interior_start(bounds: &qp::Bounds) -> DVector<f64> {
     &bounds.lower + room * t
 }
 
+/// A target-return problem from [`ReturnRange::target_problem`].
+struct TargetProblem {
+    e: DMatrix<f64>,
+    b: DVector<f64>,
+    bounds: qp::Bounds,
+    start: DVector<f64>,
+}
+
 /// The lowest and highest expected return of any portfolio within resolved bounds, and the
 /// portfolios that reach them: start every asset at its lower bound, then raise assets to
 /// their upper bounds in order of expected return until the weights sum to 1.
@@ -3006,7 +2988,58 @@ impl ReturnRange {
                 highest,
             });
         }
-        Ok(target.clamp(lowest, highest))
+        // From either side: just inside an end, only a sliver of portfolios next to its face
+        // reach the target, and the solvers resolve that to rounding no better than the face.
+        // In a range narrower than that, to the nearer end.
+        let (below, above) = (target - lowest, highest - target);
+        Ok(if below.min(above) > tolerance {
+            target
+        } else if below < above {
+            lowest
+        } else {
+            highest
+        })
+    }
+
+    /// The constraints `eᵀw = b` and bounds of a long-only problem at expected return
+    /// `target`, and a start that meets them. Only the portfolios that fill the bounds in
+    /// order of expected return reach an end of the range, so there every asset but those
+    /// tied at the margin is fixed, and the target needs no constraint of its own. Inside it,
+    /// mixing the lowest and highest return portfolios reaches the target.
+    fn target_problem(
+        mu: &DVector<f64>,
+        bounds: qp::Bounds,
+        target: f64,
+    ) -> Result<TargetProblem, CutupError> {
+        let n = mu.len();
+        let range = ReturnRange::new(mu, &bounds);
+        let target = range.reachable(target)?;
+        if target == range.lowest || target == range.highest {
+            let bounds = range.face(mu, &bounds, target == range.highest);
+            return Ok(TargetProblem {
+                e: DMatrix::from_element(n, 1, 1.0),
+                b: DVector::from_element(1, 1.0),
+                start: interior_start(&bounds),
+                bounds,
+            });
+        }
+        Ok(TargetProblem {
+            e: DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
+            b: DVector::from_vec(vec![1.0, target]),
+            start: range.mix(target),
+            bounds,
+        })
+    }
+
+    /// The mix of the lowest and highest return portfolios that reaches `target`, strictly
+    /// between them.
+    fn mix(&self, target: f64) -> DVector<f64> {
+        // Dividing by the larger in magnitude first keeps the differences from overflowing.
+        let scale = self.lowest.abs().max(self.highest.abs());
+        let t = ((target / scale - self.lowest / scale)
+            / (self.highest / scale - self.lowest / scale))
+            .clamp(0.0, 1.0);
+        &self.lowest_weights * (1.0 - t) + &self.highest_weights * t
     }
 
     /// The bounds of the portfolios with the highest expected return, or the lowest. Assets
@@ -4068,6 +4101,22 @@ mod tests {
                 "{weights:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_a_range_narrower_than_rounding_snaps_to_the_nearer_end() {
+        // Returns of 100, 100 + 5e-11 and 100: the whole range is within rounding, and a
+        // target at its top is only reached by the second asset.
+        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let config = MeanVarianceConfig::target_return(100.0 + 5e-11)
+            .with_expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0]);
+        assert_weights_close(
+            &allocator
+                .long_only_mean_variance_allocation(&config)
+                .unwrap(),
+            &Weights(vec![0.0, 1.0, 0.0]),
+            1e-15,
+        );
     }
 
     #[test]
