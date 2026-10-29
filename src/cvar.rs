@@ -105,15 +105,9 @@ impl Allocation for MinCvar {
     /// `−Rᵀz = ν1 + ημ + λ⁺ − λ⁻`, one row per asset. The weights are those rows'
     /// multipliers, and CVaR is its optimum.
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        let beta = self.confidence;
-        if !(beta > 0.0 && beta < 1.0) {
-            return Err(CutupError::InvalidConfig {
-                field: "confidence",
-                value: beta,
-            });
-        }
         let returns = &data.returns;
         let (t, n) = returns.shape();
+        let cap = tail_weight(self.confidence, t)?;
         let bounds = self.bounds.resolve(n)?;
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
@@ -128,14 +122,13 @@ impl Allocation for MinCvar {
             }
             None => None,
         };
-        let cap = 1.0 / ((1.0 - beta) * t as f64);
-        let caps: Vec<usize> = (0..n).filter(|&i| bounds.upper[i].is_finite()).collect();
 
-        // Variables: z (t), ν, then η with a target, λ⁺ (n), and λ⁻ for each finite cap.
+        // Variables: z (t), ν, then η with a target, λ⁺ (n) and λ⁻ (n). Resolved bounds are
+        // all finite, so every asset has a λ⁻.
         let eta = t + 1;
         let floors = eta + usize::from(target.is_some());
         let ceilings = floors + n;
-        let columns = ceilings + caps.len();
+        let columns = ceilings + n;
         let mut a = DMatrix::zeros(n + 1, columns);
         for i in 0..n {
             for s in 0..t {
@@ -146,9 +139,7 @@ impl Allocation for MinCvar {
                 a[(i, eta)] = -mu[i];
             }
             a[(i, floors + i)] = -1.0;
-        }
-        for (k, &i) in caps.iter().enumerate() {
-            a[(i, ceilings + k)] = 1.0;
+            a[(i, ceilings + i)] = 1.0;
         }
         for s in 0..t {
             a[(n, s)] = 1.0;
@@ -164,9 +155,7 @@ impl Allocation for MinCvar {
         }
         for i in 0..n {
             c[floors + i] = -bounds.lower[i];
-        }
-        for (k, &i) in caps.iter().enumerate() {
-            c[ceilings + k] = bounds.upper[i];
+            c[ceilings + i] = bounds.upper[i];
         }
         let lower = DVector::from_fn(columns, |j, _| {
             if j == t || (target.is_some() && j == eta) {
@@ -216,13 +205,8 @@ impl PortfolioAllocator {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn cvar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
-        if !(beta > 0.0 && beta < 1.0) {
-            return Err(CutupError::InvalidConfig {
-                field: "confidence",
-                value: beta,
-            });
-        }
         let (t, n) = self.returns.shape();
+        let cap = tail_weight(beta, t)?;
         if weights.len() != n {
             return Err(CutupError::DimensionMismatch {
                 expected: n,
@@ -231,12 +215,17 @@ impl PortfolioAllocator {
         }
         let w = DVector::from_column_slice(weights.as_slice());
         let mut losses: Vec<f64> = (-(&self.returns * w)).iter().copied().collect();
-        losses.sort_by(|a, b| b.total_cmp(a));
-        // Each scenario in the tail weighs 1/((1 − β)T), up to a total of 1.
-        let cap = 1.0 / ((1.0 - beta) * t as f64);
+        // Only the worst ⌈1/cap⌉ losses are in the tail, one more for rounding: those go
+        // first, and only they're sorted.
+        let tail = ((1.0 / cap).ceil() as usize + 1).min(t);
+        if tail < t {
+            losses.select_nth_unstable_by(tail, |a, b| b.total_cmp(a));
+        }
+        losses[..tail].sort_by(|a, b| b.total_cmp(a));
+        // Each scenario in the tail weighs cap, up to a total of 1.
         let mut left = 1.0f64;
         let mut total = 0.0;
-        for loss in losses {
+        for &loss in &losses[..tail] {
             let share = cap.min(left);
             total += share * loss;
             left -= share;
@@ -246,6 +235,17 @@ impl PortfolioAllocator {
         }
         Ok(total)
     }
+}
+
+/// The weight `1/((1 − β)T)` of each of `t` scenarios in the tail at confidence `beta`.
+fn tail_weight(beta: f64, t: usize) -> Result<f64, CutupError> {
+    if !(beta > 0.0 && beta < 1.0) {
+        return Err(CutupError::InvalidConfig {
+            field: "confidence",
+            value: beta,
+        });
+    }
+    Ok(1.0 / ((1.0 - beta) * t as f64))
 }
 
 #[cfg(test)]
@@ -317,6 +317,23 @@ mod tests {
             .all(|&w| (0.1 - 1e-15..=0.5 + 1e-15).contains(&w)));
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - target).abs() < 1e-15, "{achieved} vs {target}");
+    }
+
+    #[test]
+    fn lower_bounds_summing_to_one_fix_the_weights() {
+        // 1 − 0.9 rounds to just under 0.1, the first asset's room above its floor.
+        let allocator = PortfolioAllocator::from_returns(dmatrix![
+             0.010, -0.020;
+            -0.004,  0.015;
+             0.007,  0.003
+        ])
+        .unwrap();
+        let weights = allocator
+            .allocate(
+                &MinCvar::default().bounds(WeightBounds::per_asset(vec![0.1, 0.9], vec![1.0, 1.0])),
+            )
+            .unwrap();
+        assert!((weights[0] - 0.1).abs() < 1e-15 && (weights[1] - 0.9).abs() < 1e-15);
     }
 
     #[test]
