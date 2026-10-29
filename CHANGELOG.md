@@ -13,6 +13,12 @@ All notable changes to this project are documented here. The format follows
   `.bounds(..)` and `.target_return(..)`. It's solved exactly as the dual of the
   Rockafellar-Uryasev linear program, which has a row per asset rather than per scenario.
   `PortfolioAllocator::cvar` measures any portfolio's CVaR.
+- `MeanVariance::target_return(..)` takes `.max_turnover(..)`: the lowest variance at the
+  target return within the turnover cap, long-only, within bounds or long-short.
+  `CutupError::InfeasibleTurnover` reports the least turnover that reaches the target, from
+  a linear program. `.turnover_penalty(..)` and `.transaction_costs(..)` with a target
+  return still return `CutupError::NotSupported`: both are in the units of the returns, and
+  the objective is a variance.
 - An internal linear program solver, `src/lp.rs`: a two-phase revised simplex method with
   bounded variables, taking the most improving variable and falling back to Bland's rule
   when degenerate pivots stall it. It's checked against `scipy.optimize.linprog` on 70
@@ -22,6 +28,17 @@ All notable changes to this project are documented here. The format follows
   cross-checked against PyPortfolioOpt and riskfolio-lib, and property tests: the optimum
   beats every long-only portfolio tried, meets its bounds and target, and doesn't depend on
   the order of scenarios or assets.
+- Target-return rebalancing reference cases, with the target as a second equality in the
+  support enumeration and the least turnover from `linprog`, cross-checked against
+  PyPortfolioOpt, and a property test that a capped target return meets its target within
+  the cap.
+
+### Changed
+
+- A long-only target return within rounding of the lowest or highest return the bounds
+  allow, just inside the range, is now treated as that end, as one just outside it already
+  was. Only a sliver of portfolios next to the end reaches such a target, and the solvers
+  resolve it no better than rounding.
 
 ## [0.2.7] - 2026-10-28
 
