@@ -1063,6 +1063,77 @@ proptest! {
     }
 
     #[test]
+    fn covariance_shortcuts_match_the_covariance_setter(
+        returns in returns(),
+        shrinkage in 0.0f64..1.0,
+        regularization in 1e-8f64..1e-4,
+        gamma in 1.0f64..500.0,
+    ) {
+        // No `well_posed` filter: errors must match too.
+        let n = returns.ncols();
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let config = CovarianceConfig::default()
+            .with_shrinkage(shrinkage)
+            .with_regularization(regularization);
+        // Both orders, so that neither shortcut can undo the other.
+        macro_rules! check {
+            ($method:expr) => {{
+                let method = $method;
+                let expected = allocator.allocate(&method.clone().covariance(config.clone()));
+                prop_assert_eq!(
+                    allocator.allocate(&method.clone().shrinkage(shrinkage).regularization(regularization)),
+                    expected.clone()
+                );
+                prop_assert_eq!(
+                    allocator.allocate(&method.regularization(regularization).shrinkage(shrinkage)),
+                    expected
+                );
+            }};
+        }
+        check!(MinVariance::default());
+        check!(MinVariance::default().allow_short());
+        check!(MeanVariance::risk_aversion(gamma));
+        check!(MeanVariance::risk_aversion(gamma).allow_short());
+        check!(low_rate());
+        check!(low_rate().allow_short());
+        check!(MaxDiversification::default());
+        check!(RiskParity::default());
+
+        let model = BlackLitterman::new(vec![1.0 / n as f64; n], 2.5);
+        let expected = model.clone().covariance(config).expected_returns(&allocator);
+        prop_assert_eq!(
+            model
+                .clone()
+                .shrinkage(shrinkage)
+                .regularization(regularization)
+                .expected_returns(&allocator),
+            expected.clone()
+        );
+        prop_assert_eq!(
+            model
+                .regularization(regularization)
+                .shrinkage(shrinkage)
+                .expected_returns(&allocator),
+            expected
+        );
+    }
+
+    #[test]
+    fn herc_with_one_cluster_is_inverse_variance(returns in returns(), linkage in 0usize..4) {
+        prop_assume!(well_posed(&returns));
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let herc = Herc::default().linkage(LINKAGES[linkage]);
+        // One cluster holds every asset, so its weight is shared by inverse variance. A gap
+        // statistic allowed at most one cluster must choose it.
+        let one = allocator.allocate(&herc.clusters(1)).unwrap();
+        prop_assert_eq!(&allocator.allocate(&herc.max_clusters(1)).unwrap(), &one);
+        let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
+        for (h, i) in one.iter().zip(&inverse_variance) {
+            prop_assert!((h - i).abs() < 1e-12, "{one:?} vs {inverse_variance:?}");
+        }
+    }
+
+    #[test]
     fn implied_returns_recover_the_market_weights(
         returns in returns(),
         caps in prop::collection::vec(0.1f64..10.0, 6),
