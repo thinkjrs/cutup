@@ -59,6 +59,18 @@ pub(crate) fn solve(
     upper: &DVector<f64>,
 ) -> Result<Outcome, CutupError> {
     let (m, n) = a.shape();
+    if m == 0 {
+        return Ok(unconstrained(c, lower, upper));
+    }
+    // Each row divided by its largest entry, so that the tolerances below compare like with
+    // like whatever A's scale: row i of Ax = b becomes (aᵢ/sᵢ)x = bᵢ/sᵢ, and its multiplier is
+    // divided by sᵢ to undo it. An all-zero row keeps scale 1.
+    let scales = DVector::from_fn(m, |i, _| match a.row(i).amax() {
+        s if s > 0.0 => s,
+        _ => 1.0,
+    });
+    let a = &DMatrix::from_fn(m, n, |i, j| a[(i, j)] / scales[i]);
+    let b = &b.component_div(&scales);
     // Nonbasic variables start at a finite bound, or at zero if they have none.
     let start = DVector::from_fn(n, |j, _| {
         if lower[j].is_finite() {
@@ -96,7 +108,9 @@ pub(crate) fn solve(
     }
 
     let phase_one = DVector::from_fn(n + m, |j, _| if j >= n { 1.0 } else { 0.0 });
-    // Phase 1 is bounded below by zero, so it always ends at an optimum.
+    // Phase 1 is bounded below by zero, and the ratio test never lets a variable past a
+    // finite bound, so it always ends at an optimum: running off without limit would take
+    // an artificial variable below zero.
     let Some(_) = problem.minimize(&phase_one)? else {
         return Err(CutupError::NotConverged);
     };
@@ -120,11 +134,34 @@ pub(crate) fn solve(
             Ok(Outcome::Optimal(Solution {
                 objective: c.dot(&x),
                 x,
-                y,
+                y: y.component_div(&scales),
             }))
         }
     }
 }
+
+/// The optimum with no constraints but the bounds: each variable at the bound its cost
+/// favors, or as close to zero as its bounds allow at zero cost. Unbounded if a favored bound
+/// is infinite.
+fn unconstrained(c: &DVector<f64>, lower: &DVector<f64>, upper: &DVector<f64>) -> Outcome {
+    let x = DVector::from_fn(c.len(), |j, _| match c[j] {
+        cost if cost > 0.0 => lower[j],
+        cost if cost < 0.0 => upper[j],
+        _ => 0.0f64.clamp(lower[j], upper[j]),
+    });
+    if x.iter().any(|v| !v.is_finite()) {
+        return Outcome::Unbounded;
+    }
+    Outcome::Optimal(Solution {
+        objective: c.dot(&x),
+        x,
+        y: DVector::zeros(0),
+    })
+}
+
+/// A step at which a variable reaches a bound: its length, the variable, and, for a basic
+/// variable, its row and the bound it reaches.
+type Block = (f64, usize, Option<(usize, Status)>);
 
 /// A linear program in the state the simplex method moves through.
 struct Problem {
@@ -144,8 +181,7 @@ impl Problem {
     fn minimize(&mut self, cost: &DVector<f64>) -> Result<Option<DVector<f64>>, CutupError> {
         let (m, total) = self.a.shape();
         for _ in 0..1000 + 100 * (m + total) {
-            let basis = self.a.select_columns(&self.basis);
-            let lu = basis.clone().lu();
+            let lu = self.a.select_columns(&self.basis).lu();
             // The basic variables from the nonbasic ones, which sit exactly at their bounds.
             let nonbasic = DVector::from_fn(total, |j, _| {
                 if self.status[j] == Status::Basic {
@@ -160,13 +196,19 @@ impl Problem {
             for (i, &j) in self.basis.iter().enumerate() {
                 self.x[j] = x_basis[i];
             }
+            // Bᵀy = c_B from the same factors: PB = LU, so Bᵀ = UᵀLᵀP, solved by two triangular
+            // solves and the inverse permutation.
             let cost_basis = DVector::from_fn(m, |i, _| cost[self.basis[i]]);
-            let y = basis
-                .transpose()
-                .lu()
-                .solve(&cost_basis)
+            let mut y = lu
+                .l()
+                .tr_solve_lower_triangular(
+                    &lu.u()
+                        .tr_solve_upper_triangular(&cost_basis)
+                        .ok_or(CutupError::NotConverged)?,
+                )
                 .ok_or(CutupError::NotConverged)?;
-            let reduced = cost - self.a.transpose() * &y;
+            lu.p().inv_permute_rows(&mut y);
+            let reduced = cost - self.a.tr_mul(&y);
 
             // Bland's rule: the lowest-indexed variable that improves the objective, and the
             // direction it moves in.
@@ -192,31 +234,57 @@ impl Problem {
             let pivot = 1e-9 * change.amax();
             // The step at which each variable reaches a bound, the entering one included, by
             // variable index: the smallest step wins, and among equal steps the lowest index.
+            // Changes within rounding of zero don't block, so that a pivot is never on noise.
             let own = (self.upper[j] - self.lower[j])
                 .is_finite()
                 .then(|| (self.upper[j] - self.lower[j], j, None));
-            let blocking = (0..m)
-                .filter_map(|i| {
-                    let k = self.basis[i];
-                    let d = change[i];
-                    if d < -pivot && self.lower[k].is_finite() {
-                        Some((
-                            ((self.x[k] - self.lower[k]) / -d).max(0.0),
-                            k,
-                            Some((i, Status::Lower)),
-                        ))
-                    } else if d > pivot && self.upper[k].is_finite() {
-                        Some((
-                            ((self.upper[k] - self.x[k]) / d).max(0.0),
-                            k,
-                            Some((i, Status::Upper)),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .chain(own)
-                .min_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)));
+            let ratio = |i: usize, counts: &dyn Fn(f64) -> bool| {
+                let k = self.basis[i];
+                let d = change[i];
+                if d < 0.0 && counts(d) && self.lower[k].is_finite() {
+                    Some((
+                        ((self.x[k] - self.lower[k]) / -d).max(0.0),
+                        k,
+                        Some((i, Status::Lower)),
+                    ))
+                } else if d > 0.0 && counts(d) && self.upper[k].is_finite() {
+                    Some((
+                        ((self.upper[k] - self.x[k]) / d).max(0.0),
+                        k,
+                        Some((i, Status::Upper)),
+                    ))
+                } else {
+                    None
+                }
+            };
+            let smallest = |candidates: Vec<Block>| {
+                candidates
+                    .into_iter()
+                    .chain(own)
+                    .min_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)))
+            };
+            let mut blocking = smallest(
+                (0..m)
+                    .filter_map(|i| ratio(i, &|d| d.abs() > pivot))
+                    .collect(),
+            );
+            // But a change that small still moves its variable, and a long enough step can
+            // carry it past a bound. If one would end up beyond rounding of its bound, it
+            // blocks too.
+            let step = blocking.map_or(f64::INFINITY, |(step, _, _)| step);
+            let overshoots = |i: usize| {
+                let k = self.basis[i];
+                let next = self.x[k] + step * change[i];
+                let slack = 1e-12 * self.x[k].abs().max(1.0);
+                change[i] != 0.0 && (next < self.lower[k] - slack || next > self.upper[k] + slack)
+            };
+            if (0..m).any(|i| change[i].abs() <= pivot && overshoots(i)) {
+                blocking = smallest(
+                    (0..m)
+                        .filter_map(|i| ratio(i, &|d| d.abs() > pivot || overshoots(i)))
+                        .collect(),
+                );
+            }
             let Some((step, _, leaving)) = blocking else {
                 return Ok(None);
             };
@@ -490,5 +558,68 @@ mod tests {
             let solution = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
             assert_optimal(&solution, (&c, &a, &b), (&lower, &upper));
         }
+    }
+
+    #[test]
+    fn tiny_changes_still_block_at_their_bounds() {
+        // x₀ = 1e-12·x₁ is a change far below the pivot tolerance, but a step of 1e8 in x₁
+        // carries x₀ to 1e-4, past its cap of 1e-6. It must block there instead.
+        let solution = optimal(
+            solve(
+                &dvector![0.0, -1.0, 0.0],
+                &dmatrix![1.0, -1e-12, 0.0; 0.0, -1e3, 1.0],
+                &dvector![0.0, 0.0],
+                &dvector![0.0, 0.0, -INF],
+                &dvector![1e-6, 1e8, INF],
+            )
+            .unwrap(),
+        );
+        assert!(solution.x[0] <= 1e-6 * (1.0 + 1e-12), "{:?}", solution.x);
+        assert!((solution.x[1] - 1e6).abs() <= 1e-6, "{:?}", solution.x);
+    }
+
+    #[test]
+    fn tiny_coefficients_are_feasible() {
+        let solution = optimal(
+            solve(
+                &dvector![1.0, 2.0],
+                &dmatrix![1e-10, 1e-10],
+                &dvector![2e-20],
+                &dvector![0.0, 0.0],
+                &dvector![INF, INF],
+            )
+            .unwrap(),
+        );
+        assert!((solution.x[0] - 2e-10).abs() < 1e-24);
+        // The multiplier is in the original units: c₀ = 1e-10·y.
+        assert!((solution.y[0] - 1e10).abs() < 1e-3);
+    }
+
+    #[test]
+    fn no_rows_leaves_only_the_bounds() {
+        let none = DMatrix::zeros(0, 3);
+        let solution = optimal(
+            solve(
+                &dvector![1.0, -1.0, 0.0],
+                &none,
+                &DVector::zeros(0),
+                &dvector![0.5, 0.0, -2.0],
+                &dvector![1.0, 2.0, -1.0],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x, dvector![0.5, 2.0, -1.0]);
+        assert_eq!(solution.objective, -1.5);
+        assert_eq!(
+            solve(
+                &dvector![-1.0],
+                &DMatrix::zeros(0, 1),
+                &DVector::zeros(0),
+                &dvector![0.0],
+                &dvector![INF],
+            )
+            .unwrap(),
+            Outcome::Unbounded
+        );
     }
 }
