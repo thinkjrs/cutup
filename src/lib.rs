@@ -52,7 +52,6 @@ mod allocation;
 mod black_litterman;
 mod cluster;
 mod cvar;
-mod deprecated;
 mod eigen;
 mod lp;
 mod qp;
@@ -65,11 +64,6 @@ pub use allocation::{
 pub use black_litterman::{BlackLitterman, View};
 pub use cluster::Linkage;
 pub use cvar::MinCvar;
-#[allow(deprecated)]
-pub use deprecated::{
-    run_portfolio_allocation, HercConfig, HrpConfig, MaxSharpeConfig, MeanVarianceConfig,
-    MeanVarianceObjective, RiskParityConfig,
-};
 
 use eigen::SymmetricEigen;
 
@@ -3617,18 +3611,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_deprecated_hrp_cluster_order_matches_hrp() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
-        for linkage in [Linkage::Single, Linkage::Ward] {
-            assert_eq!(
-                allocator.hrp_cluster_order(&HrpConfig::default().with_linkage(linkage)),
-                Hrp::default().linkage(linkage).cluster_order(&allocator)
-            );
-        }
-    }
-
-    #[test]
     fn test_hrp_single_asset() {
         let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
         assert_eq!(Hrp::default().cluster_order(&allocator).unwrap(), vec![0]);
@@ -4014,45 +3996,6 @@ mod tests {
         let allocator = PortfolioAllocator::from_prices(prices).unwrap();
         let ew_weights = allocator.allocate(&EqualWeight).unwrap();
         assert_eq!(ew_weights.as_slice(), &[1.0]);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_run_portfolio_allocation() {
-        let prices = DMatrix::from_row_slice(
-            4,
-            4,
-            &[
-                125.0, 1500.0, 210.0, 600.0, 123.0, 1520.0, 215.0, 620.0, 130.0, 1510.0, 220.0,
-                610.0, 128.0, 1530.0, 225.0, 630.0,
-            ],
-        );
-
-        let weights = run_portfolio_allocation(prices.clone()).unwrap();
-        assert_eq!(
-            weights,
-            PortfolioAllocator::from_prices(prices)
-                .unwrap()
-                .allocate(&MinVariance::default().allow_short())
-                .unwrap()
-        );
-
-        let total_weight: f64 = weights.iter().sum();
-        assert!(
-            (total_weight - 1.0).abs() < 1e-6,
-            "Weights should sum to 1.0"
-        );
-
-        assert_eq!(weights.len(), 4, "Should return weights for 4 assets");
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_run_portfolio_allocation_propagates_errors() {
-        assert_eq!(
-            run_portfolio_allocation(dmatrix![100.0; 0.0; 110.0]).err(),
-            Some(CutupError::NonPositivePrice { row: 1, col: 0 })
-        );
     }
 
     #[test]
