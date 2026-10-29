@@ -1394,9 +1394,8 @@ proptest! {
         // Long-only, every return from the lowest asset mean to the highest is reachable,
         // the ends only by the assets tied there.
         let target = mu.min() + mix * (mu.max() - mu.min());
-        // The weights are as precise as the target's constraint is conditioned, and the
-        // turnover with them.
-        let rounding = 1e-12 * (1.0 + mu.amax() / (mu.max() - mu.min()));
+        // A cap within this of the least turnover counts as at it.
+        let rounding = 1e-12;
         let method = |cap: Option<f64>| {
             let mut method = MeanVariance::target_return(target).current_weights(current.clone());
             if let Some(cap) = cap {
@@ -1412,15 +1411,20 @@ proptest! {
             Ok(capped) => capped,
             Err(CutupError::InfeasibleTurnover { minimum, cap: given }) => {
                 prop_assert!(minimum > given && given == cap);
-                // The least turnover is reachable: a cap of exactly that is met.
-                let least = allocator.allocate(&method(Some(minimum))).unwrap();
-                prop_assert!(turnover(&least, &current) <= minimum + rounding);
+                // The least turnover is reachable: a cap of exactly that is met, unless the
+                // expected returns are so close that the target's constraint is resolved no
+                // better than the rounding the cap allows.
+                match allocator.allocate(&method(Some(minimum))) {
+                    Ok(least) => prop_assert!(turnover(&least, &current) <= minimum + 2.0 * rounding),
+                    Err(CutupError::NotConverged) => prop_assert!(mu.max() - mu.min() < 1e-6 * mu.amax(), "{mu:?}"),
+                    Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
+                }
                 return Ok(());
             }
             Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
         };
         let used = turnover(&capped, &current);
-        prop_assert!(used <= cap + rounding, "turned over {used} past {cap}");
+        prop_assert!(used <= cap + 2.0 * rounding, "turned over {used} past {cap}");
         let achieved = mu.dot(&DVector::from_column_slice(capped.as_slice()));
         prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
         prop_assert!(long_short || capped.iter().all(|&w| w >= 0.0), "{capped:?}");
