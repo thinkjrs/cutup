@@ -5,9 +5,10 @@
 
 Writes tests/fixtures/lp.json, which the unit tests in src/lp.rs check the solver against:
 random problems min cᵀx subject to Ax = b and l ≤ x ≤ u, some infeasible and some unbounded,
-solved by scipy.optimize.linprog with HiGHS. Only the outcome and the optimal objective are
-compared, since a degenerate problem can have many optimal x. Infinite bounds are written as
-null, which JSON can hold.
+solved by scipy.optimize.linprog with HiGHS at feasibility tolerances of 1e-10, tighter than
+its default 1e-7, so that the 1e-9 comparisons hold. Only the outcome and the optimal objective
+are compared, since a degenerate problem can have many optimal x. Infinite bounds are written as
+null, which JSON can hold. --check also compares the committed inputs exactly.
 """
 
 import json
@@ -19,6 +20,7 @@ from scipy.optimize import linprog
 from fixtures import FIXTURES, write_json
 
 OUTPUT = FIXTURES / "lp.json"
+TIGHT = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
 
 
 def bound(value: float) -> float | None:
@@ -44,12 +46,14 @@ def case(rng: np.random.Generator, kind: str) -> dict:
         c = np.where(np.isinf(upper), np.abs(c), c)
         c = np.where(np.isinf(lower), -np.abs(c), c)
         c = np.where(np.isinf(lower) & np.isinf(upper), 0.0, c)
+    # "unadjusted" costs are left as drawn, so a variable without a bound in the direction its
+    # cost favors makes the problem unbounded.
     elif kind == "infeasible":
         # Every variable boxed, and a row that can't reach its right-hand side.
         lower, upper = np.zeros(n), np.ones(n)
         a[0] = np.abs(a[0])
         b[0] = a[0].sum() + 1.0
-    result = linprog(c, A_eq=a, b_eq=b, bounds=list(zip(np.where(np.isinf(lower), None, lower), np.where(np.isinf(upper), None, upper))), method="highs")
+    result = linprog(c, A_eq=a, b_eq=b, bounds=list(zip(np.where(np.isinf(lower), None, lower), np.where(np.isinf(upper), None, upper))), method="highs", options=TIGHT)
     outcome = {0: "optimal", 2: "infeasible", 3: "unbounded"}[result.status]
     out = {
         "c": c.tolist(),
@@ -66,7 +70,7 @@ def case(rng: np.random.Generator, kind: str) -> dict:
 
 def cases() -> list[dict]:
     rng = np.random.default_rng(20261028)
-    kinds = ["bounded"] * 40 + ["free"] * 20 + ["infeasible"] * 10
+    kinds = ["bounded"] * 40 + ["unadjusted"] * 20 + ["infeasible"] * 10
     return [case(rng, kind) for kind in kinds]
 
 
@@ -74,10 +78,12 @@ def main() -> None:
     fresh = {"cases": cases()}
     if "--check" in sys.argv[1:]:
         committed = json.loads(OUTPUT.read_text())
+        inputs = ("c", "a", "b", "lower", "upper")
         problems = [
             i
             for i, (old, new) in enumerate(zip(committed["cases"], fresh["cases"]))
-            if old["outcome"] != new["outcome"]
+            if any(old[key] != new[key] for key in inputs)
+            or old["outcome"] != new["outcome"]
             or abs(old.get("objective", 0.0) - new.get("objective", 0.0)) > 1e-9 * max(1.0, abs(new.get("objective", 0.0)))
         ]
         if len(committed["cases"]) != len(fresh["cases"]):
