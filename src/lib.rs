@@ -1666,13 +1666,7 @@ impl PortfolioAllocator {
                 interior_start(&bounds),
             );
         }
-        // Mixing the lowest and highest return portfolios reaches any target in between.
-        // Dividing by the larger in magnitude first keeps the differences from overflowing.
-        let scale = range.lowest.abs().max(range.highest.abs());
-        let t = ((target / scale - range.lowest / scale)
-            / (range.highest / scale - range.lowest / scale))
-            .clamp(0.0, 1.0);
-        let start = &range.lowest_weights * (1.0 - t) + &range.highest_weights * t;
+        let start = range.mix(target);
         let ones = DVector::from_element(n, 1.0);
         long_only_weights(
             &cov,
@@ -3006,7 +3000,26 @@ impl ReturnRange {
                 highest,
             });
         }
-        Ok(target.clamp(lowest, highest))
+        // From either side: just inside an end, only a sliver of portfolios next to its face
+        // reach the target, and the solvers resolve that to rounding no better than the face.
+        Ok(if target <= lowest + tolerance {
+            lowest
+        } else if target >= highest - tolerance {
+            highest
+        } else {
+            target
+        })
+    }
+
+    /// The mix of the lowest and highest return portfolios that reaches `target`, strictly
+    /// between them.
+    fn mix(&self, target: f64) -> DVector<f64> {
+        // Dividing by the larger in magnitude first keeps the differences from overflowing.
+        let scale = self.lowest.abs().max(self.highest.abs());
+        let t = ((target / scale - self.lowest / scale)
+            / (self.highest / scale - self.lowest / scale))
+            .clamp(0.0, 1.0);
+        &self.lowest_weights * (1.0 - t) + &self.highest_weights * t
     }
 
     /// The bounds of the portfolios with the highest expected return, or the lowest. Assets
