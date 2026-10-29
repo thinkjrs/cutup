@@ -26,7 +26,7 @@ first version of the plan for these releases, are in `docs/PLAN.md`.
 
 | Release | Theme | Breaking |
 | --- | --- | --- |
-| 0.3.0 | Remove the deprecated API, make every breaking change planned before 1.0, and add `.covariance(..)` to `Hrp` and `Herc` | Yes |
+| 0.3.0 | Remove the deprecated API, make every breaking change planned before 1.0, add `.covariance(..)` to `Hrp` and `Herc`, and move to MSRV 1.85 with edition 2024 | Yes |
 | 0.3.1 | Split `lib.rs` into modules | No |
 | 0.3.2 | Tidying and tooling: tests, docs, packaging, CI checks, benchmarks | No |
 | 0.3.3 | Portfolio statistics and `Weights::clean` | No |
@@ -150,6 +150,32 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
      return `InvalidConfig`, and the HRP and HERC properties run with random
      shrinkage.
 
+10. **MSRV 1.85 and edition 2024**, up from 1.78 and edition 2021.
+    - **Why now:** raising the MSRV is breaking for anyone on an older
+      compiler, so 0.3.0 is the only release before 1.0 that can do it. The
+      MSRV set here holds through 0.3.x and into 1.0.
+    - **What 1.85 brings:**
+      - edition 2024, the current edition, which 1.85 is the first to support.
+        Let chains (`if let Some(x) = a && x > 0`) need it too, from 1.88 on;
+      - `#[expect(lint)]` (1.81), which warns once the lint it silences stops
+        firing, in place of `#[allow]`;
+      - the MSRV-aware dependency resolver (1.84), which picks dependency
+        versions that build on the declared MSRV.
+    - **Why 1.85 and not newer:** Debian 13 (trixie) ships rustc 1.85, so
+      users who build with their distribution's compiler are covered. It's
+      also well over a year old, past the six-month minimum lag of the MSRV
+      policy.
+    - **No dependency forces it:** the highest requirement among them is
+      `matrixmultiply`'s 1.75.
+    - **The work:**
+      - `rust-version = "1.85"` and `edition = "2024"` in `Cargo.toml`;
+      - the CI matrix moves from 1.78.0 to 1.85.0;
+      - the step in `tests.yml` that regenerates `Cargo.lock` for the 1.78 job
+        goes, since the resolver now handles it;
+      - `cargo fix --edition` for the mechanical changes, in a commit of
+        their own so the review can skip it;
+      - the README's MSRV, and a CHANGELOG entry.
+
 Done already in 0.2.7 and 0.2.8: methods as values, setters without `with_`,
 long-only by default with `.allow_short()`, and the deprecation of the method
 API.
@@ -161,17 +187,20 @@ In this order, since later ones build on earlier ones:
 - **PR A:** the removal.
 - **PR B:** changes 1 to 3: the `CovarianceConfig` setters, the unit
   structs, and `Weights::to_hashmap`.
-- **PR C:** change 9, `.covariance(..)` on `Hrp` and `Herc`, after PR B has
+- **PR C:** change 10, MSRV 1.85 and edition 2024, so every later PR is
+  written against the new edition.
+- **PR D:** change 9, `.covariance(..)` on `Hrp` and `Herc`, after PR B has
   renamed the `CovarianceConfig` setters it builds on.
-- **PR D:** change 5, plain inputs, so the rename and labels are built on the
+- **PR E:** change 5, plain inputs, so the rename and labels are built on the
   new constructors.
-- **PR E:** change 4, `Returns` and the deprecated alias.
-- **PR F:** change 6, asset labels.
-- **PR G:** changes 7 and 8, the traits and error payloads, as the last pass
+- **PR F:** change 4, `Returns` and the deprecated alias.
+- **PR G:** change 6, asset labels.
+- **PR H:** changes 7 and 8, the traits and error payloads, as the last pass
   over the public API.
 
 The README gets an "Upgrading from 0.2" section covering every change above,
-the removed methods, `with_` setters, `Returns`, plain inputs and labels, and
+the removed methods, `with_` setters, `Returns`, plain inputs, labels and the
+MSRV, and
 the CHANGELOG a table from each 0.2 form to its 0.3 form.
 
 ## 0.3.1: split `lib.rs`
@@ -204,8 +233,10 @@ No API changes.
   named after the old methods were renamed in 0.3.0.
 - **`docs/PLAN.md`:** fold anything still open into this document, and keep
   the rest as history or remove it.
-- **MSRV clippy:** the 1.78 `box_default` lints in `examples/compare.rs` and
-  `tests/integration.rs`, so clippy also passes on the MSRV.
+- **MSRV clippy:** clippy passes on the MSRV as well as on stable. 1.78's
+  `box_default` lints in `examples/compare.rs` and `tests/integration.rs` go
+  away with the move to 1.85, or get fixed here if 1.85's clippy flags them
+  too.
 - **`Cargo.toml`:** a description and keywords that fit a portfolio
   allocation crate.
 
@@ -431,7 +462,8 @@ Worked through during 0.3.x. Nothing new lands in 1.0.0 itself.
 0.3.8.
 
 - **An MSRV policy in the README:**
-  - an MSRV bump is a minor release, never a patch;
+  - the MSRV is 1.85 from 0.3.0, and stays there through 0.3.x and 1.0.0;
+  - after 1.0, an MSRV bump is a minor release, never a patch;
   - the MSRV stays at least six months behind the latest stable Rust.
 - **Documented size limits**, from the benchmarks: how many assets and
   scenarios each method handles in practice.
