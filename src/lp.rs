@@ -43,9 +43,11 @@ enum Status {
 /// artificial variables at zero and minimizes `cᵀx`. Each iteration factors the basis afresh
 /// and recomputes the basic variables from the nonbasic ones, so rounding doesn't accumulate.
 ///
-/// The entering variable is the lowest-indexed one whose reduced cost improves the objective,
-/// and ties in the ratio test go to the lowest index: Bland's rule, which can't cycle on a
-/// degenerate vertex.
+/// The entering variable is the one whose reduced cost improves the objective fastest
+/// (Dantzig's rule). On a degenerate vertex that rule can cycle, so after a few pivots in a
+/// row that don't move `x`, the lowest-indexed improving variable enters instead, with ties
+/// in the ratio test going to the lowest index: Bland's rule, which can't cycle. It holds
+/// until `x` moves again.
 ///
 /// # Errors
 ///
@@ -88,6 +90,7 @@ pub(crate) fn solve(
         columns[(i, n + i)] = if residual[i] < 0.0 { -1.0 } else { 1.0 };
     }
     let mut problem = Problem {
+        a_abs: columns.abs(),
         a: columns,
         b: b.clone(),
         lower: lower.clone().resize_vertically(n + m, 0.0),
@@ -159,6 +162,9 @@ fn unconstrained(c: &DVector<f64>, lower: &DVector<f64>, upper: &DVector<f64>) -
     })
 }
 
+/// How many pivots in a row may leave `x` where it was before Bland's rule takes over.
+const STALL: usize = 10;
+
 /// A step at which a variable reaches a bound: its length, the variable, and, for a basic
 /// variable, its row and the bound it reaches.
 type Block = (f64, usize, Option<(usize, Status)>);
@@ -166,6 +172,8 @@ type Block = (f64, usize, Option<(usize, Status)>);
 /// A linear program in the state the simplex method moves through.
 struct Problem {
     a: DMatrix<f64>,
+    /// `|A|`, entrywise, for the reduced costs' tolerances.
+    a_abs: DMatrix<f64>,
     b: DVector<f64>,
     lower: DVector<f64>,
     upper: DVector<f64>,
@@ -180,6 +188,9 @@ impl Problem {
     /// optimum, or `None` if the objective decreases without limit.
     fn minimize(&mut self, cost: &DVector<f64>) -> Result<Option<DVector<f64>>, CutupError> {
         let (m, total) = self.a.shape();
+        // Pivots in a row that didn't move x. Past a few, Bland's rule takes over until one
+        // does: only a run of such pivots can cycle, and Bland's can't.
+        let mut stalled = 0;
         for _ in 0..1000 + 100 * (m + total) {
             let lu = self.a.select_columns(&self.basis).lu();
             // The basic variables from the nonbasic ones, which sit exactly at their bounds.
@@ -210,10 +221,18 @@ impl Problem {
             lu.p().inv_permute_rows(&mut y);
             let reduced = cost - self.a.tr_mul(&y);
 
-            // Bland's rule: the lowest-indexed variable that improves the objective, and the
-            // direction it moves in.
-            let tolerance = 1e-9 * cost.amax().max(f64::MIN_POSITIVE);
-            let entering = (0..total).find_map(|j| {
+            // The variable that improves the objective fastest, and the direction it moves in
+            // (Dantzig's rule), or while stalled the lowest-indexed one (Bland's). Each reduced
+            // cost cⱼ − aⱼᵀy is a difference of terms up to |cⱼ| + |aⱼ|ᵀ|y|, so it only counts
+            // beyond rounding of that: a single tolerance would stop early on variables whose
+            // terms are all small, as for an asset whose returns are orders of magnitude below
+            // the others'. But never below rounding of the problem as a whole, which such a
+            // variable can't tell apart from a true reduced cost: entering on that noise moves
+            // nothing, and pivots on rounding.
+            let magnitude = cost.abs() + self.a_abs.tr_mul(&y.abs());
+            let floor = 1e-14 * magnitude.amax();
+            let improving = (0..total).filter_map(|j| {
+                let tolerance = (1e-9 * magnitude[j]).max(floor);
                 let movable = self.upper[j] > self.lower[j];
                 match self.status[j] {
                     Status::Lower if movable && reduced[j] < -tolerance => Some((j, 1.0)),
@@ -222,6 +241,11 @@ impl Problem {
                     _ => None,
                 }
             });
+            let entering = if stalled < STALL {
+                improving.max_by(|p, q| reduced[p.0].abs().total_cmp(&reduced[q.0].abs()))
+            } else {
+                improving.min_by_key(|p| p.0)
+            };
             let Some((j, sign)) = entering else {
                 return Ok(Some(y));
             };
@@ -289,6 +313,7 @@ impl Problem {
                 return Ok(None);
             };
 
+            stalled = if step > 0.0 { 0 } else { stalled + 1 };
             self.x[j] += sign * step;
             match leaving {
                 // The entering variable reaches its other bound before anything blocks it.
