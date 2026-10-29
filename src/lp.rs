@@ -313,7 +313,14 @@ impl Problem {
                 return Ok(None);
             };
 
-            stalled = if step > 0.0 { 0 } else { stalled + 1 };
+            // A step stalls when the leaving variable moves within rounding of nothing. The
+            // basic variables are recomputed each pivot, so even a degenerate step comes out
+            // as noise rather than exactly zero.
+            let stalls = leaving.is_some_and(|(row, _)| {
+                let k = self.basis[row];
+                step * change[row].abs() <= 1e-12 * self.x[k].abs().max(1.0)
+            });
+            stalled = if stalls { stalled + 1 } else { 0 };
             self.x[j] += sign * step;
             match leaving {
                 // The entering variable reaches its other bound before anything blocks it.
@@ -397,6 +404,38 @@ mod tests {
             .unwrap(),
         );
         assert!((solution.objective + 0.05).abs() < 1e-14);
+    }
+
+    #[test]
+    fn beales_example_shifted_off_zero_terminates() {
+        // The same problem in x − l: nonzero bounds make degenerate steps come out as rounding
+        // noise rather than exactly zero, which mustn't count as progress.
+        let a = dmatrix![
+            0.25, -60.0, -0.04, 9.0, 1.0, 0.0, 0.0;
+            0.5, -90.0, -0.02, 3.0, 0.0, 1.0, 0.0;
+            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0
+        ];
+        let c = dvector![-0.75, 150.0, -0.02, 6.0, 0.0, 0.0, 0.0];
+        let l = dvector![
+            -4.105497651910723,
+            -2.782490163151331,
+            0.4245830870739675,
+            1.5584902031795,
+            0.13554998649659034,
+            3.5429669233119574,
+            -2.4326451470286417
+        ];
+        let solution = optimal(
+            solve(
+                &c,
+                &a,
+                &(&a * &l + dvector![0.0, 0.0, 1.0]),
+                &l,
+                &DVector::from_element(7, INF),
+            )
+            .unwrap(),
+        );
+        assert!((solution.objective - (c.dot(&l) - 0.05)).abs() < 1e-12);
     }
 
     #[test]
