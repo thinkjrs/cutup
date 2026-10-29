@@ -83,7 +83,7 @@ cutup = "0.2.8"
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
 
-Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods such as `min_variance_allocation`, their config structs and `run_portfolio_allocation` are deprecated since 0.2.8 and will be removed in 0.3.0: see [Upgrading from the method API](#upgrading-from-the-method-api).
+Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods from 0.2, such as `min_variance_allocation`, were removed in 0.3.0: see [Upgrading from 0.2](#upgrading-from-02).
 
 Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
@@ -207,11 +207,11 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
-### Upgrading from the method API
+### Upgrading from 0.2
 
-Each deprecated method returns exactly what `allocate` returns for its replacement, so switching changes no weights. The old min variance, mean-variance and max Sharpe methods are long-short unless their name starts with `long_only_`, while `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless you call `.allow_short()`. The other methods were always long-only.
+0.3.0 removed the `PortfolioAllocator` methods, `run_portfolio_allocation` and the config structs that were deprecated in 0.2.8. Their [0.2.8 docs](https://docs.rs/cutup/0.2.8/cutup/) still have the deprecation notes. In 0.2.8, each one returned exactly what `allocate` returns for its replacement, so switching changes no weights. The old min variance, mean-variance and max Sharpe methods are long-short unless their name starts with `long_only_`, while `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless you call `.allow_short()`. The other methods were always long-only.
 
-| Deprecated | Replacement |
+| Removed | Replacement |
 | --- | --- |
 | `allocator.ew_allocation()` | `allocator.allocate(&EqualWeight)?` |
 | `inverse_volatility_allocation()` | `allocate(&InverseVolatility::default())` |
@@ -235,7 +235,7 @@ Each deprecated method returns exactly what `allocate` returns for its replaceme
 
 The config structs' settings are setters on the values, without the `with_`:
 
-| Deprecated | Replacement |
+| Removed | Replacement |
 | --- | --- |
 | `.with_expected_returns(dvector![..])` | `.expected_returns([..])`, which takes a `Vec<f64>`, an array or a slice, such as `mu.as_slice()` for a `DVector` |
 | `.with_risk_budgets(dvector![..])` | `.risk_budgets([..])` |
