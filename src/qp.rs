@@ -695,9 +695,9 @@ fn solve_piecewise_in_units(
 ///
 /// # Errors
 ///
-/// Any error from [`solve_piecewise`] but [`CutupError::Unbounded`], which a small `λ` only
-/// means is too small, or [`CutupError::NotConverged`] if no `λ` up to 2¹⁰⁰⁰ times that reaches
-/// the cap.
+/// Any error from [`solve_piecewise`] without the cap but [`CutupError::Unbounded`], which a
+/// small `λ` only means is too small, or [`CutupError::NotConverged`] if no `λ` the solver can
+/// handle, up to 2¹⁰⁰⁰ times that, reaches the cap.
 pub(crate) fn solve_turnover_capped(
     q: &DMatrix<f64>,
     c: &DVector<f64>,
@@ -737,7 +737,9 @@ pub(crate) fn solve_turnover_capped(
     let pull = (q * &kinks.at - c).amax();
     let mut high = if pull > 0.0 { pull } else { 1.0 };
     let (mut high_turnover, mut best) = loop {
-        match solve(high, warm.clone())? {
+        // The problem itself solved without the cap, so a failure only at a larger λ is its
+        // arithmetic breaking down short of the cap: no λ the solver can handle reaches it.
+        match solve(high, warm.clone()).map_err(|_| CutupError::NotConverged)? {
             (used, Some(x)) if used <= cap + slack(&x) => break (used, x),
             (used, x) => {
                 (low, low_turnover) = (high, used);
