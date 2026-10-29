@@ -60,10 +60,10 @@ fn returns_scale(dataset: &Value) -> f64 {
 fn covariance_config(params: &Value) -> CovarianceConfig {
     let mut config = CovarianceConfig::default();
     if let Some(lambda) = params["shrinkage"].as_f64() {
-        config = config.with_shrinkage(lambda);
+        config = config.shrinkage(lambda);
     }
     if let Some(epsilon) = params["regularization"].as_f64() {
-        config = config.with_regularization(epsilon);
+        config = config.regularization(epsilon);
     }
     config
 }
@@ -260,8 +260,8 @@ fn run(
 ) -> Result<Weights, CutupError> {
     match method {
         "equal_weight" => allocator.allocate(&EqualWeight),
-        "inverse_volatility" => allocator.allocate(&InverseVolatility::default()),
-        "inverse_variance" => allocator.allocate(&InverseVariance::default()),
+        "inverse_volatility" => allocator.allocate(&InverseVolatility),
+        "inverse_variance" => allocator.allocate(&InverseVariance),
         "min_variance" => allocator.allocate(
             &MinVariance::default()
                 .allow_short()

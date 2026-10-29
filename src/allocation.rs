@@ -47,7 +47,7 @@ use nalgebra::DVector;
 /// ])?;
 /// let methods: Vec<Box<dyn Allocation>> = vec![
 ///     Box::new(EqualWeight),
-///     Box::new(InverseVolatility::default()),
+///     Box::new(InverseVolatility),
 ///     Box::new(RiskParity::default()),
 /// ];
 /// for method in &methods {
@@ -133,14 +133,13 @@ impl Allocation for EqualWeight {
 /// ];
 ///
 /// let allocator = PortfolioAllocator::from_returns(returns)?;
-/// let weights = allocator.allocate(&InverseVolatility::default())?;
+/// let weights = allocator.allocate(&InverseVolatility)?;
 ///
 /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
 /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct InverseVolatility;
 
 impl Allocation for InverseVolatility {
@@ -175,14 +174,13 @@ impl Allocation for InverseVolatility {
 ///     -0.01,  0.02
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_returns(returns)?.allocate(&InverseVariance::default())?;
+/// let weights = PortfolioAllocator::from_returns(returns)?.allocate(&InverseVariance)?;
 ///
 /// assert!((weights[0] - 0.8).abs() < 1e-12);
 /// assert!((weights[1] - 0.2).abs() < 1e-12);
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct InverseVariance;
 
 impl Allocation for InverseVariance {
@@ -1095,7 +1093,7 @@ const HERC_MAX_CLUSTERS: usize = 10;
 /// let weights = allocator.allocate(&Herc::default().clusters(2))?;
 ///
 /// // With two clusters, {0, 2} and {1, 3}, each pair is weighted by inverse variance.
-/// let inverse_variance = allocator.allocate(&InverseVariance::default())?;
+/// let inverse_variance = allocator.allocate(&InverseVariance)?;
 /// let ratio = |a: usize, b: usize| weights[a] / weights[b];
 /// assert!((ratio(0, 2) - inverse_variance[0] / inverse_variance[2]).abs() < 1e-12);
 /// assert!((ratio(1, 3) - inverse_variance[1] / inverse_variance[3]).abs() < 1e-12);

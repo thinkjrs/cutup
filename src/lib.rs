@@ -14,13 +14,13 @@ macro_rules! covariance_setters {
         /// Shrinks the covariance toward a scaled identity with intensity `lambda`. See
         /// [`CovarianceConfig::shrinkage`].
         pub fn shrinkage(mut self, lambda: f64) -> Self {
-            self.covariance = self.covariance.with_shrinkage(lambda);
+            self.covariance = self.covariance.shrinkage(lambda);
             self
         }
 
         /// Adds `epsilon · I` to the covariance. See [`CovarianceConfig::regularization`].
         pub fn regularization(mut self, epsilon: f64) -> Self {
-            self.covariance = self.covariance.with_regularization(epsilon);
+            self.covariance = self.covariance.regularization(epsilon);
             self
         }
     };
@@ -68,7 +68,6 @@ pub use cvar::MinCvar;
 use eigen::SymmetricEigen;
 
 use nalgebra::{DMatrix, DVector};
-use std::collections::HashMap;
 use std::fmt;
 use std::ops::Index;
 
@@ -354,11 +353,6 @@ impl Weights {
     pub fn into_vec(self) -> Vec<f64> {
         self.0
     }
-
-    /// Returns the weights keyed by column index, the shape returned before 0.2.0.
-    pub fn to_hashmap(&self) -> HashMap<usize, f64> {
-        self.0.iter().copied().enumerate().collect()
-    }
 }
 
 impl Index<usize> for Weights {
@@ -397,48 +391,38 @@ impl From<Vec<f64>> for Weights {
 /// `covariance` setter, such as [`MinVariance::covariance`]. Each method also has `shrinkage`
 /// and `regularization` setters for each adjustment on its own.
 ///
-/// The default applies no adjustment. Build one with the `with_*` methods:
+/// The default applies no adjustment. Shrinkage is applied first, then regularization:
 ///
 /// ```
-/// use cutup::CovarianceConfig;
+/// use cutup::{CovarianceConfig, MinVariance};
 ///
-/// let config = CovarianceConfig::default()
-///     .with_shrinkage(0.1)
-///     .with_regularization(1e-8);
-///
-/// assert_eq!(config.shrinkage, Some(0.1));
+/// let config = CovarianceConfig::default().shrinkage(0.1).regularization(1e-8);
+/// let method = MinVariance::default().covariance(config);
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct CovarianceConfig {
-    /// Optional regularization parameter (ε).
-    /// Adds ε * I to the covariance matrix to improve numerical stability.
-    /// Must be finite and non-negative. Unlike shrinkage this is absolute, so choose ε relative
-    /// to the scale of your returns' variances.
-    /// If `None`, no regularization is applied.
-    ///
-    /// <https://en.wikipedia.org/wiki/Tikhonov_regularization>
-    pub regularization: Option<f64>,
-
-    /// Optional shrinkage intensity (λ) toward a scaled identity matrix.
-    /// The covariance matrix becomes: λ * μ * I + (1 - λ) * Σ, where μ = trace(Σ) / n is the
-    /// average variance, so the target is on the same scale as Σ.
-    /// Must be in `[0, 1]`. Helps mitigate estimation error in empirical covariances.
-    /// If `None`, no shrinkage is applied.
-    ///
-    /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
-    pub shrinkage: Option<f64>,
+    regularization: Option<f64>,
+    shrinkage: Option<f64>,
 }
 
 impl CovarianceConfig {
-    /// Sets the regularization parameter ε.
-    pub fn with_regularization(mut self, epsilon: f64) -> Self {
+    /// Adds `ε · I` to the covariance matrix to improve numerical stability. `ε` must be finite
+    /// and nonnegative. Unlike shrinkage it's absolute, so choose it relative to the scale of
+    /// your returns' variances.
+    ///
+    /// <https://en.wikipedia.org/wiki/Tikhonov_regularization>
+    pub fn regularization(mut self, epsilon: f64) -> Self {
         self.regularization = Some(epsilon);
         self
     }
 
-    /// Sets the shrinkage intensity λ.
-    pub fn with_shrinkage(mut self, lambda: f64) -> Self {
+    /// Shrinks the covariance matrix toward a scaled identity with intensity `λ` in `[0, 1]`:
+    /// it becomes `λ·μ·I + (1 − λ)·Σ`, where `μ = trace(Σ) / n` is the average variance, so
+    /// the target is on the same scale as `Σ`. Shrinkage reduces the estimation error in a
+    /// sample covariance.
+    ///
+    /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
+    pub fn shrinkage(mut self, lambda: f64) -> Self {
         self.shrinkage = Some(lambda);
         self
     }
@@ -1898,10 +1882,6 @@ mod tests {
         assert_eq!(weights.as_slice(), &[0.2, 0.3, 0.5]);
         assert_eq!((&weights).into_iter().count(), 3);
 
-        let map = weights.to_hashmap();
-        assert_eq!(map.len(), 3);
-        assert_eq!(map[&0], 0.2);
-
         assert_eq!(weights.clone().into_vec(), vec![0.2, 0.3, 0.5]);
         assert_eq!(Vec::from(weights), vec![0.2, 0.3, 0.5]);
     }
@@ -2140,8 +2120,8 @@ mod tests {
             }
         );
         let config = CovarianceConfig::default()
-            .with_regularization(1e-8)
-            .with_shrinkage(0.25);
+            .regularization(1e-8)
+            .shrinkage(0.25);
         assert_eq!(config.regularization, Some(1e-8));
         assert_eq!(config.shrinkage, Some(0.25));
     }
@@ -2149,7 +2129,7 @@ mod tests {
     #[test]
     fn test_full_shrinkage_gives_equal_weights() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = CovarianceConfig::default().with_shrinkage(1.0);
+        let config = CovarianceConfig::default().shrinkage(1.0);
         let weights = allocator
             .allocate(
                 &MinVariance::default()
@@ -2165,7 +2145,7 @@ mod tests {
         // The shrinkage target is the average variance times I, so rescaling every return by
         // the same factor must leave the weights unchanged. A target of plain I would not.
         let returns = PortfolioAllocator::compute_returns(&full_rank_prices());
-        let config = CovarianceConfig::default().with_shrinkage(0.5);
+        let config = CovarianceConfig::default().shrinkage(0.5);
 
         let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
         let scaled = PortfolioAllocator::from_returns(returns * 100.0).unwrap();
@@ -2362,13 +2342,13 @@ mod tests {
         let plain = MeanVariance::risk_aversion(5.0);
         let shrunk = plain
             .clone()
-            .covariance(CovarianceConfig::default().with_shrinkage(0.5));
+            .covariance(CovarianceConfig::default().shrinkage(0.5));
         assert_ne!(
             allocator.allocate(&plain.clone().allow_short()).unwrap(),
             allocator.allocate(&shrunk.clone().allow_short()).unwrap()
         );
 
-        let invalid = plain.covariance(CovarianceConfig::default().with_shrinkage(2.0));
+        let invalid = plain.covariance(CovarianceConfig::default().shrinkage(2.0));
         assert_eq!(
             allocator.allocate(&invalid.clone().allow_short()).err(),
             Some(CutupError::InvalidConfig {
@@ -2514,7 +2494,7 @@ mod tests {
             ],
         );
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let config = CovarianceConfig::default().with_shrinkage(0.9832865013278819);
+        let config = CovarianceConfig::default().shrinkage(0.9832865013278819);
         let weights = allocator
             .allocate(
                 &MinVariance::default()
@@ -2541,7 +2521,7 @@ mod tests {
         // covariance leaves it zero.
         let returns = dmatrix![0.01, 0.02; 0.01, 0.02; 0.01, 0.02];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let shrunk = CovarianceConfig::default().with_shrinkage(0.5);
+        let shrunk = CovarianceConfig::default().shrinkage(0.5);
         let mean_variance = MeanVariance::risk_aversion(10.0).covariance(shrunk.clone());
         let max_sharpe = MaxSharpe::default().covariance(shrunk.clone());
         let risk_parity = RiskParity::default().covariance(shrunk.clone());
@@ -2687,7 +2667,7 @@ mod tests {
     #[test]
     fn test_long_only_min_variance_rejects_bad_input() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = CovarianceConfig::default().with_shrinkage(1.5);
+        let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
             allocator.allocate(&MinVariance::default().covariance(config.clone())),
             Err(CutupError::InvalidConfig {
@@ -2872,7 +2852,7 @@ mod tests {
     #[test]
     fn test_bounds_that_dont_bind_change_nothing() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = CovarianceConfig::default().with_shrinkage(0.2);
+        let config = CovarianceConfig::default().shrinkage(0.2);
         let loose = WeightBounds::uniform(0.0, 1.0);
         assert_eq!(
             allocator
@@ -3218,8 +3198,8 @@ mod tests {
         for s in [1e-4, 1e-8, 1e-12] {
             let returns = dmatrix![1.0, s; -1.0, s; 1.0, -s; -1.0, -s];
             let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-            let inverse_volatility = allocator.allocate(&InverseVolatility::default()).unwrap();
-            let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
+            let inverse_volatility = allocator.allocate(&InverseVolatility).unwrap();
+            let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
             close(
                 &allocator.allocate(&MaxDiversification::default()).unwrap(),
                 &inverse_volatility,
@@ -3268,7 +3248,7 @@ mod tests {
         );
 
         // Shrinkage gives every portfolio some variance.
-        let config = CovarianceConfig::default().with_shrinkage(0.3);
+        let config = CovarianceConfig::default().shrinkage(0.3);
         let weights = allocator
             .allocate(&MaxDiversification::default().covariance(config.clone()))
             .unwrap();
@@ -3285,7 +3265,7 @@ mod tests {
     #[test]
     fn test_max_diversification_rejects_bad_input() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let config = CovarianceConfig::default().with_shrinkage(1.5);
+        let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
             allocator.allocate(&MaxDiversification::default().covariance(config.clone())),
             Err(CutupError::InvalidConfig {
@@ -3311,7 +3291,7 @@ mod tests {
         assert_eq!(allocator.allocate(&config), Err(CutupError::Unbounded));
 
         // Shrinkage gives every portfolio some variance.
-        let config = config.covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let config = config.covariance(CovarianceConfig::default().shrinkage(0.3));
         let weights = allocator.allocate(&config).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -3391,7 +3371,7 @@ mod tests {
             Some(CutupError::Unbounded)
         );
 
-        let shrunk = config.covariance(CovarianceConfig::default().with_shrinkage(0.1));
+        let shrunk = config.covariance(CovarianceConfig::default().shrinkage(0.1));
         assert!(allocator.allocate(&shrunk.clone().allow_short()).is_ok());
     }
 
@@ -3436,7 +3416,7 @@ mod tests {
             Some(CutupError::ZeroVariance { asset: 0 })
         );
 
-        let shrunk = CovarianceConfig::default().with_shrinkage(1.0);
+        let shrunk = CovarianceConfig::default().shrinkage(1.0);
         assert_weights_close(
             &allocator
                 .allocate(
@@ -3449,7 +3429,7 @@ mod tests {
             1e-12,
         );
 
-        let regularized = CovarianceConfig::default().with_regularization(1e-6);
+        let regularized = CovarianceConfig::default().regularization(1e-6);
         let weights = allocator
             .allocate(
                 &MinVariance::default()
@@ -3692,12 +3672,12 @@ mod tests {
             Weights(raw.iter().map(|x| x / total).collect())
         };
         assert_weights_close(
-            &allocator.allocate(&InverseVolatility::default()).unwrap(),
+            &allocator.allocate(&InverseVolatility).unwrap(),
             &normalize([1.0 / s1, 1.0 / s2, 1.0 / s3]),
             1e-12,
         );
         assert_weights_close(
-            &allocator.allocate(&InverseVariance::default()).unwrap(),
+            &allocator.allocate(&InverseVariance).unwrap(),
             &normalize([1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)]),
             1e-12,
         );
@@ -3713,7 +3693,7 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
+        let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
         assert_weights_close(
             &inverse_variance,
             &allocator
@@ -3740,7 +3720,7 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
-        let weights = allocator.allocate(&InverseVolatility::default()).unwrap();
+        let weights = allocator.allocate(&InverseVolatility).unwrap();
         let contributions: Vec<f64> = (0..3)
             .map(|i| weights[i] * weights[i] * allocator.cov_matrix[(i, i)])
             .collect();
@@ -3757,12 +3737,12 @@ mod tests {
 
         for (a, b) in [
             (
-                base.allocate(&InverseVolatility::default()).unwrap(),
-                scaled.allocate(&InverseVolatility::default()).unwrap(),
+                base.allocate(&InverseVolatility).unwrap(),
+                scaled.allocate(&InverseVolatility).unwrap(),
             ),
             (
-                base.allocate(&InverseVariance::default()).unwrap(),
-                scaled.allocate(&InverseVariance::default()).unwrap(),
+                base.allocate(&InverseVariance).unwrap(),
+                scaled.allocate(&InverseVariance).unwrap(),
             ),
         ] {
             assert_weights_close(&a, &b, 1e-12);
@@ -3776,11 +3756,11 @@ mod tests {
         let allocator =
             PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
-            allocator.allocate(&InverseVolatility::default()).err(),
+            allocator.allocate(&InverseVolatility).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
         assert_eq!(
-            allocator.allocate(&InverseVariance::default()).err(),
+            allocator.allocate(&InverseVariance).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
         );
     }
@@ -3827,8 +3807,8 @@ mod tests {
 
         let others = [
             allocator.allocate(&EqualWeight).unwrap(),
-            allocator.allocate(&InverseVolatility::default()).unwrap(),
-            allocator.allocate(&InverseVariance::default()).unwrap(),
+            allocator.allocate(&InverseVolatility).unwrap(),
+            allocator.allocate(&InverseVariance).unwrap(),
             allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),
@@ -3894,7 +3874,7 @@ mod tests {
 
         let shrunk = MaxSharpe::default()
             .risk_free_rate(-0.01)
-            .covariance(CovarianceConfig::default().with_shrinkage(0.5));
+            .covariance(CovarianceConfig::default().shrinkage(0.5));
         let weights = allocator.allocate(&shrunk.clone().allow_short()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -4099,7 +4079,7 @@ mod tests {
             .risk_budgets(
                 DVector::from_row_slice(&[0.8571666963481355, 0.45606979884293564]).as_slice(),
             )
-            .covariance(CovarianceConfig::default().with_shrinkage(0.29613802865778266));
+            .covariance(CovarianceConfig::default().shrinkage(0.29613802865778266));
         assert!(allocator.allocate(&config).is_ok());
     }
 
@@ -4137,7 +4117,7 @@ mod tests {
             PortfolioAllocator::from_prices(full_rank_prices().columns(0, 2).into_owned()).unwrap();
         assert_weights_close(
             &allocator.allocate(&RiskParity::default()).unwrap(),
-            &allocator.allocate(&InverseVolatility::default()).unwrap(),
+            &allocator.allocate(&InverseVolatility).unwrap(),
             1e-12,
         );
     }
@@ -4169,8 +4149,7 @@ mod tests {
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
         );
-        let config =
-            RiskParity::default().covariance(CovarianceConfig::default().with_shrinkage(0.3));
+        let config = RiskParity::default().covariance(CovarianceConfig::default().shrinkage(0.3));
         let weights = allocator.allocate(&config).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
@@ -4185,7 +4164,7 @@ mod tests {
             Err(CutupError::SingularCovariance)
         );
         let config =
-            RiskParity::default().covariance(CovarianceConfig::default().with_regularization(1e-6));
+            RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-6));
         let weights = allocator.allocate(&config).unwrap();
         assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
     }
@@ -4218,8 +4197,7 @@ mod tests {
                 ..
             })
         ));
-        let config =
-            RiskParity::default().covariance(CovarianceConfig::default().with_shrinkage(2.0));
+        let config = RiskParity::default().covariance(CovarianceConfig::default().shrinkage(2.0));
         assert_eq!(
             allocator.allocate(&config),
             Err(CutupError::InvalidConfig {
@@ -4239,7 +4217,7 @@ mod tests {
         );
         // Regularization gives the constant asset a variance, and nearly all the weight.
         let config =
-            RiskParity::default().covariance(CovarianceConfig::default().with_regularization(1e-8));
+            RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-8));
         let weights = allocator.allocate(&config).unwrap();
         assert!(weights[1] > 0.99);
     }
@@ -4250,7 +4228,7 @@ mod tests {
         let config = Herc::default().clusters(1);
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
-            &allocator.allocate(&InverseVariance::default()).unwrap(),
+            &allocator.allocate(&InverseVariance).unwrap(),
             1e-15,
         );
     }
@@ -4267,7 +4245,7 @@ mod tests {
         let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
         assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
         // Within a block, inverse variance.
-        let iv = allocator.allocate(&InverseVariance::default()).unwrap();
+        let iv = allocator.allocate(&InverseVariance).unwrap();
         assert!((weights[0] / weights[4] - iv[0] / iv[4]).abs() < 1e-12);
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -4285,7 +4263,7 @@ mod tests {
     #[test]
     fn test_herc_two_assets_is_inverse_variance() {
         let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
-        let iv = allocator.allocate(&InverseVariance::default()).unwrap();
+        let iv = allocator.allocate(&InverseVariance).unwrap();
         for clusters in [1, 2] {
             let config = Herc::default().clusters(clusters);
             assert_weights_close(&allocator.allocate(&config).unwrap(), &iv, 1e-15);

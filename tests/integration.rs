@@ -26,7 +26,7 @@ fn test_portfolio_allocations() {
 
     // Two rows of returns for three assets is too little data for an unshrunk covariance.
     let method = MeanVariance::risk_aversion(2.0)
-        .covariance(CovarianceConfig::default().with_shrinkage(0.1))
+        .covariance(CovarianceConfig::default().shrinkage(0.1))
         .allow_short();
     let mean_variance = allocator.allocate(&method).unwrap();
     assert_eq!(mean_variance.len(), 3);
@@ -42,7 +42,7 @@ struct LowestVolatility;
 
 impl Allocation for LowestVolatility {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        let inverse = data.allocate(&InverseVolatility::default())?;
+        let inverse = data.allocate(&InverseVolatility)?;
         let lowest = (0..inverse.len())
             .max_by(|&a, &b| inverse[a].total_cmp(&inverse[b]))
             .unwrap();

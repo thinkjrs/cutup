@@ -179,8 +179,8 @@ fn assert_bounded_optimum(
 fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
     let mut methods = vec![
         allocator.allocate(&EqualWeight).unwrap(),
-        allocator.allocate(&InverseVolatility::default()).unwrap(),
-        allocator.allocate(&InverseVariance::default()).unwrap(),
+        allocator.allocate(&InverseVolatility).unwrap(),
+        allocator.allocate(&InverseVariance).unwrap(),
         allocator.allocate(&MinVariance::default()).unwrap(),
         allocator
             .allocate(&MeanVariance::risk_aversion(50.0))
@@ -211,11 +211,11 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
         ),
         (
             "inverse volatility".to_string(),
-            allocator.allocate(&InverseVolatility::default()).unwrap(),
+            allocator.allocate(&InverseVolatility).unwrap(),
         ),
         (
             "inverse variance".to_string(),
-            allocator.allocate(&InverseVariance::default()).unwrap(),
+            allocator.allocate(&InverseVariance).unwrap(),
         ),
         (
             "min variance".to_string(),
@@ -267,15 +267,15 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
 /// HERC are tested separately: like the original algorithm, HRP can depend on column order,
 /// and both cluster on correlations, which only an exact rescaling leaves bit-identical.
 fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
-    let shrunk = CovarianceConfig::default().with_shrinkage(0.3);
+    let shrunk = CovarianceConfig::default().shrinkage(0.3);
     vec![
         (
             "inverse volatility".to_string(),
-            allocator.allocate(&InverseVolatility::default()).unwrap(),
+            allocator.allocate(&InverseVolatility).unwrap(),
         ),
         (
             "inverse variance".to_string(),
-            allocator.allocate(&InverseVariance::default()).unwrap(),
+            allocator.allocate(&InverseVariance).unwrap(),
         ),
         (
             "min variance".to_string(),
@@ -421,8 +421,8 @@ proptest! {
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let mut long_only = vec![
             allocator.allocate(&EqualWeight).unwrap(),
-            allocator.allocate(&InverseVolatility::default()).unwrap(),
-            allocator.allocate(&InverseVariance::default()).unwrap(),
+            allocator.allocate(&InverseVolatility).unwrap(),
+            allocator.allocate(&InverseVariance).unwrap(),
             allocator.allocate(&MinVariance::default()).unwrap(),
             allocator
                 .allocate(&MeanVariance::risk_aversion(50.0))
@@ -465,7 +465,7 @@ proptest! {
         let mut config = CovarianceConfig::default();
         let mut cov = covariance(&returns);
         if let Some(lambda) = shrinkage {
-            config = config.with_shrinkage(lambda);
+            config = config.shrinkage(lambda);
             let average = cov.trace() / n as f64;
             cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
         }
@@ -555,7 +555,7 @@ proptest! {
         let n = returns.ncols();
         let mut covariance_config = CovarianceConfig::default();
         if let Some(lambda) = shrinkage {
-            covariance_config = covariance_config.with_shrinkage(lambda);
+            covariance_config = covariance_config.shrinkage(lambda);
         }
         let budgets = DVector::from_column_slice(&budgets[..n]);
         let config = RiskParity::default()
@@ -885,7 +885,7 @@ proptest! {
         // together, must not change the tangency weights.
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
-        let covariance = CovarianceConfig::default().with_shrinkage(if shrink { 0.3 } else { 0.0 });
+        let covariance = CovarianceConfig::default().shrinkage(if shrink { 0.3 } else { 0.0 });
         let mu = DVector::from_column_slice(&custom[..n]);
         let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
 
@@ -935,7 +935,7 @@ proptest! {
         let mut config = CovarianceConfig::default();
         let mut cov = covariance(&returns);
         if let Some(lambda) = shrinkage {
-            config = config.with_shrinkage(lambda);
+            config = config.shrinkage(lambda);
             let average = cov.trace() / n as f64;
             cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
         }
@@ -1073,8 +1073,8 @@ proptest! {
         let n = returns.ncols();
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let config = CovarianceConfig::default()
-            .with_shrinkage(shrinkage)
-            .with_regularization(regularization);
+            .shrinkage(shrinkage)
+            .regularization(regularization);
         // Both orders, so that neither shortcut can undo the other.
         macro_rules! check {
             ($method:expr) => {{
@@ -1127,7 +1127,7 @@ proptest! {
         // statistic allowed at most one cluster must choose it.
         let one = allocator.allocate(&herc.clusters(1)).unwrap();
         prop_assert_eq!(&allocator.allocate(&herc.max_clusters(1)).unwrap(), &one);
-        let inverse_variance = allocator.allocate(&InverseVariance::default()).unwrap();
+        let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
         for (h, i) in one.iter().zip(&inverse_variance) {
             prop_assert!((h - i).abs() < 1e-12, "{one:?} vs {inverse_variance:?}");
         }

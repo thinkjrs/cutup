@@ -36,8 +36,8 @@ fn main() -> Result<(), CutupError> {
 
     let methods: Vec<(&str, Box<dyn Allocation>)> = vec![
         ("Equal weight", Box::new(EqualWeight)),
-        ("Inverse volatility", Box::new(InverseVolatility::default())),
-        ("Inverse variance", Box::new(InverseVariance::default())),
+        ("Inverse volatility", Box::new(InverseVolatility)),
+        ("Inverse variance", Box::new(InverseVariance)),
         (
             "Min variance",
             Box::new(MinVariance::default().allow_short()),
