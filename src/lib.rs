@@ -1115,12 +1115,6 @@ impl PortfolioAllocator {
             .ok_or(CutupError::SingularCovariance)
     }
 
-    /// Equal weights, for [`EqualWeight`].
-    fn equal_weight(&self) -> Weights {
-        let n = self.returns.ncols();
-        Weights(vec![1.0 / n as f64; n])
-    }
-
     /// Weights each asset in proportion to `f(σᵢ²)`, normalized to sum to 1.
     fn weight_by_variance(&self, f: impl Fn(f64) -> f64) -> Result<Weights, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
@@ -1941,7 +1935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ew_allocation() {
+    fn test_equal_weight() {
         let prices = dmatrix![
             100.0, 200.0, 300.0;
             110.0, 210.0, 310.0;
@@ -1953,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn test_min_variance_allocation() {
+    fn test_long_short_min_variance() {
         let prices = dmatrix![
             100.0, 200.0, 300.0;
             110.0, 210.0, 310.0;
@@ -1968,7 +1962,7 @@ mod tests {
     }
 
     #[test]
-    fn test_min_variance_allocation_errors_on_non_finite_covariance() {
+    fn test_min_variance_errors_on_non_finite_covariance() {
         let mut allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
 
         // Unreachable through the constructors, which reject non-finite input; this guards the
@@ -1995,7 +1989,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hrp_allocation() {
+    fn test_hrp() {
         let prices = dmatrix![
             100.0, 200.0, 300.0;
             110.0, 210.0, 310.0;
@@ -2008,7 +2002,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hrp_allocation_triggers_continue_path() {
+    fn test_hrp_triggers_continue_path() {
         let prices = dmatrix![
             100.0, 200.0, 300.0, 400.0;
             101.0, 201.0, 301.0, 401.0;
@@ -2027,7 +2021,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hrp_allocation_rejects_zero_variance() {
+    fn test_hrp_rejects_zero_variance() {
         let prices = dmatrix![
             100.0, 50.0, 20.0;
             102.0, 50.0, 20.5;
@@ -2089,7 +2083,7 @@ mod tests {
     }
 
     #[test]
-    fn test_min_variance_allocation_rejects_invalid_config() {
+    fn test_min_variance_rejects_invalid_config() {
         let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
         let cases = [
             (Some(-1e-3), None, "regularization"),
@@ -3999,7 +3993,7 @@ mod tests {
     }
 
     #[test]
-    fn test_min_variance_allocation_with_config_variants() {
+    fn test_min_variance_with_covariance_variants() {
         let prices = dmatrix![
             100.0, 200.0, 300.0;
             110.0, 210.0, 310.0;

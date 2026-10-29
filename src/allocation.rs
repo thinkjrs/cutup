@@ -100,7 +100,8 @@ pub struct EqualWeight;
 
 impl Allocation for EqualWeight {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        Ok(data.equal_weight())
+        let n = data.returns.ncols();
+        Ok(Weights(vec![1.0 / n as f64; n]))
     }
 }
 
@@ -1035,7 +1036,7 @@ impl Allocation for Hrp {
 }
 
 /// The most clusters [`Herc`]'s gap statistic may choose, unless set.
-pub(crate) const HERC_MAX_CLUSTERS: usize = 10;
+const HERC_MAX_CLUSTERS: usize = 10;
 
 /// Hierarchical Equal Risk Contribution (Raffinot, 2018), as riskfolio-lib implements it with
 /// the variance as the risk measure.
