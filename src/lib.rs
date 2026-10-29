@@ -51,9 +51,8 @@ macro_rules! turnover_setters {
 mod allocation;
 mod black_litterman;
 mod cluster;
+mod cvar;
 mod eigen;
-// Used by CVaR, in the next change.
-#[allow(dead_code)]
 mod lp;
 mod qp;
 mod turnover;
@@ -64,6 +63,7 @@ pub use allocation::{
 };
 pub use black_litterman::{BlackLitterman, View};
 pub use cluster::Linkage;
+pub use cvar::MinCvar;
 
 use eigen::SymmetricEigen;
 
