@@ -48,8 +48,9 @@ All notable changes to this project are documented here. The format follows
   `NonFiniteCovariance` from the breakdown.
 - The method docs, with each method's algorithm, errors and examples, are on the method
   values, such as `MinVariance` and `Hrp`, rather than on the deprecated methods.
-- The reference, integration and unit tests run through `allocate`. The property test that
-  every method value matches the method it wraps still calls the deprecated methods.
+- The reference, integration and unit tests run through `allocate`. A property test checks
+  that each deprecated method, which now builds a method value from its config, returns
+  what that value returns when built with its own setters, defaults included.
 
 ### Deprecated
 

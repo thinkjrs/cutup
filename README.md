@@ -209,7 +209,7 @@ fn main() -> Result<(), CutupError> {
 
 ### Upgrading from the method API
 
-Each deprecated method returns exactly what `allocate` returns for its replacement, so switching changes no weights. The old methods are long-short unless their name starts with `long_only_`, and the new values are long-only unless you call `.allow_short()`.
+Each deprecated method returns exactly what `allocate` returns for its replacement, so switching changes no weights. The old min variance, mean-variance and max Sharpe methods are long-short unless their name starts with `long_only_`, while `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless you call `.allow_short()`. The other methods were always long-only.
 
 | Deprecated | Replacement |
 | --- | --- |
@@ -229,7 +229,7 @@ Each deprecated method returns exactly what `allocate` returns for its replaceme
 | `max_diversification_allocation()`, `_with_config(&c)` | `allocate(&MaxDiversification::default())`, `.covariance(c)` |
 | `risk_parity_allocation()`, `_with_config(&config)` | `allocate(&RiskParity::default())` |
 | `hrp_allocation()`, `_with_config(&config)` | `allocate(&Hrp::default())` |
-| `hrp_cluster_order(&config)` | `Hrp::default().cluster_order(&allocator)` |
+| `hrp_cluster_order(&config)` | `Hrp::default().linkage(l).cluster_order(&allocator)` |
 | `herc_allocation()`, `_with_config(&config)` | `allocate(&Herc::default())` |
 | `run_portfolio_allocation(prices)` | `PortfolioAllocator::from_prices(prices)?.allocate(&MinVariance::default().allow_short())` |
 
