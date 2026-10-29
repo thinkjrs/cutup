@@ -56,6 +56,13 @@ cutup's implementation:
   is cross-checked against PyPortfolioOpt, with an L1 cost, a squared-distance objective
   and an L1 constraint on cvxpy with Clarabel at tight tolerances, to 1e-6. A cap below the turnover needed to
   move w₀ into the bounds is an expected error.
+* Min CVaR: scipy.optimize.linprog (HiGHS) on the primal Rockafellar-Uryasev program, one
+  constraint per scenario, independent of the dual cutup solves. The optimal portfolio
+  needn't be unique, so cases hold the CVaR of linprog's weights, which the test compares,
+  along with the weights. HiGHS stops within about 1e-10 of the optimum, so cutup's exact
+  vertex must be no worse than that CVaR, and no more than 1e-9 of the returns' scale
+  better. Each is cross-checked against PyPortfolioOpt's EfficientCVaR and
+  riskfolio-lib's rm="CVaR" on cvxpy, by CVaR, to 1e-6.
 * Black-Litterman: PyPortfolioOpt's market_implied_prior_returns and
   BlackLittermanModel.bl_returns, with its "default" (He-Litterman) and "idzorek" view
   uncertainties, or, when a case mixes kinds of view, a diagonal Ω built row by row with
@@ -79,7 +86,7 @@ import cvxpy as cp
 import numpy as np
 import pandas as pd
 import riskfolio
-from pypfopt import EfficientFrontier, HRPOpt
+from pypfopt import EfficientCVaR, EfficientFrontier, HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel, market_implied_prior_returns
 from scipy.optimize import linprog, nnls
 
@@ -609,6 +616,80 @@ def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, wei
         raise ValueError(f"PyPortfolioOpt disagrees: {theirs} vs {weights}")
 
 
+def cvar(returns: np.ndarray, weights: np.ndarray, beta: float) -> float:
+    """The average loss over the worst 1 − β of the scenarios, the last one in part."""
+    losses = np.sort(-(returns @ weights))[::-1]
+    cap = 1.0 / ((1.0 - beta) * len(losses))
+    total, left = 0.0, 1.0
+    for loss in losses:
+        share = min(cap, left)
+        total += share * loss
+        left -= share
+        if left <= 0:
+            break
+    return total
+
+
+def min_cvar(returns: np.ndarray, params: dict) -> tuple[np.ndarray, float] | str:
+    """minimize α + Σuₜ / ((1 − β)T) subject to uₜ ≥ −rₜᵀw − α, u ≥ 0, 1ᵀw = 1, the bounds,
+    and μᵀw = ρ for a target, over x = (w, α, u)."""
+    t, n = returns.shape
+    beta = params.get("confidence", 0.95)
+    bounds = weight_bounds(params, n)
+    lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
+    if infeasible((lower, upper)):
+        return "InfeasibleBounds"
+    upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
+    mu = returns.mean(axis=0)
+    a_eq, b_eq = [np.concatenate([np.ones(n), [0.0], np.zeros(t)])], [1.0]
+    if "target_return" in params:
+        lowest, highest = return_range(mu, (lower, upper))
+        target = params["target_return"]
+        if not lowest - 1e-12 * max(abs(lowest), abs(highest)) <= target <= highest + 1e-12 * max(abs(lowest), abs(highest)):
+            return "TargetReturnOutOfRange"
+        a_eq.append(np.concatenate([mu, [0.0], np.zeros(t)]))
+        b_eq.append(min(max(target, lowest), highest))
+    # −rₜᵀw − α − uₜ ≤ 0.
+    a_ub = np.hstack([-returns, -np.ones((t, 1)), -np.eye(t)])
+    c = np.concatenate([np.zeros(n), [1.0], np.full(t, 1.0 / ((1.0 - beta) * t))])
+    box = [(l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(None, None)] + [(0, None)] * t
+    tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
+    result = linprog(c, A_ub=a_ub, b_ub=np.zeros(t), A_eq=np.array(a_eq), b_eq=b_eq, bounds=box, method="highs", options=tight)
+    weights = result.x[:n]
+    value = cvar(returns, weights, beta)
+    # HiGHS solves to about 1e-10 of the returns' scale, so its weights' CVaR is that close to
+    # the optimum, and never below it.
+    if abs(value - result.fun) > 1e-8 * np.abs(returns).max():
+        raise ValueError(f"CVaR of the weights {value} differs from the program's {result.fun}")
+    cross_check_cvar(returns, beta, lower, upper, "target_return" in params, value)
+    return weights, value
+
+
+def cross_check_cvar(returns, beta, lower, upper, targeted, value) -> None:
+    """Checks the optimal CVaR against PyPortfolioOpt's EfficientCVaR and riskfolio-lib, both
+    on cvxpy, to 1e-6 of it. Targets are skipped: both ask for a return of at least the
+    target, not exactly it."""
+    if targeted:
+        return
+    n = returns.shape[1]
+    bounds = [(l, None if np.isinf(u) else u) for l, u in zip(lower, upper)]
+    tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}
+    frontier = EfficientCVaR(np.zeros(n), pd.DataFrame(returns), beta=beta, weight_bounds=bounds, solver="CLARABEL", solver_options=tight)
+    frontier.min_cvar()
+    theirs = cvar(returns, np.asarray(frontier.weights, dtype=float), beta)
+    if abs(theirs - value) > 1e-6 * max(abs(value), 1e-3):
+        raise ValueError(f"PyPortfolioOpt's CVaR {theirs} differs from {value}")
+    if np.all(lower == 0) and np.all(np.isinf(upper) | (upper >= 1)):
+        portfolio = riskfolio.Portfolio(returns=pd.DataFrame(returns))
+        portfolio.assets_stats(method_mu="hist", method_cov="hist")
+        portfolio.alpha = 1.0 - beta
+        portfolio.solvers = ["CLARABEL"]
+        weights = portfolio.optimization(model="Classic", rm="CVaR", obj="MinRisk", hist=True)
+        theirs = cvar(returns, weights["weights"].to_numpy(), beta)
+        if abs(theirs - value) > 1e-6 * max(abs(value), 1e-3):
+            raise ValueError(f"riskfolio's CVaR {theirs} differs from {value}")
+
+
 def black_litterman(cov: np.ndarray, params: dict) -> np.ndarray:
     """Posterior expected returns. Each view is {"absolute": i}, {"relative": [long, short]}
     or {"portfolio": weights}, with a return "q" and optionally a "variance" or a
@@ -695,6 +776,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return herc(returns, params.get("linkage", "single"), params.get("clusters"))
         case "black_litterman":
             return black_litterman(adjusted, params)
+        case "min_cvar":
+            return min_cvar(returns, params)
         case "rebalance_min_variance":
             return rebalance(adjusted, mu, params, mean_variance=False)
         case "rebalance_mean_variance":
@@ -955,6 +1038,24 @@ def cases(datasets: dict) -> list[dict]:
     ]:
         out.append({"dataset": name, "method": "rebalance_mean_variance", "params": params, "tolerance": solver})
 
+    # Min CVaR on every dataset at the default 95%, so with fewer than 20 scenarios the tail is
+    # the worst one, and at 50% and 90%; with bounds; and with targets inside and beyond the
+    # range of returns.
+    for name in datasets:
+        out.append({"dataset": name, "method": "min_cvar", "tolerance": solver})
+        for beta in [0.5, 0.9]:
+            out.append({"dataset": name, "method": "min_cvar", "params": {"confidence": beta}, "tolerance": solver})
+    for name, params in [
+        ("prices10x60", {"bounds": [0.0, 0.15]}),
+        ("prices10x60", {"confidence": 0.9, "bounds": [0.05, 0.3]}),
+        ("two_blocks5", {"confidence": 0.8, "lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0], "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]}),
+        ("prices10x60", {"confidence": 0.9, "target_return": 0.0006}),
+        ("two_blocks5", {"confidence": 0.8, "target_return": 0.002, "bounds": [0.0, 0.5]}),
+        ("prices10x60", {"target_return": 0.05}),
+        ("prices10x60", {"bounds": [0.0, 0.05]}),
+    ]:
+        out.append({"dataset": name, "method": "min_cvar", "params": params, "tolerance": solver})
+
     # Black-Litterman expected returns: the prior alone, then each kind of view and of view
     # uncertainty, alone and mixed. Market capitalizations, not weights, on prices10x60.
     caps10 = [12.0, 3.5, 8.0, 1.2, 20.0, 4.4, 2.5, 9.1, 6.3, 5.0]
@@ -1036,6 +1137,8 @@ def main() -> None:
         params = case.get("params", {})
         adjusted = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
         outcome = run(case, returns, adjusted)
+        if isinstance(outcome, tuple):
+            outcome, case["cvar"] = outcome
         if isinstance(outcome, str):
             case["error"] = outcome
         elif not np.all(np.isfinite(outcome)):

@@ -6,8 +6,8 @@
 
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, HercConfig, HrpConfig, Linkage, MaxSharpeConfig,
-    MeanVariance, MeanVarianceConfig, MinVariance, PortfolioAllocator, RiskParityConfig, View,
-    WeightBounds, Weights,
+    MeanVariance, MeanVarianceConfig, MinCvar, MinVariance, PortfolioAllocator, RiskParityConfig,
+    View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use serde_json::Value;
@@ -205,7 +205,21 @@ fn rebalance_mean_variance(params: &Value) -> MeanVariance {
     }
 }
 
-const METHODS: [&str; 16] = [
+fn min_cvar(params: &Value) -> MinCvar {
+    let mut method = MinCvar::default();
+    if let Some(beta) = params["confidence"].as_f64() {
+        method = method.confidence(beta);
+    }
+    if let Some(bounds) = weight_bounds(params) {
+        method = method.bounds(bounds);
+    }
+    if let Some(target) = params["target_return"].as_f64() {
+        method = method.target_return(target);
+    }
+    method
+}
+
+const METHODS: [&str; 17] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -222,6 +236,7 @@ const METHODS: [&str; 16] = [
     "black_litterman",
     "rebalance_min_variance",
     "rebalance_mean_variance",
+    "min_cvar",
 ];
 
 fn run(
@@ -261,6 +276,7 @@ fn run(
         "herc" => allocator.herc_allocation_with_config(&herc_config(params)),
         "rebalance_min_variance" => allocator.allocate(&rebalance!(MinVariance::default(), params)),
         "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
+        "min_cvar" => allocator.allocate(&min_cvar(params)),
         "black_litterman" => black_litterman(params)
             .expected_returns(allocator)
             .map(Weights::from),
@@ -291,7 +307,8 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
             "{label}: case needs exactly one of weights or error"
         ));
     }
-    let result = run(&allocator(&datasets[dataset]), method, params);
+    let allocator = allocator(&datasets[dataset]);
+    let result = run(&allocator, method, params);
 
     match (result, case["error"].as_str()) {
         (Err(error), Some(expected)) if format!("{error:?}").starts_with(expected) => None,
@@ -303,6 +320,16 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
             weights.as_slice()
         )),
         (Err(error), None) => Some(format!("{label}: unexpected error {error:?}")),
+        // The min CVaR portfolio needn't be unique, so it's the CVaR that's compared. The
+        // reference's weights come from HiGHS, within about 1e-10 of the optimum, so cutup's
+        // exact vertex must be no worse, and no more than 1e-9 better.
+        (Ok(weights), None) if method == "min_cvar" => {
+            let beta = params["confidence"].as_f64().unwrap_or(0.95);
+            let got = allocator.cvar(&weights, beta).unwrap();
+            let want = case["cvar"].as_f64().unwrap();
+            (got > want + 1e-14 || got < want - 1e-9)
+                .then(|| format!("{label}: CVaR {got:e}, reference {want:e}"))
+        }
         (Ok(weights), None) => {
             let expected = floats(&case["weights"]);
             let tolerance = case["tolerance"].as_f64().unwrap();

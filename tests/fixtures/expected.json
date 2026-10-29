@@ -2232,6 +2232,295 @@
       "condition_number": 8216000.0
     },
     {
+      "dataset": "orthogonal3",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.005714285714285716,
+      "weights": [0.5714285714285714, 0.28571428571428575, 0.14285714285714288]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.005714285714285714,
+      "weights": [0.5714285714285714, 0.2857142857142857, 0.14285714285714285]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.005714285714285716,
+      "weights": [0.5714285714285714, 0.28571428571428575, 0.14285714285714288]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.003827586206896552,
+      "weights": [0.10344827586206898, 0.896551724137931]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.0007058823529411767,
+      "weights": [0.4411764705882352, 0.5588235294117647]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.003827586206896552,
+      "weights": [0.10344827586206898, 0.896551724137931]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.010269872578130005,
+      "weights": [0.0, 0.4481233845299384, 0.0, 0.0, 0.5518766154700612]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.0052044351353679194,
+      "weights": [0.0, 0.29590850515463846, 0.0, 0.25065298876710984, 0.4534385060782516]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.009857499249634387,
+      "weights": [0.0, 0.5739406375789287, 0.2036431189007487, 0.0, 0.22241624352032252]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.010032575076713039,
+      "weights": [0.0, 0.17959366264735624, 0.0, 0.0, 0.21235678319186937, 0.20127369991182512, 0.34609320402471, 0.0, 0.06068265022423968, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.0037939085057047506,
+      "weights": [0.11630763565411349, 0.02164326489543346, 0.0, 0.0, 0.2532502884681793, 0.30179890435678947, 0.18819020956501448, 0.0, 0.11880969706046977, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.0094104002161422,
+      "weights": [0.0, 0.16459081688416013, 0.0, 0.0, 0.2506801460969077, 0.2098707763908451, 0.25261548767632164, 0.0, 0.1222427729517658, 0.0]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.00779469262026861,
+      "weights": [0.20842618216853923, 0.7191751576843136, 0.0, 0.07239866014714713]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.0037378421613068705,
+      "weights": [0.11720096291158501, 0.7545140913183053, 0.0, 0.12828494577010982]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.00779469262026861,
+      "weights": [0.20842618216853917, 0.7191751576843137, 0.0, 0.07239866014714706]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": -0.007763034922770469,
+      "weights": [0.0, 0.1371993038121691, 0.0, 0.32461105474652835, 0.5381896414413025, 0.0]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": -0.007763034922770468,
+      "weights": [0.0, 0.13719930381216888, 0.0, 0.32461105474652835, 0.5381896414413027, 0.0]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": -0.007763034922770469,
+      "weights": [0.0, 0.1371993038121691, 0.0, 0.32461105474652835, 0.5381896414413025, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 0.02,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.011666666666666664,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.02,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cvar",
+      "tolerance": 1e-09,
+      "cvar": 1.445315833333333e-10,
+      "weights": [-0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cvar": 6.985557333333332e-11,
+      "weights": [0.0, -0.0, -0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cvar": 1.3879070833333333e-10,
+      "weights": [-0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "bounds": [0.0, 0.15]
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.012354078539809568,
+      "weights": [0.15, 0.15, 0.1000000000000002, 0.0, 0.15, 0.15, 0.15, 0.0, 0.15, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9,
+        "bounds": [0.05, 0.3]
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.010882523603154287,
+      "weights": [0.05, 0.18623623127286912, 0.05, 0.05, 0.18291621311080863, 0.09868095898114203, 0.1687674206791114, 0.05, 0.11339917595606863, 0.05]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.8,
+        "lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0],
+        "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.009008100000000005,
+      "weights": [0.1, 0.4, 0.1000000000000005, 0.1, 0.3]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.9,
+        "target_return": 0.0006
+      },
+      "tolerance": 1e-09,
+      "cvar": 0.013475355930657091,
+      "weights": [0.0, 0.16337704010175877, 0.0, 0.2511755174165758, 0.4043745883617111, 0.0, 0.0, 0.0, 0.0, 0.18107285411995366]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cvar",
+      "params": {
+        "confidence": 0.8,
+        "target_return": 0.002,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "target_return": 0.05
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cvar",
+      "params": {
+        "bounds": [0.0, 0.05]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds"
+    },
+    {
       "dataset": "prices10x60",
       "method": "black_litterman",
       "params": {
