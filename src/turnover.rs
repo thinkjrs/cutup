@@ -1,7 +1,10 @@
 //! Turnover and transaction costs against current weights, for min variance and
 //! mean-variance.
 
-use crate::{interior_start, lp, normalized, qp, CutupError, ReturnRange, WeightBounds, Weights};
+use crate::{
+    interior_start, lp, normalized, qp, CutupError, ReturnRange, TargetProblem, WeightBounds,
+    Weights,
+};
 use nalgebra::{DMatrix, DVector};
 
 /// The trading settings of [`MinVariance`](crate::MinVariance) and
@@ -173,46 +176,36 @@ pub(crate) fn rebalance(
 }
 
 /// Minimizes `wᵀΣw` over portfolios summing to 1 with expected return `μᵀw = target`, within
-/// `bounds` or, without them, long-short, and with the turnover `Σᵢ|wᵢ − w₀ᵢ|` capped if
-/// `trading` caps it. The caller rejects a penalty or costs, which a variance can't be traded
-/// off against.
+/// `bounds` or, without them, long-short, with the turnover `Σᵢ|wᵢ − w₀ᵢ|` capped at `cap`.
+/// The caller rejects a penalty or costs, which a variance can't be traded off against.
+/// `cov` builds the covariance, once an unreachable target has been rejected.
 pub(crate) fn rebalance_to_target(
-    cov: DMatrix<f64>,
+    cov: impl FnOnce() -> Result<DMatrix<f64>, CutupError>,
     mu: DVector<f64>,
     target: f64,
     bounds: Option<&WeightBounds>,
     trading: &Trading,
+    cap: f64,
 ) -> Result<Weights, CutupError> {
-    let n = cov.ncols();
+    let n = mu.len();
     let current = trading.check(n)?.ok_or(CutupError::MissingCurrentWeights)?;
-    let budget = (
-        DMatrix::from_element(n, 1, 1.0),
-        DVector::from_element(1, 1.0),
-    );
-    let returns = |target: f64| {
-        (
-            DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
-            DVector::from_vec(vec![1.0, target]),
-        )
-    };
-    let (bounds, (e, b), start) = match bounds {
+    let (
+        cov,
+        TargetProblem {
+            e,
+            b,
+            bounds,
+            start,
+        },
+    ) = match bounds {
         Some(bounds) => {
-            let bounds = bounds.resolve(n)?;
-            let range = ReturnRange::new(&mu, &bounds);
-            let target = range.reachable(target)?;
-            if target == range.lowest || target == range.highest {
-                // As without a cap, only the portfolios on the face that fills the bounds in
-                // order of expected return reach an end of the range, and on it the target
-                // needs no constraint of its own.
-                let face = range.face(&mu, &bounds, target == range.highest);
-                let start = interior_start(&face);
-                (face, budget, start)
-            } else {
-                (bounds, returns(target), range.mix(target))
-            }
+            let problem = ReturnRange::target_problem(&mu, bounds.resolve(n)?, target)?;
+            (cov()?, problem)
         }
         None => {
-            let (e, b) = returns(target);
+            let cov = cov()?;
+            let e = DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu]);
+            let b = DVector::from_vec(vec![1.0, target]);
             let start = qp::solve_kkt(&cov, &DVector::zeros(n), &e, &b)?
                 .ok_or(CutupError::DegenerateExpectedReturns)?
                 .0;
@@ -220,27 +213,29 @@ pub(crate) fn rebalance_to_target(
                 lower: DVector::from_element(n, f64::NEG_INFINITY),
                 upper: DVector::from_element(n, f64::INFINITY),
             };
-            (bounds, (e, b), start)
+            (
+                cov,
+                TargetProblem {
+                    e,
+                    b,
+                    bounds,
+                    start,
+                },
+            )
         }
     };
-    let mut cap = trading.max_turnover.unwrap_or(f64::INFINITY);
-    if cap.is_finite() {
-        let minimum = least_turnover(&current, &e, &b, &bounds)?;
-        // A cap at the least turnover leaves only the portfolios that reach it, which the
-        // solver finds only to the rounding of the target's constraint. That constraint is as
-        // badly conditioned as the expected returns are close to equal: rounding the target
-        // by an ulp of μ moves the weights by that over the spread of μ. Within that rounding
-        // of the least, the cap counts as at it.
-        let conditioning = if e.ncols() > 1 {
-            1.0 + mu.amax() / (mu.max() - mu.min())
-        } else {
-            1.0
-        };
-        let rounding = 4.0 * n as f64 * f64::EPSILON * minimum.max(1.0) * conditioning;
-        if minimum > cap + rounding {
-            return Err(CutupError::InfeasibleTurnover { minimum, cap });
-        }
-        cap = cap.max(minimum + rounding);
+    // With only the budget, as at an end of the range, the closed form gives the least.
+    let minimum = if e.ncols() == 1 {
+        minimum_turnover(&current, &bounds)
+    } else {
+        least_turnover(&current, &e, &b, &bounds)?
+    };
+    // A cap at the least turnover leaves only the portfolios that reach it, which the solver
+    // finds only to the rounding of the target's constraint, a little worse than the linear
+    // program. So within rounding of the least, as for bounds that sum to 1, counts as at it.
+    let rounding = 1e-12 * minimum.max(1.0);
+    if minimum > cap + rounding {
+        return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
     let kinks = qp::Kinks {
         at: current,
@@ -252,7 +247,7 @@ pub(crate) fn rebalance_to_target(
         &e,
         &b,
         &bounds,
-        (&kinks, cap),
+        (&kinks, cap.max(minimum + rounding)),
         start,
     )?;
     Ok(normalized(weights))
@@ -491,6 +486,79 @@ mod tests {
         for (w, c) in weights.iter().zip(current) {
             assert!((w - c).abs() < 1e-15);
         }
+    }
+
+    #[test]
+    fn a_cap_holds_with_equal_expected_returns() {
+        // Every portfolio returns 0.004, so a cap of 0 keeps the current weights, long-only or
+        // long-short.
+        let current = [0.2, 0.3, 0.5];
+        for method in [
+            MeanVariance::target_return(0.004),
+            MeanVariance::target_return(0.004).allow_short(),
+        ] {
+            let weights = method
+                .expected_returns([0.004; 3])
+                .current_weights(current)
+                .max_turnover(0.0)
+                .allocate(&allocator())
+                .unwrap();
+            assert!(turnover(&weights, current) < 1e-15, "{weights:?}");
+        }
+    }
+
+    #[test]
+    fn a_cap_below_the_least_turnover_isnt_raised() {
+        // Expected returns 1e-14 apart: the least turnover to the target is about 0.5, and a
+        // cap 1e-6 short of it is infeasible however badly the target is conditioned.
+        let mu = [0.001, 0.001 + 1e-14, 0.001 + 5e-15];
+        for long_short in [false, true] {
+            let method = |cap: f64| {
+                let method = MeanVariance::target_return(0.001 + 8e-15)
+                    .expected_returns(mu)
+                    .current_weights([0.2, 0.3, 0.5])
+                    .max_turnover(cap);
+                if long_short {
+                    method.allow_short()
+                } else {
+                    method
+                }
+            };
+            let Err(CutupError::InfeasibleTurnover { minimum, .. }) =
+                method(0.0).allocate(&allocator())
+            else {
+                panic!("a cap of 0 can't reach the target");
+            };
+            assert!(matches!(
+                method(minimum - 1e-6).allocate(&allocator()),
+                Err(CutupError::InfeasibleTurnover { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn an_unreachable_capped_target_is_rejected_before_the_covariance() {
+        // The third asset never moves, so its variance is zero and the covariance can't be
+        // built, but the target is out of range first, with a cap as without one.
+        let allocator = PortfolioAllocator::from_returns(dmatrix![
+            0.01, -0.02, 0.0;
+            -0.004, 0.015, 0.0;
+            0.007, 0.003, 0.0
+        ])
+        .unwrap();
+        let method = MeanVariance::target_return(0.1).expected_returns([0.001, 0.002, 0.003]);
+        let uncapped = method.clone().allocate(&allocator);
+        assert!(matches!(
+            uncapped,
+            Err(CutupError::TargetReturnOutOfRange { .. })
+        ));
+        assert_eq!(
+            method
+                .current_weights([0.2, 0.3, 0.5])
+                .max_turnover(0.1)
+                .allocate(&allocator),
+            uncapped
+        );
     }
 
     #[test]

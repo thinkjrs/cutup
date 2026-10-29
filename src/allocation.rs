@@ -367,27 +367,32 @@ impl Allocation for MeanVariance {
         };
         if self.trading.first_setting().is_some() {
             check_objective(config.objective)?;
-            if let (MeanVarianceObjective::TargetReturn(_), Some(setting)) =
-                (config.objective, self.trading.first_charge())
-            {
-                return Err(CutupError::NotSupported {
-                    setting,
-                    with: "a target return",
-                });
-            }
-            let mu = data.expected_returns(config.expected_returns.as_ref())?;
-            let cov = data.adjusted_covariance(&config.covariance)?;
-            return match config.objective {
-                MeanVarianceObjective::RiskAversion(gamma) => {
-                    turnover::rebalance(cov * gamma, mu, self.bounds.as_ref(), &self.trading, 2.0)
+            let covariance = || data.adjusted_covariance(&config.covariance);
+            return match (config.objective, self.trading.first_charge()) {
+                (MeanVarianceObjective::RiskAversion(gamma), _) => {
+                    let mu = data.expected_returns(config.expected_returns.as_ref())?;
+                    let cov = covariance()? * gamma;
+                    turnover::rebalance(cov, mu, self.bounds.as_ref(), &self.trading, 2.0)
                 }
-                MeanVarianceObjective::TargetReturn(target) => turnover::rebalance_to_target(
-                    cov,
-                    mu,
-                    target,
-                    self.bounds.as_ref(),
-                    &self.trading,
-                ),
+                (MeanVarianceObjective::TargetReturn(_), Some(setting)) => {
+                    Err(CutupError::NotSupported {
+                        setting,
+                        with: "a target return",
+                    })
+                }
+                // Neither a penalty nor costs, so the setting is the cap.
+                (MeanVarianceObjective::TargetReturn(target), None) => {
+                    let mu = data.expected_returns(config.expected_returns.as_ref())?;
+                    let cap = self.trading.max_turnover.unwrap_or(f64::INFINITY);
+                    turnover::rebalance_to_target(
+                        covariance,
+                        mu,
+                        target,
+                        self.bounds.as_ref(),
+                        &self.trading,
+                        cap,
+                    )
+                }
             };
         }
         self.trading.check(data.cov_matrix.ncols())?;
