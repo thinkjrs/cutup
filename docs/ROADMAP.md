@@ -26,7 +26,7 @@ first version of the plan for these releases, are in `docs/PLAN.md`.
 
 | Release | Theme | Breaking |
 | --- | --- | --- |
-| 0.3.0 | Remove the deprecated API, and make every breaking change planned before 1.0 | Yes |
+| 0.3.0 | Remove the deprecated API, make every breaking change planned before 1.0, and add `.covariance(..)` to `Hrp` and `Herc` | Yes |
 | 0.3.1 | Split `lib.rs` into modules | No |
 | 0.3.2 | Tidying and tooling: tests, docs, packaging, CI checks, benchmarks | No |
 | 0.3.3 | Portfolio statistics and `Weights::clean` | No |
@@ -112,6 +112,44 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
    - The enum stays `#[non_exhaustive]`, so 1.x can add variants; changing a
      payload after 0.3.0 would be breaking.
 
+### Added in this release
+
+9. **`.covariance(..)` on `Hrp` and `Herc`**, with the `shrinkage` and
+   `regularization` shortcuts every other covariance-based method has.
+   - **Breaking:** `Hrp` and `Herc` lose `Copy` and `Eq`, since a
+     `CovarianceConfig` holds `f64`s. They keep `Debug`, `Clone`,
+     `PartialEq` and `Default`.
+   - **What it changes:** only the risk split, meaning the cluster variances
+     and the inverse-variance weights within clusters. The hierarchy, and so
+     `Hrp::cluster_order`, stays on the sample correlations. That's what
+     riskfolio-lib (`method_cov="shrunk"`) and PyPortfolioOpt
+     (`HRPOpt(returns, cov_matrix=..)`) do. Shrinking toward a scaled
+     identity also pulls the correlations toward zero, so it could reshape the
+     tree.
+   - **Constant assets** still return `ZeroVariance`, even with shrinkage:
+     their correlation distance is undefined whatever the covariance.
+   - **Reference cases:**
+     - HRP against riskfolio-lib's `HCPortfolio.optimization(model="HRP",
+       rm="MV", method_cov="shrunk", dict_cov={"alpha": λ},
+       leaf_order=False)`. `leaf_order=False` matches the tree's plain leaf
+       order, which cutup and PyPortfolioOpt use; riskfolio's default applies
+       SciPy's optimal leaf ordering.
+     - Cross-checked against PyPortfolioOpt's
+       `HRPOpt(returns, cov_matrix=shrunk)`.
+     - HERC against riskfolio-lib with the same shrunk covariance.
+     - Regularization, which riskfolio has no option for, through its
+       `custom_cov` with the adjusted matrix computed in NumPy.
+     - sklearn's `ShrunkCovariance`, which riskfolio uses, divides by `n`
+       rather than `n − 1`. HRP and HERC weights don't change when the
+       covariance is scaled, so shrinkage still matches; regularization
+       depends on scale, so its cases pass the `n − 1` matrix.
+     - A few λ values and one ε on the existing datasets, including the
+       singular and ill-conditioned ones, for each linkage.
+   - **Tests:** shrinkage changes the weights but not the cluster order, full
+     shrinkage matches clustering with equal variances, invalid settings
+     return `InvalidConfig`, and the HRP and HERC properties run with random
+     shrinkage.
+
 Done already in 0.2.7 and 0.2.8: methods as values, setters without `with_`,
 long-only by default with `.allow_short()`, and the deprecation of the method
 API.
@@ -123,11 +161,13 @@ In this order, since later ones build on earlier ones:
 - **PR A:** the removal.
 - **PR B:** changes 1 to 3: the `CovarianceConfig` setters, the unit
   structs, and `Weights::to_hashmap`.
-- **PR C:** change 5, plain inputs, so the rename and labels are built on the
+- **PR C:** change 9, `.covariance(..)` on `Hrp` and `Herc`, after PR B has
+  renamed the `CovarianceConfig` setters it builds on.
+- **PR D:** change 5, plain inputs, so the rename and labels are built on the
   new constructors.
-- **PR D:** change 4, `Returns` and the deprecated alias.
-- **PR E:** change 6, asset labels.
-- **PR F:** changes 7 and 8, the traits and error payloads, as the last pass
+- **PR E:** change 4, `Returns` and the deprecated alias.
+- **PR F:** change 6, asset labels.
+- **PR G:** changes 7 and 8, the traits and error payloads, as the last pass
   over the public API.
 
 The README gets an "Upgrading from 0.2" section covering every change above,
