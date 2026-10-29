@@ -37,8 +37,11 @@ All notable changes to this project are documented here. The format follows
 
 - A long-only target return within rounding of the lowest or highest return the bounds
   allow, just inside the range, is now treated as that end, as one just outside it already
-  was. Only a sliver of portfolios next to the end reaches such a target, and the solvers
-  resolve it no better than rounding.
+  was, and in a range narrower than rounding, to the nearer end. Only a sliver of portfolios
+  next to the end reaches such a target, and the solvers resolve it no better than rounding.
+- A turnover cap that the solver's arithmetic breaks down short of, on extreme inputs,
+  returns `CutupError::NotConverged`, as documented, rather than an error such as
+  `NonFiniteCovariance` from the breakdown.
 
 ## [0.2.7] - 2026-10-28
 
