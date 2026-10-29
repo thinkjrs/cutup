@@ -1452,7 +1452,7 @@ proptest! {
         returns in returns(),
         beta in 0.5f64..0.99,
         fractions in bounds(),
-        mix in 0.0f64..1.0,
+        mix in 0.0f64..0.999,
     ) {
         let n = returns.ncols();
         let mu = returns.row_mean();
@@ -1465,20 +1465,27 @@ proptest! {
         for i in 0..n {
             prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
         }
-        // A target between the bounded portfolio's own return and the highest asset mean
-        // inside the bounds is reachable, so ask for one between them.
+        // The highest return inside the bounds: every asset at its floor, then what's left of
+        // the budget to the highest means, each up to its cap. Any target between that and the
+        // bounded portfolio's own return is reachable.
         let own: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
-        let lowest = own.min(mu.min());
-        let target = lowest + mix * (own - lowest);
-        match allocator.allocate(&bounded.target_return(target)) {
-            Ok(targeted) => {
-                let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
-                prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
-                prop_assert!(allocator.cvar(&targeted, beta).unwrap() >= allocator.cvar(&weights, beta).unwrap() - 1e-12);
-            }
-            Err(CutupError::TargetReturnOutOfRange { .. }) => {}
-            Err(other) => prop_assert!(false, "{other:?}"),
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        let mut left = 1.0 - lower.iter().sum::<f64>();
+        let mut highest: f64 = lower.iter().zip(mu.iter()).map(|(l, m)| l * m).sum();
+        for i in order {
+            let share = left.min(upper[i] - lower[i]);
+            highest += share * mu[i];
+            left -= share;
         }
+        let target = own + mix * (highest - own);
+        let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
+        for i in 0..n {
+            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+        }
+        let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
+        prop_assert!(allocator.cvar(&targeted, beta).unwrap() >= allocator.cvar(&weights, beta).unwrap() - 1e-12);
     }
 
     #[test]

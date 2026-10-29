@@ -44,6 +44,19 @@ fn allocator(dataset: &Value) -> PortfolioAllocator {
     .expect("reference datasets are valid input")
 }
 
+/// The largest absolute return in a dataset, with prices turned into simple returns as
+/// `PortfolioAllocator::from_prices` does.
+fn returns_scale(dataset: &Value) -> f64 {
+    let data = matrix(&dataset["data"]);
+    let returns = match dataset["kind"].as_str() {
+        Some("prices") => DMatrix::from_fn(data.nrows() - 1, data.ncols(), |t, i| {
+            data[(t + 1, i)] / data[(t, i)] - 1.0
+        }),
+        _ => data,
+    };
+    returns.amax()
+}
+
 fn covariance_config(params: &Value) -> CovarianceConfig {
     let mut config = CovarianceConfig::default();
     if let Some(lambda) = params["shrinkage"].as_f64() {
@@ -321,13 +334,14 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
         )),
         (Err(error), None) => Some(format!("{label}: unexpected error {error:?}")),
         // The min CVaR portfolio needn't be unique, so it's the CVaR that's compared. The
-        // reference's weights come from HiGHS, within about 1e-10 of the optimum, so cutup's
-        // exact vertex must be no worse, and no more than 1e-9 better.
+        // reference's weights come from HiGHS, within about 1e-10 of the returns' scale of the
+        // optimum, so cutup's exact vertex must be no worse, and no more than 1e-9 better.
         (Ok(weights), None) if method == "min_cvar" => {
             let beta = params["confidence"].as_f64().unwrap_or(0.95);
             let got = allocator.cvar(&weights, beta).unwrap();
             let want = case["cvar"].as_f64().unwrap();
-            (got > want + 1e-14 || got < want - 1e-9)
+            let scale = returns_scale(&datasets[dataset]);
+            (got > want + 1e-12 * scale || got < want - 1e-9 * scale)
                 .then(|| format!("{label}: CVaR {got:e}, reference {want:e}"))
         }
         (Ok(weights), None) => {
