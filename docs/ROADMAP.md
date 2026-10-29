@@ -199,10 +199,9 @@ No API changes.
 
 ### Tidying
 
-- **Test names:** about 10 unit tests are still named after the old methods,
-  such as `test_min_variance_allocation…`. The conversion to `allocate` also
-  left variables named `config` that hold method values, and clones that
-  aren't needed.
+- **Conversion leftovers:** the conversion to `allocate` left variables named
+  `config` that hold method values, and clones that aren't needed. The tests
+  named after the old methods were renamed in 0.3.0.
 - **`docs/PLAN.md`:** fold anything still open into this document, and keep
   the rest as history or remove it.
 - **MSRV clippy:** the 1.78 `box_default` lints in `examples/compare.rs` and

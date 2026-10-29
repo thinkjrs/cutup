@@ -14,9 +14,6 @@ All notable changes to this project are documented here. The format follows
   `MaxSharpeConfig`, `RiskParityConfig`, `HrpConfig` and `HercConfig`. Use
   `PortfolioAllocator::allocate` with the method values, and `Hrp::cluster_order`; the
   README's "Upgrading from 0.2" section maps each one to its replacement.
-- The tests that only covered the deprecated API: the property that each deprecated method
-  matched its replacement, the `run_portfolio_allocation` and `hrp_cluster_order` tests, and
-  the doctests that checked they warned.
 
 ## [0.2.8] - 2026-10-29
 
