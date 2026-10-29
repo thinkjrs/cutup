@@ -1063,9 +1063,10 @@ proptest! {
     }
 
     #[test]
-    // The deprecated methods are what the values are checked against.
+    // The deprecated methods build method values from their configs and call `allocate`, so
+    // this checks that translation: the configs against the values' own setters.
     #[allow(deprecated)]
-    fn method_values_match_the_methods_they_wrap(
+    fn deprecated_methods_match_their_replacements(
         returns in returns(),
         shrinkage in prop::option::of(0.0f64..1.0),
         regularization in prop::option::of(1e-8f64..1e-4),
@@ -1090,8 +1091,8 @@ proptest! {
         if let Some(epsilon) = regularization {
             covariance = covariance.with_regularization(epsilon);
         }
-        // The same adjustments through each value's own setters. Min variance uses
-        // `.covariance(..)` instead, so both routes are checked.
+        // The same adjustments through each value's own setters, where the deprecated methods
+        // pass the `CovarianceConfig` with `.covariance(..)`.
         macro_rules! adjusted {
             ($method:expr) => {{
                 let mut method = $method;
@@ -1120,7 +1121,7 @@ proptest! {
             allocator.inverse_variance_allocation()
         );
 
-        let min_variance = MinVariance::default().covariance(covariance.clone());
+        let min_variance = adjusted!(MinVariance::default());
         prop_assert_eq!(
             allocator.allocate(&min_variance),
             allocator.long_only_min_variance_allocation_with_config(&covariance)
@@ -1152,6 +1153,10 @@ proptest! {
         let config = MeanVarianceConfig::target_return(target)
             .with_expected_returns(DVector::from_vec(mu.clone()))
             .with_covariance(covariance.clone());
+        prop_assert_eq!(
+            allocator.allocate(&target_return),
+            allocator.long_only_mean_variance_allocation(&config)
+        );
         prop_assert_eq!(
             allocator.allocate(&target_return.clone().bounds(bounds.clone())),
             allocator.long_only_mean_variance_allocation_with_bounds(&config, &bounds)
@@ -1207,6 +1212,30 @@ proptest! {
         prop_assert_eq!(
             allocator.allocate(&herc),
             allocator.herc_allocation_with_config(&config)
+        );
+
+        // Without settings, the defaults must agree too.
+        prop_assert_eq!(
+            allocator.allocate(&MinVariance::default().allow_short()),
+            allocator.min_variance_allocation()
+        );
+        prop_assert_eq!(
+            allocator.allocate(&MinVariance::default()),
+            allocator.long_only_min_variance_allocation()
+        );
+        prop_assert_eq!(
+            allocator.allocate(&MaxDiversification::default()),
+            allocator.max_diversification_allocation()
+        );
+        prop_assert_eq!(
+            allocator.allocate(&RiskParity::default()),
+            allocator.risk_parity_allocation()
+        );
+        prop_assert_eq!(allocator.allocate(&Hrp::default()), allocator.hrp_allocation());
+        prop_assert_eq!(allocator.allocate(&Herc::default()), allocator.herc_allocation());
+        prop_assert_eq!(
+            allocator.allocate(&Herc::default()),
+            allocator.herc_allocation_with_config(&HercConfig::default())
         );
     }
 
