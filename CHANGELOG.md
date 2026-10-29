@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-29
+
 ### Added
 
 - `MinCvar`, the long-only portfolio with the lowest conditional value at risk (expected
@@ -398,7 +400,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.7...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.8...HEAD
+[0.2.8]: https://github.com/thinkjrs/cutup/compare/0.2.7...0.2.8
 [0.2.7]: https://github.com/thinkjrs/cutup/compare/0.2.6...0.2.7
 [0.2.6]: https://github.com/thinkjrs/cutup/compare/0.2.5...0.2.6
 [0.2.5]: https://github.com/thinkjrs/cutup/compare/0.2.4...0.2.5
