@@ -242,8 +242,12 @@ impl Allocation for MinVariance {
 /// [transaction costs](MeanVariance::transaction_costs) `c` and a
 /// [turnover penalty](MeanVariance::turnover_penalty) `κ`, optionally with the turnover
 /// capped by [`MeanVariance::max_turnover`]. Costs and the penalty are in the units of the
-/// returns. These settings don't work with a target return yet, and return
-/// [`CutupError::NotSupported`] with one.
+/// returns.
+///
+/// With a target return, it minimizes the variance at that return with the turnover capped.
+/// Only the cap works there: the objective is a variance, so neither costs nor the penalty,
+/// both in the units of the returns, has anything to be traded off against, and they return
+/// [`CutupError::NotSupported`].
 ///
 /// Besides those methods' errors, these settings return:
 ///
@@ -253,7 +257,7 @@ impl Allocation for MinVariance {
 /// * [`CutupError::DimensionMismatch`] if there isn't one current weight, or per-asset cost,
 ///   per asset.
 /// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
-///   current weights into the bounds.
+///   current weights into the bounds, and to the target return if there is one.
 ///
 /// ```
 /// use cutup::MeanVariance;
@@ -266,6 +270,12 @@ impl Allocation for MinVariance {
 /// let rebalance = MeanVariance::risk_aversion(100.0)
 ///     .current_weights([0.4, 0.3, 0.3])
 ///     .transaction_costs(0.001)
+///     .max_turnover(0.2);
+///
+/// // Or hold the target return, turning over at most 20%.
+/// let capped = MeanVariance::target_return(0.005)
+///     .expected_returns([0.004, 0.006, 0.002])
+///     .current_weights([0.4, 0.3, 0.3])
 ///     .max_turnover(0.2);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -355,17 +365,30 @@ impl Allocation for MeanVariance {
             expected_returns: self.expected_returns.clone().map(DVector::from_vec),
             covariance: self.covariance.clone(),
         };
-        if let Some(setting) = self.trading.first_setting() {
+        if self.trading.first_setting().is_some() {
             check_objective(config.objective)?;
-            let MeanVarianceObjective::RiskAversion(gamma) = config.objective else {
+            if let (MeanVarianceObjective::TargetReturn(_), Some(setting)) =
+                (config.objective, self.trading.first_charge())
+            {
                 return Err(CutupError::NotSupported {
                     setting,
                     with: "a target return",
                 });
-            };
+            }
             let mu = data.expected_returns(config.expected_returns.as_ref())?;
             let cov = data.adjusted_covariance(&config.covariance)?;
-            return turnover::rebalance(cov * gamma, mu, self.bounds.as_ref(), &self.trading, 2.0);
+            return match config.objective {
+                MeanVarianceObjective::RiskAversion(gamma) => {
+                    turnover::rebalance(cov * gamma, mu, self.bounds.as_ref(), &self.trading, 2.0)
+                }
+                MeanVarianceObjective::TargetReturn(target) => turnover::rebalance_to_target(
+                    cov,
+                    mu,
+                    target,
+                    self.bounds.as_ref(),
+                    &self.trading,
+                ),
+            };
         }
         self.trading.check(data.cov_matrix.ncols())?;
         match &self.bounds {
