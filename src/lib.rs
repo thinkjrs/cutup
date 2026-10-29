@@ -391,13 +391,29 @@ impl From<Vec<f64>> for Weights {
 /// `covariance` setter, such as [`MinVariance::covariance`]. Each method also has `shrinkage`
 /// and `regularization` setters for each adjustment on its own.
 ///
-/// The default applies no adjustment. Shrinkage is applied first, then regularization:
+/// The default applies no adjustment, and an adjustment that isn't set isn't applied. With
+/// both, the covariance becomes `λ·μ·I + (1 − λ)·Σ + ε·I`, which is the same whichever is
+/// applied first.
 ///
 /// ```
-/// use cutup::{CovarianceConfig, MinVariance};
+/// use cutup::{CovarianceConfig, MinVariance, PortfolioAllocator};
+/// use nalgebra::dmatrix;
 ///
 /// let config = CovarianceConfig::default().shrinkage(0.1).regularization(1e-8);
-/// let method = MinVariance::default().covariance(config);
+/// assert_eq!((config.lambda(), config.epsilon()), (Some(0.1), Some(1e-8)));
+/// assert_eq!(CovarianceConfig::default().lambda(), None);
+///
+/// // Full shrinkage leaves every asset with the same variance and no correlation, so the
+/// // minimum variance portfolio holds them equally.
+/// let allocator = PortfolioAllocator::from_returns(dmatrix![
+///      0.010,  0.021,  0.004;
+///     -0.008, -0.015, -0.002;
+///      0.004,  0.009,  0.006
+/// ])?;
+/// let full = CovarianceConfig::default().shrinkage(1.0);
+/// let weights = allocator.allocate(&MinVariance::default().covariance(full))?;
+/// assert!(weights.iter().all(|w| (w - 1.0 / 3.0).abs() < 1e-12));
+/// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CovarianceConfig {
@@ -425,6 +441,16 @@ impl CovarianceConfig {
     pub fn shrinkage(mut self, lambda: f64) -> Self {
         self.shrinkage = Some(lambda);
         self
+    }
+
+    /// The shrinkage intensity `λ` set with [`CovarianceConfig::shrinkage`], or `None`.
+    pub fn lambda(&self) -> Option<f64> {
+        self.shrinkage
+    }
+
+    /// The regularization `ε` set with [`CovarianceConfig::regularization`], or `None`.
+    pub fn epsilon(&self) -> Option<f64> {
+        self.regularization
     }
 }
 
@@ -2122,8 +2148,8 @@ mod tests {
         let config = CovarianceConfig::default()
             .regularization(1e-8)
             .shrinkage(0.25);
-        assert_eq!(config.regularization, Some(1e-8));
-        assert_eq!(config.shrinkage, Some(0.25));
+        assert_eq!(config.epsilon(), Some(1e-8));
+        assert_eq!(config.lambda(), Some(0.25));
     }
 
     #[test]
