@@ -28,7 +28,7 @@ All notable changes to this project are documented here. The format follows
   `PortfolioAllocator::hrp_cluster_order`, `run_portfolio_allocation`, and the config
   structs only they took: `MeanVarianceConfig`, `MeanVarianceObjective`,
   `MaxSharpeConfig`, `RiskParityConfig`, `HrpConfig` and `HercConfig`. Use
-  `PortfolioAllocator::allocate` with the method values, and `Hrp::cluster_order`; the
+  `Returns::allocate` with the method values, and `Hrp::cluster_order`; the
   README's "Upgrading from 0.2" section maps each one to its replacement.
 - `Weights::to_hashmap`, left over from when methods returned a `HashMap`. Use
   `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `as_slice()`.
