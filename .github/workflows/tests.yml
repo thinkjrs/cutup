@@ -38,3 +38,6 @@ jobs:
 
       - name: Run doctests
         run: cargo test --all-features --doc
+
+      - name: Run tests without features
+        run: cargo test --all-targets
