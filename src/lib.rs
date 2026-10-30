@@ -452,6 +452,30 @@ impl CovarianceConfig {
     pub fn epsilon(&self) -> Option<f64> {
         self.regularization
     }
+
+    /// Returns [`CutupError::InvalidConfig`] if the regularization is negative or not finite,
+    /// or the shrinkage is outside `[0, 1]`.
+    fn validate(&self) -> Result<(), CutupError> {
+        if let Some(value) = self
+            .regularization
+            .filter(|eps| !(eps.is_finite() && *eps >= 0.0))
+        {
+            return Err(CutupError::InvalidConfig {
+                field: "regularization",
+                value,
+            });
+        }
+        if let Some(value) = self
+            .shrinkage
+            .filter(|lambda| !(0.0..=1.0).contains(lambda))
+        {
+            return Err(CutupError::InvalidConfig {
+                field: "shrinkage",
+                value,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// What a mean-variance optimization trades off, for [`MeanVariance`].
@@ -804,24 +828,7 @@ impl PortfolioAllocator {
     /// regularization gives it a positive variance, [`CutupError::NonFiniteCovariance`] if the
     /// result isn't finite, and [`CutupError::SingularCovariance`] if it is zero.
     fn adjusted_covariance(&self, config: &CovarianceConfig) -> Result<DMatrix<f64>, CutupError> {
-        if let Some(value) = config
-            .regularization
-            .filter(|eps| !(eps.is_finite() && *eps >= 0.0))
-        {
-            return Err(CutupError::InvalidConfig {
-                field: "regularization",
-                value,
-            });
-        }
-        if let Some(value) = config
-            .shrinkage
-            .filter(|lambda| !(0.0..=1.0).contains(lambda))
-        {
-            return Err(CutupError::InvalidConfig {
-                field: "shrinkage",
-                value,
-            });
-        }
+        config.validate()?;
         let adjusted =
             config.shrinkage.unwrap_or(0.0) > 0.0 || config.regularization.unwrap_or(0.0) > 0.0;
         if !adjusted {
@@ -1330,6 +1337,8 @@ impl PortfolioAllocator {
     /// The HRP weights, for [`Hrp`]. The hierarchy is built on the sample correlations, and
     /// `covariance` adjusts only the variances that split the weight.
     fn hrp(&self, linkage: Linkage, covariance: &CovarianceConfig) -> Result<Weights, CutupError> {
+        // The settings are checked before the data, as every other method checks them.
+        covariance.validate()?;
         let order = self.cluster_order(linkage)?;
         let cov = self.adjusted_covariance(covariance)?;
         let mut weights = vec![1.0; order.len()];
@@ -1392,8 +1401,9 @@ impl PortfolioAllocator {
                 value: 0.0,
             });
         }
+        covariance.validate()?;
         // Shrinkage would give a constant asset a variance, but not a correlation to cluster
-        // on, so this comes first.
+        // on, so this comes before adjusting the covariance.
         if let Some(asset) = self.find_zero_variance() {
             return Err(CutupError::ZeroVariance { asset });
         }
@@ -4383,6 +4393,25 @@ mod tests {
         });
         assert_eq!(allocator.allocate(&Hrp::default().shrinkage(1.5)), invalid);
         assert_eq!(allocator.allocate(&Herc::default().shrinkage(1.5)), invalid);
+        let negative = Err(CutupError::InvalidConfig {
+            field: "regularization",
+            value: -1e-6,
+        });
+        assert_eq!(
+            allocator.allocate(&Hrp::default().regularization(-1e-6)),
+            negative
+        );
+        assert_eq!(
+            allocator.allocate(&Herc::default().regularization(-1e-6)),
+            negative
+        );
+        // The settings are checked before the data, so a constant asset doesn't hide them.
+        let constant = PortfolioAllocator::from_returns(
+            dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01],
+        )
+        .unwrap();
+        assert_eq!(constant.allocate(&Hrp::default().shrinkage(1.5)), invalid);
+        assert_eq!(constant.allocate(&Herc::default().shrinkage(1.5)), invalid);
         // The number of clusters is checked first.
         assert_eq!(
             allocator.allocate(&Herc::default().clusters(0).shrinkage(1.5)),
