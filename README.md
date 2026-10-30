@@ -245,13 +245,14 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
-Four other changes in 0.3.0:
+Five other changes in 0.3.0:
 
 | 0.2 | 0.3 |
 | --- | --- |
 | `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
 | `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
+| `Hrp` and `Herc` are `Copy` and `Eq` | They're `Clone` and `PartialEq`, since they now take `.covariance(..)`, `.shrinkage(λ)` and `.regularization(ε)`. Clone a value to reuse it. |
 | Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 
 ## Testing
@@ -260,7 +261,7 @@ Four other changes in 0.3.0:
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, transaction costs and target returns (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, transaction costs and target returns (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC and for HRP and HERC with shrinkage and regularization. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 ## License
 

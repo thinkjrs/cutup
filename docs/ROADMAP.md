@@ -122,8 +122,8 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
    - **What it changes:** only the risk split, meaning the cluster variances
      and the inverse-variance weights within clusters. The hierarchy, and so
      `Hrp::cluster_order`, stays on the sample correlations. That's what
-     riskfolio-lib (`method_cov="shrunk"`) and PyPortfolioOpt
-     (`HRPOpt(returns, cov_matrix=..)`) do. Shrinking toward a scaled
+     riskfolio-lib (`method_cov="shrunk"`) does. PyPortfolioOpt's `HRPOpt`
+     ignores `cov_matrix` when it's given the returns. Shrinking toward a scaled
      identity also pulls the correlations toward zero, so it could reshape the
      tree.
    - **Constant assets** still return `ZeroVariance`, even with shrinkage:
@@ -134,8 +134,9 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
        leaf_order=False)`. `leaf_order=False` matches the tree's plain leaf
        order, which cutup and PyPortfolioOpt use; riskfolio's default applies
        SciPy's optimal leaf ordering.
-     - Cross-checked against PyPortfolioOpt's
-       `HRPOpt(returns, cov_matrix=shrunk)`.
+     - Cross-checked against PyPortfolioOpt's `HRPOpt` steps, its linkage,
+       `_get_quasi_diag` and `_raw_hrp_allocation`, run on the sample
+       correlations and the adjusted covariance.
      - HERC against riskfolio-lib with the same shrunk covariance.
      - Regularization, which riskfolio has no option for, through its
        `custom_cov` with the adjusted matrix computed in NumPy.

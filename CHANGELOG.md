@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `.covariance(..)` on `Hrp` and `Herc`, with the `shrinkage(λ)` and `regularization(ε)`
+  shortcuts the other covariance-based methods have. They adjust only the risk split: the
+  variances that divide weight between clusters and within them. The hierarchy stays on the
+  sample correlations, so `Hrp::cluster_order` and HERC's clusters don't change. Results
+  match riskfolio-lib's `HCPortfolio` with `method_cov="shrunk"`, and the reference tests
+  have 35 new cases for them.
+
 ### Removed
 
 - The API deprecated in 0.2.8: every `PortfolioAllocator::*_allocation*` method,
@@ -25,6 +34,8 @@ All notable changes to this project are documented here. The format follows
 - The minimum supported Rust version is 1.85, up from 1.78, and the crate is on edition 2024.
   CI tests on 1.85 rather than 1.78. A crate's edition doesn't affect the crates that depend
   on it.
+- `Hrp` and `Herc` are no longer `Copy` or `Eq`, since they now hold a `CovarianceConfig`.
+  They're still `Debug`, `Clone`, `PartialEq` and `Default`; clone one to reuse it.
 - `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
   written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
   `default()` still works.
