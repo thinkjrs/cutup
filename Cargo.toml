@@ -1,7 +1,7 @@
 [package]
 name = "cutup"
 version = "0.2.8"
-edition = "2021"
+edition = "2024"
 authors = ["Jason R. Stevens, CFA <jason@thinkjrs.dev>"]
 license = "MIT"
 description = "A flexible and efficient allocation library for Rust, capable of distributing assets, resources, and other divisible entities."
@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["allocation", "distribution", "portfolio", "resources", "quant"]
 categories = ["finance", "mathematics", "science"]
 include = ["/src/**/*", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/LICENSE"]
-rust-version = "1.78.0"
+rust-version = "1.85.0"
 
 [badges]
 maintenance = { status = "actively-developed" }
