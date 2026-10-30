@@ -25,7 +25,7 @@ Here are some of the allocation methods included in this library:
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 - **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
 
-This library leverages `nalgebra` for efficient matrix operations and is designed for performance and extensibility.
+Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `nalgebra` internally, and its optional `nalgebra` feature accepts `DMatrix` input directly.
 
 ## Features
 
@@ -81,9 +81,18 @@ cutup = "0.2.8"
 
 cutup 0.3 needs Rust 1.85 or newer. cutup 0.2 needs 1.78.
 
+To pass nalgebra matrices in and get `DVector` weights out, turn on the `nalgebra` feature. It tracks the nalgebra version cutup depends on, currently 0.33:
+
+```toml
+[dependencies]
+cutup = { version = "0.2.8", features = ["nalgebra"] }
+```
+
 ## Usage
 
-Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
+Pass prices to `PortfolioAllocator::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
+
+For data in one flat, row-major slice, such as a JavaScript `Float64Array` or a CSV read row by row, use `from_prices_flat(&values, assets)` or `from_returns_flat(&values, assets)`. With the `nalgebra` feature, `from_prices_matrix` and `from_returns_matrix` take a `DMatrix`.
 
 Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods from 0.2, such as `min_variance_allocation`, were removed in 0.3.0: see [Upgrading from 0.2](#upgrading-from-02).
 
@@ -94,30 +103,25 @@ use cutup::{
     CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance, MinVariance,
     PortfolioAllocator, WeightBounds,
 };
-use nalgebra::DMatrix;
 
 fn main() -> Result<(), CutupError> {
-    let prices = DMatrix::from_row_slice(
-        13,
-        4,
-        &[
-            125.0, 1500.0, 210.0, 600.0,
-            123.0, 1520.0, 215.0, 620.0,
-            130.0, 1510.0, 220.0, 610.0,
-            128.0, 1530.0, 225.0, 630.0,
-            131.0, 1525.0, 223.0, 640.0,
-            129.5, 1550.0, 228.0, 635.0,
-            133.0, 1545.0, 226.0, 650.0,
-            135.5, 1560.0, 231.0, 645.0,
-            134.0, 1580.0, 229.0, 660.0,
-            137.0, 1575.0, 234.0, 668.0,
-            136.0, 1600.0, 238.0, 662.0,
-            139.5, 1595.0, 236.0, 675.0,
-            141.0, 1615.0, 241.0, 680.0,
-        ],
-    );
+    let prices = [
+        [125.0, 1500.0, 210.0, 600.0],
+        [123.0, 1520.0, 215.0, 620.0],
+        [130.0, 1510.0, 220.0, 610.0],
+        [128.0, 1530.0, 225.0, 630.0],
+        [131.0, 1525.0, 223.0, 640.0],
+        [129.5, 1550.0, 228.0, 635.0],
+        [133.0, 1545.0, 226.0, 650.0],
+        [135.5, 1560.0, 231.0, 645.0],
+        [134.0, 1580.0, 229.0, 660.0],
+        [137.0, 1575.0, 234.0, 668.0],
+        [136.0, 1600.0, 238.0, 662.0],
+        [139.5, 1595.0, 236.0, 675.0],
+        [141.0, 1615.0, 241.0, 680.0],
+    ];
 
-    let allocator = PortfolioAllocator::from_prices(prices)?;
+    let allocator = PortfolioAllocator::from_prices(&prices)?;
 
     let min_variance_weights = allocator.allocate(&MinVariance::default().allow_short())?;
     // No asset above 40%.
@@ -149,17 +153,16 @@ Give `MinVariance` or `MeanVariance` your current weights to rebalance from them
 
 ```rust
 use cutup::{CutupError, MeanVariance, MinVariance, PortfolioAllocator};
-use nalgebra::dmatrix;
 
 fn main() -> Result<(), CutupError> {
-    let returns = dmatrix![
-         0.010, -0.020,  0.005;
-        -0.004,  0.015,  0.002;
-         0.007,  0.003, -0.006;
-         0.002, -0.001,  0.004;
-        -0.003,  0.006,  0.001
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
     ];
-    let allocator = PortfolioAllocator::from_returns(returns)?;
+    let allocator = PortfolioAllocator::from_returns(&returns)?;
     let current = [0.5, 0.3, 0.2];
 
     // The lowest-variance portfolio within 10% turnover of the current one.
@@ -184,17 +187,16 @@ Black-Litterman estimates expected returns rather than allocating. Start from th
 
 ```rust
 use cutup::{BlackLitterman, CutupError, MeanVariance, PortfolioAllocator, View};
-use nalgebra::dmatrix;
 
 fn main() -> Result<(), CutupError> {
-    let returns = dmatrix![
-         0.010, -0.020,  0.005;
-        -0.004,  0.015,  0.002;
-         0.007,  0.003, -0.006;
-         0.002, -0.001,  0.004;
-        -0.003,  0.006,  0.001
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
     ];
-    let allocator = PortfolioAllocator::from_returns(returns)?;
+    let allocator = PortfolioAllocator::from_returns(&returns)?;
 
     let mu = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
         // Asset 0 returns 0.1% a period, and you're 60% sure of it.
@@ -233,7 +235,7 @@ fn main() -> Result<(), CutupError> {
 | `hrp_allocation()`, `_with_config(&config)` | `allocate(&Hrp::default())` |
 | `hrp_cluster_order(&config)` | `Hrp::default().linkage(l).cluster_order(&allocator)` |
 | `herc_allocation()`, `_with_config(&config)` | `allocate(&Herc::default())` |
-| `run_portfolio_allocation(prices)` | `PortfolioAllocator::from_prices(prices)?.allocate(&MinVariance::default().allow_short())` |
+| `run_portfolio_allocation(prices)` | `PortfolioAllocator::from_prices(&prices)?.allocate(&MinVariance::default().allow_short())` |
 
 The config structs' settings are setters on the values, without the `with_`:
 
@@ -245,13 +247,14 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
-Five other changes in 0.3.0:
+Six other changes in 0.3.0:
 
 | 0.2 | 0.3 |
 | --- | --- |
 | `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
 | `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
+| `from_prices(dmatrix![..])`, `from_returns(dmatrix![..])` | `from_prices(&[[..], ..])` with rows, or `from_prices_flat(&values, assets)` with one row-major slice. To keep passing a `DMatrix`, turn on the `nalgebra` feature and call `from_prices_matrix(m)` or `from_returns_matrix(m)`. |
 | `Hrp` and `Herc` are `Copy` and `Eq` | They're `Clone` and `PartialEq`, since they now take `.covariance(..)`, `.shrinkage(λ)` and `.regularization(ε)`. Clone a value to reuse it. |
 | Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 

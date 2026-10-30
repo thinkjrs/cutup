@@ -14,6 +14,13 @@ All notable changes to this project are documented here. The format follows
   sample correlations, so `Hrp::cluster_order` and HERC's clusters don't change. Results
   match riskfolio-lib's `HCPortfolio` with `method_cov="shrunk"` and `leaf_order=False`, and
   the reference tests have 35 new cases for them.
+- `PortfolioAllocator::from_prices_flat` and `from_returns_flat`, which take one flat,
+  row-major slice and the number of assets, such as a JavaScript `Float64Array`.
+- A `nalgebra` feature, off by default, with `PortfolioAllocator::from_prices_matrix` and
+  `from_returns_matrix` for `DMatrix` input and `From<Weights> for DVector<f64>`. It tracks
+  the nalgebra version cutup depends on.
+- `CutupError::RaggedRows`, for rows of different lengths, or flat input whose length isn't
+  a multiple of the number of assets.
 
 ### Removed
 
@@ -28,6 +35,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `PortfolioAllocator::from_prices` and `from_returns` take rows, `&[R]` for any
+  `R: AsRef<[f64]>`, such as `&[[f64; N]]` or `&[Vec<f64>]`, instead of a nalgebra `DMatrix`,
+  so nalgebra is no longer part of cutup's public API without the `nalgebra` feature.
 - `CovarianceConfig`'s setters are `shrinkage(λ)` and `regularization(ε)`, without `with_`,
   like every other setter. Its fields are private: set them through the setters, and read
   them with the new `lambda()` and `epsilon()`, which return the λ and ε set, or `None`.
