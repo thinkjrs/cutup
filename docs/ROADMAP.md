@@ -87,8 +87,11 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
 5. **Plain Rust inputs; nalgebra becomes internal.**
    - Constructors take `&[f64]` in row-major order with the asset count, or
      `&[Vec<f64>]` rows, instead of a `DMatrix`.
-   - An optional `nalgebra` feature adds conversions from `DMatrix<f64>` and
-     `DVector<f64>`, documented as tracking nalgebra's version.
+   - An optional `nalgebra` feature adds constructors from `DMatrix<f64>` and
+     a conversion from `Weights` to `DVector<f64>`, documented as tracking
+     nalgebra's version. Vectors going in need no feature: the setters take
+     `impl Into<Vec<f64>>`, which `v.as_slice()` satisfies, and the orphan
+     rule rules out a `From<DVector<f64>> for Vec<f64>` in cutup.
    - Then a nalgebra major release never forces a cutup major after 1.0.
 6. **Asset labels.**
    - `Returns::with_labels([..])` names the columns. Without labels, they're
