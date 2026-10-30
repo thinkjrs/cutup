@@ -144,8 +144,9 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
        rather than `n − 1`. HRP and HERC weights don't change when the
        covariance is scaled, so shrinkage still matches; regularization
        depends on scale, so its cases pass the `n − 1` matrix.
-     - A few λ values and one ε on the existing datasets, including the
-       singular and ill-conditioned ones, for each linkage.
+     - Three λ values on four existing datasets, including the singular and
+       ill-conditioned ones, with single linkage, plus a Ward HRP case, fixed
+       numbers of HERC clusters, and two ε values, alone and with shrinkage.
    - **Tests:** shrinkage changes the weights but not the cluster order, full
      shrinkage matches clustering with equal variances, invalid settings
      return `InvalidConfig`, and the HRP and HERC properties run with random

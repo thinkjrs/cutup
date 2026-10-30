@@ -12,8 +12,8 @@ All notable changes to this project are documented here. The format follows
   shortcuts the other covariance-based methods have. They adjust only the risk split: the
   variances that divide weight between clusters and within them. The hierarchy stays on the
   sample correlations, so `Hrp::cluster_order` and HERC's clusters don't change. Results
-  match riskfolio-lib's `HCPortfolio` with `method_cov="shrunk"`, and the reference tests
-  have 35 new cases for them.
+  match riskfolio-lib's `HCPortfolio` with `method_cov="shrunk"` and `leaf_order=False`, and
+  the reference tests have 35 new cases for them.
 
 ### Removed
 
