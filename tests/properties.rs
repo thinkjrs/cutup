@@ -3,7 +3,7 @@
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
     InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    PortfolioAllocator, RiskParity, View, WeightBounds, Weights,
+    Returns, RiskParity, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -26,8 +26,8 @@ fn returns() -> impl Strategy<Value = DMatrix<f64>> {
 }
 
 /// The allocator for a matrix of returns, through the flat row-major constructor.
-fn from_matrix(returns: DMatrix<f64>) -> Result<PortfolioAllocator, CutupError> {
-    PortfolioAllocator::from_returns_flat(returns.transpose().as_slice(), returns.ncols())
+fn from_matrix(returns: DMatrix<f64>) -> Result<Returns, CutupError> {
+    Returns::new_flat(returns.transpose().as_slice(), returns.ncols())
 }
 
 /// Rejects inputs the invariants don't apply to: a near-constant asset (an error by design)
@@ -58,7 +58,7 @@ fn variance(cov: &DMatrix<f64>, weights: &Weights) -> f64 {
 }
 
 /// HRP with every linkage, by name.
-fn hrp_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
+fn hrp_methods(allocator: &Returns) -> Vec<(String, Weights)> {
     LINKAGES
         .iter()
         .map(|&linkage| {
@@ -72,7 +72,7 @@ fn hrp_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
 }
 
 /// HERC with every linkage, by name.
-fn herc_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
+fn herc_methods(allocator: &Returns) -> Vec<(String, Weights)> {
     LINKAGES
         .iter()
         .map(|&linkage| {
@@ -181,7 +181,7 @@ fn assert_bounded_optimum(
 }
 
 /// Every long-only method's weights, to compare an optimum against.
-fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
+fn long_only_methods(allocator: &Returns) -> Vec<Weights> {
     let mut methods = vec![
         allocator.allocate(&EqualWeight).unwrap(),
         allocator.allocate(&InverseVolatility).unwrap(),
@@ -208,7 +208,7 @@ fn long_only_methods(allocator: &PortfolioAllocator) -> Vec<Weights> {
 }
 
 /// Every method that returns fully invested weights, by name.
-fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weights)> {
+fn all_methods(allocator: &Returns, mean: f64) -> Vec<(String, Weights)> {
     let mut out = vec![
         (
             "equal weight".to_string(),
@@ -271,7 +271,7 @@ fn all_methods(allocator: &PortfolioAllocator, mean: f64) -> Vec<(String, Weight
 /// Methods that depend only on Σ, and on neither column order nor return scale. HRP and
 /// HERC are tested separately: like the original algorithm, HRP can depend on column order,
 /// and both cluster on correlations, which only an exact rescaling leaves bit-identical.
-fn risk_only_methods(allocator: &PortfolioAllocator) -> Vec<(String, Weights)> {
+fn risk_only_methods(allocator: &Returns) -> Vec<(String, Weights)> {
     let shrunk = CovarianceConfig::default().shrinkage(0.3);
     vec![
         (

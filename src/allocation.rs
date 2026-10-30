@@ -2,19 +2,19 @@
 
 use crate::turnover::{self, Costs, Trading};
 use crate::{
-    CovarianceConfig, CutupError, Linkage, Objective, PortfolioAllocator, WeightBounds, Weights,
+    CovarianceConfig, CutupError, Linkage, Objective, Returns, WeightBounds, Weights,
     check_objective,
 };
 use nalgebra::DVector;
 
-/// An allocation method: anything that turns a [`PortfolioAllocator`]'s returns into
+/// An allocation method: anything that turns a [`Returns`]'s returns into
 /// [`Weights`].
 ///
 /// Each built-in method is a value that implements it, built from `default()` and chained
-/// settings, and run with [`PortfolioAllocator::allocate`]:
+/// settings, and run with [`Returns::allocate`]:
 ///
 /// ```
-/// use cutup::{Hrp, Linkage, MaxSharpe, MinVariance, PortfolioAllocator, WeightBounds};
+/// use cutup::{Hrp, Linkage, MaxSharpe, MinVariance, Returns, WeightBounds};
 ///
 /// let returns = [
 ///      [ 0.010, -0.020,  0.005],
@@ -23,11 +23,11 @@ use nalgebra::DVector;
 ///      [ 0.002, -0.001,  0.004],
 ///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
-/// let capped = allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5)))?;
-/// let tangency = allocator.allocate(&MaxSharpe::default().expected_returns([0.004, 0.006, 0.002]))?;
-/// let hrp = allocator.allocate(&Hrp::default().linkage(Linkage::Ward))?;
+/// let capped = data.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5)))?;
+/// let tangency = data.allocate(&MaxSharpe::default().expected_returns([0.004, 0.006, 0.002]))?;
+/// let hrp = data.allocate(&Hrp::default().linkage(Linkage::Ward))?;
 ///
 /// assert!(capped.iter().all(|&w| w <= 0.5 + 1e-12));
 /// # Ok::<(), cutup::CutupError>(())
@@ -36,9 +36,9 @@ use nalgebra::DVector;
 /// Methods can be mixed in one collection:
 ///
 /// ```
-/// use cutup::{Allocation, EqualWeight, InverseVolatility, PortfolioAllocator, RiskParity};
+/// use cutup::{Allocation, EqualWeight, InverseVolatility, Returns, RiskParity};
 ///
-/// let allocator = PortfolioAllocator::from_returns(&[
+/// let data = Returns::new(&[
 ///      [ 0.01,  0.02],
 ///      [-0.01, -0.02],
 ///      [ 0.01, -0.02],
@@ -49,7 +49,7 @@ use nalgebra::DVector;
 ///     Box::new(RiskParity::default()),
 /// ];
 /// for method in &methods {
-///     assert_eq!(allocator.allocate(method)?.len(), 2);
+///     assert_eq!(data.allocate(method)?.len(), 2);
 /// }
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -62,17 +62,17 @@ pub trait Allocation {
     /// # Errors
     ///
     /// Whatever the method can't compute weights for. See each method's type.
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError>;
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError>;
 }
 
 impl<A: Allocation + ?Sized> Allocation for &A {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         (**self).allocate(data)
     }
 }
 
 impl<A: Allocation + ?Sized> Allocation for Box<A> {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         (**self).allocate(data)
     }
 }
@@ -80,7 +80,7 @@ impl<A: Allocation + ?Sized> Allocation for Box<A> {
 /// Equal weights, `1/n` each. Never fails.
 ///
 /// ```
-/// use cutup::{EqualWeight, PortfolioAllocator};
+/// use cutup::{EqualWeight, Returns};
 ///
 /// let prices = [
 ///    [100.0, 200.0, 300.0],
@@ -88,7 +88,7 @@ impl<A: Allocation + ?Sized> Allocation for Box<A> {
 ///    [120.0, 220.0, 320.0],
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_prices(&prices)?.allocate(&EqualWeight)?;
+/// let weights = Returns::from_prices(&prices)?.allocate(&EqualWeight)?;
 /// assert!(weights.iter().all(|&w| w == 1.0 / 3.0));
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -96,7 +96,7 @@ impl<A: Allocation + ?Sized> Allocation for Box<A> {
 pub struct EqualWeight;
 
 impl Allocation for EqualWeight {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let n = data.returns.ncols();
         Ok(Weights(vec![1.0 / n as f64; n]))
     }
@@ -118,7 +118,7 @@ impl Allocation for EqualWeight {
 /// # Example
 ///
 /// ```
-/// use cutup::{InverseVolatility, PortfolioAllocator};
+/// use cutup::{InverseVolatility, Returns};
 ///
 /// // Volatilities in the ratio 1 : 2.
 /// let returns = [
@@ -128,8 +128,8 @@ impl Allocation for EqualWeight {
 ///      [-0.01,  0.02],
 /// ];
 ///
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
-/// let weights = allocator.allocate(&InverseVolatility)?;
+/// let data = Returns::new(&returns)?;
+/// let weights = data.allocate(&InverseVolatility)?;
 ///
 /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
 /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
@@ -139,7 +139,7 @@ impl Allocation for EqualWeight {
 pub struct InverseVolatility;
 
 impl Allocation for InverseVolatility {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         data.weight_by_variance(|variance| 1.0 / variance.sqrt())
     }
 }
@@ -159,7 +159,7 @@ impl Allocation for InverseVolatility {
 /// # Example
 ///
 /// ```
-/// use cutup::{InverseVariance, PortfolioAllocator};
+/// use cutup::{InverseVariance, Returns};
 ///
 /// // Volatilities in the ratio 1 : 2, so variances in the ratio 1 : 4.
 /// let returns = [
@@ -169,7 +169,7 @@ impl Allocation for InverseVolatility {
 ///      [-0.01,  0.02],
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_returns(&returns)?.allocate(&InverseVariance)?;
+/// let weights = Returns::new(&returns)?.allocate(&InverseVariance)?;
 ///
 /// assert!((weights[0] - 0.8).abs() < 1e-12);
 /// assert!((weights[1] - 0.2).abs() < 1e-12);
@@ -179,7 +179,7 @@ impl Allocation for InverseVolatility {
 pub struct InverseVariance;
 
 impl Allocation for InverseVariance {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         data.weight_by_variance(|variance| 1.0 / variance)
     }
 }
@@ -251,7 +251,7 @@ impl Allocation for InverseVariance {
 /// # Example
 ///
 /// ```
-/// use cutup::{MinVariance, PortfolioAllocator, WeightBounds};
+/// use cutup::{MinVariance, Returns, WeightBounds};
 ///
 /// // The second asset moves with the first but twice as far, so the long-short minimum
 /// // variance portfolio shorts it as a hedge.
@@ -262,23 +262,23 @@ impl Allocation for InverseVariance {
 ///      [-0.002, -0.006, -0.003],
 ///      [ 0.006,  0.011,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
-/// assert!(allocator.allocate(&MinVariance::default().allow_short())?[1] < 0.0);
+/// let data = Returns::new(&returns)?;
+/// assert!(data.allocate(&MinVariance::default().allow_short())?[1] < 0.0);
 ///
-/// let weights = allocator.allocate(&MinVariance::default())?;
+/// let weights = data.allocate(&MinVariance::default())?;
 /// assert_eq!(weights[1], 0.0);
 /// assert!(weights[2] > 0.9);
 ///
 /// // Capping every asset at 50% moves the rest of the weight to the next least risky.
-/// let capped = allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5)))?;
+/// let capped = data.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5)))?;
 /// assert!((capped[2] - 0.5).abs() < 1e-12);
 ///
 /// // Full shrinkage leaves no correlations to hedge, so every asset is held equally.
-/// let shrunk = allocator.allocate(&MinVariance::default().shrinkage(1.0))?;
+/// let shrunk = data.allocate(&MinVariance::default().shrinkage(1.0))?;
 /// assert!(shrunk.iter().all(|w| (w - 1.0 / 3.0).abs() < 1e-12));
 ///
 /// // Rebalance from the current weights, turning over at most 10%.
-/// let rebalanced = allocator.allocate(
+/// let rebalanced = data.allocate(
 ///     &MinVariance::default().current_weights([0.5, 0.3, 0.2]).max_turnover(0.1),
 /// )?;
 /// # Ok::<(), cutup::CutupError>(())
@@ -330,7 +330,7 @@ impl MinVariance {
 }
 
 impl Allocation for MinVariance {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         if self.trading.first_setting().is_some() {
             let cov = data.adjusted_covariance(&self.covariance)?;
             let n = cov.ncols();
@@ -440,7 +440,7 @@ impl Allocation for MinVariance {
 /// # Example
 ///
 /// ```
-/// use cutup::{MeanVariance, PortfolioAllocator, WeightBounds};
+/// use cutup::{MeanVariance, Returns, WeightBounds};
 ///
 /// let returns = [
 ///      [ 0.010, -0.020,  0.005],
@@ -449,21 +449,21 @@ impl Allocation for MinVariance {
 ///      [ 0.002, -0.001,  0.004],
 ///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 /// let expected = [0.004, 0.006, 0.002];
 ///
 /// // With little aversion to risk, the long-short portfolio leverages up on the highest
 /// // expected returns and shorts the lowest.
 /// let method = MeanVariance::risk_aversion(1.0).expected_returns(expected);
-/// assert!(allocator.allocate(&method.clone().allow_short())?.iter().any(|&w| w < 0.0));
-/// assert!(allocator.allocate(&method)?.iter().all(|&w| w >= 0.0));
+/// assert!(data.allocate(&method.clone().allow_short())?.iter().any(|&w| w < 0.0));
+/// assert!(data.allocate(&method)?.iter().all(|&w| w >= 0.0));
 ///
 /// // With at most 40% in any asset, the highest reachable return is
 /// // 0.4 · 0.006 + 0.4 · 0.004 + 0.2 · 0.002 = 0.0044.
 /// let target = MeanVariance::target_return(0.005).expected_returns(expected);
-/// assert!(allocator.allocate(&target.clone().bounds(WeightBounds::uniform(0.0, 0.4))).is_err());
+/// assert!(data.allocate(&target.clone().bounds(WeightBounds::uniform(0.0, 0.4))).is_err());
 ///
-/// let weights = allocator.allocate(&target.bounds(WeightBounds::uniform(0.1, 0.6)))?;
+/// let weights = data.allocate(&target.bounds(WeightBounds::uniform(0.1, 0.6)))?;
 /// let portfolio_return: f64 = weights.iter().zip(expected).map(|(w, m)| w * m).sum();
 /// assert!((portfolio_return - 0.005).abs() < 1e-12);
 ///
@@ -561,7 +561,7 @@ impl MeanVariance {
 }
 
 impl Allocation for MeanVariance {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let expected_returns = self.expected_returns.clone().map(DVector::from_vec);
         if self.trading.first_setting().is_some() {
             check_objective(self.objective)?;
@@ -673,7 +673,7 @@ impl Allocation for MeanVariance {
 /// # Example
 ///
 /// ```
-/// use cutup::{MaxSharpe, PortfolioAllocator};
+/// use cutup::{MaxSharpe, Returns};
 ///
 /// // Uncorrelated assets: the tangency weights are proportional to (μᵢ − r_f) / σᵢ².
 /// let returns = [
@@ -682,18 +682,18 @@ impl Allocation for MeanVariance {
 ///      [ 0.01, -0.02],
 ///      [-0.01,  0.02],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
 /// // σ² is in the ratio 1 : 4 and μ in the ratio 1 : 2, so the weights are 2 : 1.
-/// let weights = allocator.allocate(&MaxSharpe::default().expected_returns([0.002, 0.004]))?;
+/// let weights = data.allocate(&MaxSharpe::default().expected_returns([0.002, 0.004]))?;
 /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
 /// assert!((weights[1] - 1.0 / 3.0).abs() < 1e-12);
 ///
 /// // With a negative expected return, the tangency portfolio shorts the second asset, which
 /// // long-only can't.
 /// let method = MaxSharpe::default().expected_returns([0.002, -0.001]);
-/// assert!(allocator.allocate(&method.clone().allow_short())?[1] < 0.0);
-/// let weights = allocator.allocate(&method)?;
+/// assert!(data.allocate(&method.clone().allow_short())?[1] < 0.0);
+/// let weights = data.allocate(&method)?;
 /// assert!((weights[0] - 1.0).abs() < 1e-12 && weights[1] == 0.0);
 ///
 /// // 4% a year, for daily returns.
@@ -745,7 +745,7 @@ impl MaxSharpe {
 }
 
 impl Allocation for MaxSharpe {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let mu = self.expected_returns.clone().map(DVector::from_vec);
         if self.long_only {
             data.long_only_max_sharpe(self.risk_free_rate, mu.as_ref(), &self.covariance)
@@ -788,7 +788,7 @@ impl Allocation for MaxSharpe {
 /// # Example
 ///
 /// ```
-/// use cutup::{MaxDiversification, PortfolioAllocator};
+/// use cutup::{MaxDiversification, Returns};
 ///
 /// // Uncorrelated assets, with volatilities in the ratio 1 : 2 : 4.
 /// let returns = [
@@ -797,8 +797,8 @@ impl Allocation for MaxSharpe {
 ///      [ 0.01, -0.02, -0.04],
 ///      [-0.01, -0.02,  0.04],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
-/// let weights = allocator.allocate(&MaxDiversification::default())?;
+/// let data = Returns::new(&returns)?;
+/// let weights = data.allocate(&MaxDiversification::default())?;
 ///
 /// // Inverse volatility: 4 : 2 : 1.
 /// for (w, expected) in weights.iter().zip([4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]) {
@@ -806,12 +806,12 @@ impl Allocation for MaxSharpe {
 /// }
 ///
 /// // Fewer observations than assets: some long-only portfolio has no variance.
-/// let allocator = PortfolioAllocator::from_returns(&[
+/// let data = Returns::new(&[
 ///      [ 0.01, -0.02,  0.03],
 ///      [-0.01,  0.02, -0.03],
 /// ])?;
-/// assert!(allocator.allocate(&MaxDiversification::default()).is_err());
-/// assert!(allocator.allocate(&MaxDiversification::default().shrinkage(0.3)).is_ok());
+/// assert!(data.allocate(&MaxDiversification::default()).is_err());
+/// assert!(data.allocate(&MaxDiversification::default().shrinkage(0.3)).is_ok());
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -825,7 +825,7 @@ impl MaxDiversification {
 }
 
 impl Allocation for MaxDiversification {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         data.max_diversification(&self.covariance)
     }
 }
@@ -864,7 +864,7 @@ impl Allocation for MaxDiversification {
 /// # Example
 ///
 /// ```
-/// use cutup::{PortfolioAllocator, RiskParity};
+/// use cutup::{Returns, RiskParity};
 ///
 /// // Uncorrelated assets with volatilities in the ratio 1 : 2.
 /// let returns = [
@@ -873,14 +873,14 @@ impl Allocation for MaxDiversification {
 ///      [ 0.01, -0.02],
 ///      [-0.01,  0.02],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
 /// // Equal budgets: weights in inverse proportion to volatility, 2 : 1.
-/// let weights = allocator.allocate(&RiskParity::default())?;
+/// let weights = data.allocate(&RiskParity::default())?;
 /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
 ///
 /// // Budgets 1 : 4: wᵢ ∝ sqrt(bᵢ) / σᵢ, so 1 : 1.
-/// let weights = allocator.allocate(&RiskParity::default().risk_budgets([1.0, 4.0]))?;
+/// let weights = data.allocate(&RiskParity::default().risk_budgets([1.0, 4.0]))?;
 /// assert!((weights[0] - 0.5).abs() < 1e-12);
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -903,7 +903,7 @@ impl RiskParity {
 }
 
 impl Allocation for RiskParity {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let budgets = self.risk_budgets.clone().map(DVector::from_vec);
         data.risk_parity(budgets.as_ref(), &self.covariance)
     }
@@ -954,7 +954,7 @@ impl Allocation for RiskParity {
 /// # Example
 ///
 /// ```
-/// use cutup::{Hrp, Linkage, PortfolioAllocator};
+/// use cutup::{Hrp, Linkage, Returns};
 ///
 /// let returns = [
 ///      [ 0.010,  0.020,  0.011,  0.019],
@@ -962,9 +962,9 @@ impl Allocation for RiskParity {
 ///      [ 0.020, -0.020,  0.018, -0.021],
 ///      [-0.015, -0.010, -0.014, -0.009],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
-/// let weights = allocator.allocate(&Hrp::default().linkage(Linkage::Ward))?;
+/// let weights = data.allocate(&Hrp::default().linkage(Linkage::Ward))?;
 /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
 /// assert!(weights.iter().all(|&w| w >= 0.0));
 /// # Ok::<(), cutup::CutupError>(())
@@ -1005,7 +1005,7 @@ impl Hrp {
     /// # Example
     ///
     /// ```
-    /// use cutup::{Hrp, PortfolioAllocator};
+    /// use cutup::{Hrp, Returns};
     ///
     /// // Assets 0 and 2 move together, as do 1 and 3.
     /// let returns = [
@@ -1015,21 +1015,21 @@ impl Hrp {
     ///      [-0.015, -0.010, -0.014, -0.009],
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
-    /// let order = Hrp::default().cluster_order(&allocator)?;
+    /// let data = Returns::new(&returns)?;
+    /// let order = Hrp::default().cluster_order(&data)?;
     ///
     /// let position = |asset| order.iter().position(|&a| a == asset).unwrap();
     /// assert_eq!(position(0).abs_diff(position(2)), 1);
     /// assert_eq!(position(1).abs_diff(position(3)), 1);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
-    pub fn cluster_order(&self, data: &PortfolioAllocator) -> Result<Vec<usize>, CutupError> {
+    pub fn cluster_order(&self, data: &Returns) -> Result<Vec<usize>, CutupError> {
         data.cluster_order(self.linkage)
     }
 }
 
 impl Allocation for Hrp {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         data.hrp(self.linkage, &self.covariance)
     }
 }
@@ -1088,7 +1088,7 @@ const HERC_MAX_CLUSTERS: usize = 10;
 /// # Example
 ///
 /// ```
-/// use cutup::{Herc, InverseVariance, PortfolioAllocator};
+/// use cutup::{Herc, InverseVariance, Returns};
 ///
 /// // Assets 0 and 2 move together, as do 1 and 3.
 /// let returns = [
@@ -1097,11 +1097,11 @@ const HERC_MAX_CLUSTERS: usize = 10;
 ///      [ 0.020, -0.020,  0.018, -0.021],
 ///      [-0.015, -0.010, -0.014, -0.009],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
-/// let weights = allocator.allocate(&Herc::default().clusters(2))?;
+/// let data = Returns::new(&returns)?;
+/// let weights = data.allocate(&Herc::default().clusters(2))?;
 ///
 /// // With two clusters, {0, 2} and {1, 3}, each pair is weighted by inverse variance.
-/// let inverse_variance = allocator.allocate(&InverseVariance)?;
+/// let inverse_variance = data.allocate(&InverseVariance)?;
 /// let ratio = |a: usize, b: usize| weights[a] / weights[b];
 /// assert!((ratio(0, 2) - inverse_variance[0] / inverse_variance[2]).abs() < 1e-12);
 /// assert!((ratio(1, 3) - inverse_variance[1] / inverse_variance[3]).abs() < 1e-12);
@@ -1153,7 +1153,7 @@ impl Herc {
 }
 
 impl Allocation for Herc {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         data.herc(
             self.linkage,
             self.clusters,

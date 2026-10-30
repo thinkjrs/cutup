@@ -1,6 +1,6 @@
 use cutup::{
     Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
-    MinVariance, PortfolioAllocator, Weights,
+    MinVariance, Returns, Weights,
 };
 
 #[test]
@@ -11,7 +11,7 @@ fn test_portfolio_allocations() {
         [120.0, 220.0, 320.0],
     ];
 
-    let allocator = PortfolioAllocator::from_prices(&prices).unwrap();
+    let allocator = Returns::from_prices(&prices).unwrap();
 
     let ew = allocator.allocate(&EqualWeight).unwrap();
     assert_eq!(ew.len(), 3);
@@ -40,7 +40,7 @@ fn test_portfolio_allocations() {
 struct LowestVolatility;
 
 impl Allocation for LowestVolatility {
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let inverse = data.allocate(&InverseVolatility)?;
         let lowest = (0..inverse.len())
             .max_by(|&a, &b| inverse[a].total_cmp(&inverse[b]))
@@ -55,12 +55,12 @@ impl Allocation for LowestVolatility {
 struct Fixed(Vec<f64>);
 
 impl Allocation for Fixed {
-    fn allocate(&self, _: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, _: &Returns) -> Result<Weights, CutupError> {
         Ok(Weights::from(self.0.clone()))
     }
 }
 
-fn allocator() -> PortfolioAllocator {
+fn allocator() -> Returns {
     let returns = [
         [0.010, -0.020, 0.005],
         [-0.004, 0.015, 0.002],
@@ -68,7 +68,7 @@ fn allocator() -> PortfolioAllocator {
         [0.002, -0.001, 0.004],
         [-0.003, 0.006, 0.001],
     ];
-    PortfolioAllocator::from_returns(&returns).unwrap()
+    Returns::new(&returns).unwrap()
 }
 
 #[test]

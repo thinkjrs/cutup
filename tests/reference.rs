@@ -7,7 +7,7 @@
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
     InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    PortfolioAllocator, RiskParity, View, WeightBounds, Weights,
+    Returns, RiskParity, View, WeightBounds, Weights,
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
@@ -36,18 +36,18 @@ fn floats(values: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn allocator(dataset: &Value) -> PortfolioAllocator {
+fn allocator(dataset: &Value) -> Returns {
     let data = rows(&dataset["data"]);
     match dataset["kind"].as_str() {
-        Some("prices") => PortfolioAllocator::from_prices(&data),
-        Some("returns") => PortfolioAllocator::from_returns(&data),
+        Some("prices") => Returns::from_prices(&data),
+        Some("returns") => Returns::new(&data),
         other => panic!("unknown dataset kind {other:?}"),
     }
     .expect("reference datasets are valid input")
 }
 
 /// The largest absolute return in a dataset, with prices turned into simple returns as
-/// `PortfolioAllocator::from_prices` does.
+/// `Returns::from_prices` does.
 fn returns_scale(dataset: &Value) -> f64 {
     let data = matrix(&rows(&dataset["data"]));
     let returns = match dataset["kind"].as_str() {
@@ -259,11 +259,7 @@ const METHODS: [&str; 17] = [
     "min_cvar",
 ];
 
-fn run(
-    allocator: &PortfolioAllocator,
-    method: &str,
-    params: &Value,
-) -> Result<Weights, CutupError> {
+fn run(allocator: &Returns, method: &str, params: &Value) -> Result<Weights, CutupError> {
     match method {
         "equal_weight" => allocator.allocate(&EqualWeight),
         "inverse_volatility" => allocator.allocate(&InverseVolatility),

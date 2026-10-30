@@ -1,15 +1,13 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
-use crate::{
-    Allocation, CutupError, PortfolioAllocator, ReturnRange, WeightBounds, Weights, lp, normalized,
-};
+use crate::{Allocation, CutupError, ReturnRange, Returns, WeightBounds, Weights, lp, normalized};
 use nalgebra::{DMatrix, DVector};
 
 /// The long-only portfolio with the lowest conditional value at risk (CVaR, or expected
 /// shortfall): the average loss over the worst `1 − β` of the return scenarios, for a
 /// confidence `β`, 0.95 by default (Rockafellar and Uryasev, 2000).
 ///
-/// The scenarios are the allocator's returns, one per row, each equally likely, so CVaR is in
+/// The scenarios are the returns in [`Returns`], one per row, each equally likely, so CVaR is in
 /// their units and period: with daily returns, it's daily CVaR. When `(1 − β)T` isn't a whole
 /// number of the `T` scenarios, the last one in the tail counts in part; when it's under one,
 /// CVaR is the worst loss.
@@ -19,7 +17,7 @@ use nalgebra::{DMatrix, DVector};
 /// needs enough scenarios to have a tail worth averaging: at 95% that's at least 20.
 ///
 /// ```
-/// use cutup::{MinCvar, PortfolioAllocator, WeightBounds};
+/// use cutup::{MinCvar, Returns, WeightBounds};
 ///
 /// let returns = [
 ///      [ 0.010, -0.020,  0.005],
@@ -28,17 +26,17 @@ use nalgebra::{DMatrix, DVector};
 ///      [ 0.002, -0.001,  0.004],
 ///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
 /// let method = MinCvar::default().confidence(0.8).bounds(WeightBounds::uniform(0.0, 0.6));
-/// let weights = allocator.allocate(&method)?;
-/// let cvar = allocator.cvar(&weights, 0.8)?;
+/// let weights = data.allocate(&method)?;
+/// let cvar = data.cvar(&weights, 0.8)?;
 ///
 /// // No asset alone does better.
 /// for asset in 0..3 {
 ///     let mut alone = vec![0.0; 3];
 ///     alone[asset] = 1.0;
-///     assert!(cvar <= allocator.cvar(&alone.into(), 0.8)? + 1e-12);
+///     assert!(cvar <= data.cvar(&alone.into(), 0.8)? + 1e-12);
 /// }
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -103,7 +101,7 @@ impl Allocation for MinCvar {
     /// the target return, and `λ⁺`, `λ⁻` for the bounds, subject to
     /// `−Rᵀz = ν1 + ημ + λ⁺ − λ⁻`, one row per asset. The weights are those rows'
     /// multipliers, and CVaR is its optimum.
-    fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
+    fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let returns = &data.returns;
         let (t, n) = returns.shape();
         let cap = tail_weight(self.confidence, t)?;
@@ -176,7 +174,7 @@ impl Allocation for MinCvar {
     }
 }
 
-impl PortfolioAllocator {
+impl Returns {
     /// The conditional value at risk of `weights` at confidence `beta`: the average loss over
     /// the worst `1 − β` of the return scenarios, each row of returns one equally likely
     /// scenario. When `(1 − β)T` isn't a whole number of the `T` scenarios, the last one in
@@ -193,12 +191,12 @@ impl PortfolioAllocator {
     /// # Example
     ///
     /// ```
-    /// use cutup::PortfolioAllocator;
+    /// use cutup::Returns;
     ///
     /// // Losses of 4%, 2%, 1% and a 1% gain: the worst half averages 3%.
     /// let returns = [[-0.04], [-0.02], [-0.01], [0.01]];
-    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
-    /// let cvar = allocator.cvar(&vec![1.0].into(), 0.5)?;
+    /// let data = Returns::new(&returns)?;
+    /// let cvar = data.cvar(&vec![1.0].into(), 0.5)?;
     /// assert!((cvar - 0.03).abs() < 1e-15);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
@@ -251,8 +249,8 @@ mod tests {
     use super::*;
     use nalgebra::dmatrix;
 
-    fn allocator() -> PortfolioAllocator {
-        PortfolioAllocator::returns_matrix(dmatrix![
+    fn allocator() -> Returns {
+        Returns::returns_matrix(dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
@@ -267,8 +265,7 @@ mod tests {
 
     #[test]
     fn cvar_averages_the_tail() {
-        let allocator =
-            PortfolioAllocator::returns_matrix(dmatrix![-0.04; -0.02; -0.01; 0.01]).unwrap();
+        let allocator = Returns::returns_matrix(dmatrix![-0.04; -0.02; -0.01; 0.01]).unwrap();
         let one = Weights::from(vec![1.0]);
         // Half of four scenarios: the two worst, 4% and 2%.
         assert!((allocator.cvar(&one, 0.5).unwrap() - 0.03).abs() < 1e-15);
@@ -322,7 +319,7 @@ mod tests {
     #[test]
     fn lower_bounds_summing_to_one_fix_the_weights() {
         // 1 − 0.9 rounds to just under 0.1, the first asset's room above its floor.
-        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
+        let allocator = Returns::returns_matrix(dmatrix![
              0.010, -0.020;
             -0.004,  0.015;
              0.007,  0.003
@@ -386,7 +383,7 @@ mod tests {
             -0.01926202201906651, 0.001966764898914833, 0.0, 0.0, -0.025971216114690443, 0.0,
             0.0, -0.02382851848035964, 0.0013794705644694543, -0.004727636380476252,
         ];
-        let allocator = PortfolioAllocator::returns_matrix(DMatrix::from_vec(9, 6, data)).unwrap();
+        let allocator = Returns::returns_matrix(DMatrix::from_vec(9, 6, data)).unwrap();
         let beta = 0.8549681742164362;
         let weights = allocator
             .allocate(&MinCvar::default().confidence(beta))

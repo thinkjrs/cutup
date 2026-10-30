@@ -6,8 +6,7 @@
 
 use cutup::{
     Allocation, CutupError, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, Linkage,
-    MaxDiversification, MaxSharpe, MeanVariance, MinVariance, PortfolioAllocator, RiskParity,
-    WeightBounds,
+    MaxDiversification, MaxSharpe, MeanVariance, MinVariance, Returns, RiskParity, WeightBounds,
 };
 
 fn main() -> Result<(), CutupError> {
@@ -27,7 +26,7 @@ fn main() -> Result<(), CutupError> {
         [139.5, 1595.0, 236.0, 675.0],
         [141.0, 1615.0, 241.0, 680.0],
     ];
-    let allocator = PortfolioAllocator::from_prices(&prices)?;
+    let allocator = Returns::from_prices(&prices)?;
 
     let methods: Vec<(&str, Box<dyn Allocation>)> = vec![
         ("Equal weight", Box::new(EqualWeight)),

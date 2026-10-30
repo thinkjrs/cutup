@@ -1,6 +1,6 @@
 //! Black-Litterman expected returns: the market's implied returns, blended with views.
 
-use crate::{CovarianceConfig, CutupError, PortfolioAllocator};
+use crate::{CovarianceConfig, CutupError, Returns};
 use nalgebra::{DMatrix, DVector};
 
 /// Expected returns from the Black-Litterman model (Black and Litterman, 1992): the returns
@@ -11,7 +11,7 @@ use nalgebra::{DMatrix, DVector};
 /// [`MaxSharpe`](crate::MaxSharpe):
 ///
 /// ```
-/// use cutup::{BlackLitterman, MeanVariance, PortfolioAllocator, View};
+/// use cutup::{BlackLitterman, MeanVariance, Returns, View};
 ///
 /// let returns = [
 ///      [ 0.010, -0.020,  0.005],
@@ -20,16 +20,16 @@ use nalgebra::{DMatrix, DVector};
 ///      [ 0.002, -0.001,  0.004],
 ///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(&returns)?;
+/// let data = Returns::new(&returns)?;
 ///
 /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
 ///     // Asset 0 returns 0.1% a period, and you're 60% sure of it.
 ///     .view(View::absolute(0, 0.001).confidence(0.6))
 ///     // Asset 1 beats asset 2 by 0.05% a period.
 ///     .view(View::relative(1, 2, 0.0005));
-/// let mu = model.expected_returns(&allocator)?;
+/// let mu = model.expected_returns(&data)?;
 ///
-/// let weights = allocator.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
+/// let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 ///
@@ -42,9 +42,9 @@ use nalgebra::{DMatrix, DVector};
 /// * **Posterior:** `π + τΣPᵀ(τPΣPᵀ + Ω)⁻¹(Q − Pπ)`, where `τ` scales the uncertainty in the
 ///   prior, 0.05 by default.
 ///
-/// Σ is the allocator's covariance, after the same adjustments as the allocation methods:
+/// Σ is the covariance of the [`Returns`], after the same adjustments as the allocation methods:
 /// use the same shrinkage here as in the method you pass the returns to. Returns are in the
-/// allocator's units and period, so the views and the risk-free rate must be too. `δ` is
+/// returns' units and period, so the views and the risk-free rate must be too. `δ` is
 /// the same whatever the period, since the mean and the variance of returns both scale with
 /// it: 2.5 is a common choice.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +101,7 @@ impl BlackLitterman {
     /// * [`CutupError::InvalidConfig`] if a market weight is negative or not finite, the
     ///   weights sum to 0, `δ` isn't positive and finite, the risk-free rate isn't finite, or
     ///   the covariance config is invalid.
-    pub fn prior_returns(&self, data: &PortfolioAllocator) -> Result<Vec<f64>, CutupError> {
+    pub fn prior_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         Ok(self.prior(&cov)?.as_slice().to_vec())
     }
@@ -122,7 +122,7 @@ impl BlackLitterman {
     ///   certain views that repeat or contradict each other, or a view with the default
     ///   variance or a confidence on a portfolio with no variance, which would make it
     ///   certain. Give such a view an explicit [`View::variance`].
-    pub fn expected_returns(&self, data: &PortfolioAllocator) -> Result<Vec<f64>, CutupError> {
+    pub fn expected_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         let pi = self.prior(&cov)?;
         if !(self.tau.is_finite() && self.tau > 0.0) {
@@ -398,8 +398,8 @@ mod tests {
     use super::*;
     use nalgebra::dmatrix;
 
-    fn allocator() -> PortfolioAllocator {
-        PortfolioAllocator::returns_matrix(dmatrix![
+    fn allocator() -> Returns {
+        Returns::returns_matrix(dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn views_on_riskless_portfolios_need_a_variance() {
         // Assets 0 and 1 move together, so going long one and short the other has no variance.
-        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
+        let allocator = Returns::returns_matrix(dmatrix![
              0.01,  0.01,  0.004;
             -0.02, -0.02,  0.001;
              0.005, 0.005, -0.003
