@@ -1147,14 +1147,14 @@ impl PortfolioAllocator {
                 return Err(CutupError::DimensionMismatch {
                     expected: n,
                     actual: b.len(),
-                })
+                });
             }
             Some(b) => match b.iter().find(|b| !(b.is_finite() && **b > 0.0)) {
                 Some(&value) => {
                     return Err(CutupError::InvalidConfig {
                         field: "risk_budgets",
                         value,
-                    })
+                    });
                 }
                 None => b.clone(),
             },
@@ -2118,13 +2118,15 @@ mod tests {
             regularization: Some(0.0),
             shrinkage: Some(1.0),
         };
-        assert!(allocator
-            .allocate(
-                &MinVariance::default()
-                    .allow_short()
-                    .covariance(edges.clone())
-            )
-            .is_ok());
+        assert!(
+            allocator
+                .allocate(
+                    &MinVariance::default()
+                        .allow_short()
+                        .covariance(edges.clone())
+                )
+                .is_ok()
+        );
     }
 
     fn portfolio_variance(allocator: &PortfolioAllocator, weights: &Weights) -> f64 {

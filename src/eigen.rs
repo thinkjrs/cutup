@@ -173,10 +173,12 @@ mod tests {
     #[test]
     fn diagonal_and_empty_matrices() {
         let eigen = SymmetricEigen::new(&DMatrix::from_diagonal_element(3, 3, 4.0)).unwrap();
-        assert!(eigen
-            .values
-            .iter()
-            .all(|&value| (value - 4.0).abs() < 1e-14));
+        assert!(
+            eigen
+                .values
+                .iter()
+                .all(|&value| (value - 4.0).abs() < 1e-14)
+        );
         assert_decomposes(&DMatrix::from_diagonal(&DVector::from_column_slice(&[
             3.0, -1.0, 0.0, 2.0,
         ])));

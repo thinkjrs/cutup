@@ -2,8 +2,8 @@
 
 use crate::turnover::{self, Costs, Trading};
 use crate::{
-    check_objective, CovarianceConfig, CutupError, Linkage, Objective, PortfolioAllocator,
-    WeightBounds, Weights,
+    CovarianceConfig, CutupError, Linkage, Objective, PortfolioAllocator, WeightBounds, Weights,
+    check_objective,
 };
 use nalgebra::DVector;
 

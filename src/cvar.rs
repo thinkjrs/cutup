@@ -1,7 +1,7 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
 use crate::{
-    lp, normalized, Allocation, CutupError, PortfolioAllocator, ReturnRange, WeightBounds, Weights,
+    Allocation, CutupError, PortfolioAllocator, ReturnRange, WeightBounds, Weights, lp, normalized,
 };
 use nalgebra::{DMatrix, DVector};
 
@@ -114,7 +114,7 @@ impl Allocation for MinCvar {
                 return Err(CutupError::InvalidConfig {
                     field: "target_return",
                     value: target,
-                })
+                });
             }
             Some(target) => {
                 let mu = returns.row_mean().transpose();
@@ -312,9 +312,11 @@ mod tests {
                     .target_return(target),
             )
             .unwrap();
-        assert!(weights
-            .iter()
-            .all(|&w| (0.1 - 1e-15..=0.5 + 1e-15).contains(&w)));
+        assert!(
+            weights
+                .iter()
+                .all(|&w| (0.1 - 1e-15..=0.5 + 1e-15).contains(&w))
+        );
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - target).abs() < 1e-15, "{achieved} vs {target}");
     }

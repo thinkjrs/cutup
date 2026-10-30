@@ -151,7 +151,7 @@ impl BlackLitterman {
                     return Err(CutupError::InvalidConfig {
                         field: "view_variance",
                         value: omega,
-                    })
+                    });
                 }
                 // Idzorek's confidence, in the closed form of Walters (2014). At 0, or so close
                 // that (1 − c)/c overflows, the view's variance is infinite and it has no effect.
@@ -166,7 +166,7 @@ impl BlackLitterman {
                     return Err(CutupError::InvalidConfig {
                         field: "view_confidence",
                         value: c,
-                    })
+                    });
                 }
             };
             views.push((p, view.q, scale, given));

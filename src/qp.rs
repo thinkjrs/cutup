@@ -1,8 +1,8 @@
 //! Convex quadratic programs: equality-constrained ones solved by the null-space method, and
 //! ones with bounded variables solved by a primal active-set method on top of it.
 
-use crate::eigen::SymmetricEigen;
 use crate::CutupError;
+use crate::eigen::SymmetricEigen;
 use nalgebra::{DMatrix, DVector};
 
 /// A solution `x` and its constraint multipliers `λ`.

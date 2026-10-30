@@ -2,8 +2,8 @@
 //! mean-variance.
 
 use crate::{
-    interior_start, lp, normalized, qp, CutupError, ReturnRange, TargetProblem, WeightBounds,
-    Weights,
+    CutupError, ReturnRange, TargetProblem, WeightBounds, Weights, interior_start, lp, normalized,
+    qp,
 };
 use nalgebra::{DMatrix, DVector};
 
@@ -75,7 +75,7 @@ impl Trading {
                 return Err(CutupError::DimensionMismatch {
                     expected: n,
                     actual: costs.len(),
-                })
+                });
             }
             Some(Costs::PerAsset(costs)) => {
                 for &cost in costs {
