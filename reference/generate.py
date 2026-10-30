@@ -44,9 +44,12 @@ cutup's implementation:
 * Risk parity: cyclical coordinate descent (Griveau-Billion et al., 2013) run to
   convergence, a different algorithm from cutup's Newton iteration. Expected errors are
   decided by finding a long-only portfolio with zero variance with scipy.optimize.nnls.
-* HRP: PyPortfolioOpt's HRPOpt, for each linkage method.
+* HRP: PyPortfolioOpt's HRPOpt, for each linkage method. With shrinkage or regularization,
+  riskfolio-lib's HCPortfolio with model="HRP", rm="MV" and leaf_order=False, cross-checked
+  against HRPOpt's clustering and bisection on the adjusted covariance.
 * HERC: riskfolio-lib's HCPortfolio with model="HERC" and rm="MV", for each linkage
-  method and for fixed numbers of clusters.
+  method, for fixed numbers of clusters, and with shrinkage or regularization. Shrinkage
+  goes through riskfolio-lib's method_cov="shrunk", and regularization through custom_cov.
 * Turnover and transaction costs, for min variance and mean-variance from current weights
   w₀: support enumeration with five states per asset, at its lower bound, at its upper
   bound, at w₀, or free above or below w₀, where the cost cᵢ|wᵢ − w₀ᵢ| is the linear term
@@ -88,6 +91,8 @@ import pandas as pd
 import riskfolio
 from pypfopt import EfficientCVaR, EfficientFrontier, HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel, market_implied_prior_returns
+import scipy.cluster.hierarchy as sch
+import scipy.spatial.distance as ssd
 from scipy.optimize import linprog, nnls
 
 from fixtures import FIXTURES, write_json
@@ -443,9 +448,65 @@ def min_variance_return(cov: np.ndarray, mu: np.ndarray) -> float:
     return float(min_variance(cov) @ mu)
 
 
-def hrp(returns: np.ndarray, linkage: str) -> np.ndarray:
-    weights = HRPOpt(pd.DataFrame(returns)).optimize(linkage_method=linkage)
-    return np.array([weights[i] for i in range(returns.shape[1])])
+def hrp(returns: np.ndarray, linkage: str, params: dict) -> np.ndarray:
+    if "shrinkage" not in params and "regularization" not in params:
+        weights = HRPOpt(pd.DataFrame(returns)).optimize(linkage_method=linkage)
+        return np.array([weights[i] for i in range(returns.shape[1])])
+    weights = hierarchical(returns, "HRP", linkage, None, params)
+    cross_check_hrp(returns, linkage, params, weights)
+    return weights
+
+
+def hierarchical_covariance(returns: np.ndarray, params: dict) -> dict:
+    """riskfolio-lib's arguments for the covariance that splits HRP's or HERC's weight.
+
+    Shrinkage alone goes through its own method_cov="shrunk", sklearn's ShrunkCovariance.
+    That divides by n rather than n − 1, which HRP and HERC weights don't depend on, since
+    scaling the covariance scales every variance alike. Regularization does depend on scale,
+    so it goes through custom_cov, with the n − 1 matrix adjusted in NumPy.
+    """
+    shrinkage, regularization = params.get("shrinkage"), params.get("regularization")
+    if shrinkage is None and regularization is None:
+        return {}
+    if regularization is None:
+        return {"method_cov": "shrunk", "dict_cov": {"alpha": shrinkage}}
+    cov = adjust(np.cov(returns, rowvar=False), shrinkage, regularization)
+    columns = [str(i) for i in range(returns.shape[1])]
+    return {"method_cov": "custom_cov", "custom_cov": pd.DataFrame(cov, index=columns, columns=columns)}
+
+
+def hierarchical(returns: np.ndarray, model: str, linkage: str, clusters: int | None, params: dict) -> np.ndarray:
+    """riskfolio-lib's HRP or HERC with rm="MV". The hierarchy is built on the Pearson
+    correlations of the returns, whatever the covariance. leaf_order=False keeps the tree's
+    plain leaf order, which cutup and HRPOpt use; riskfolio-lib's default reorders the
+    leaves with SciPy's optimal_leaf_ordering, which moves HRP's midpoint splits."""
+    data = pd.DataFrame(returns, columns=[str(i) for i in range(returns.shape[1])])
+    weights = riskfolio.HCPortfolio(returns=data).optimization(
+        model=model,
+        codependence="pearson",
+        rm="MV",
+        linkage=linkage,
+        k=clusters,
+        leaf_order=False,
+        **hierarchical_covariance(returns, params),
+    )
+    return weights["weights"].to_numpy()
+
+
+def cross_check_hrp(returns: np.ndarray, linkage: str, params: dict, weights: np.ndarray) -> None:
+    """Checks HRP with an adjusted covariance against PyPortfolioOpt's HRPOpt steps.
+    HRPOpt(returns, cov_matrix=..) ignores cov_matrix when it has the returns, and given
+    only the covariance it clusters on that covariance's correlations, so its clustering
+    and bisection are run here on the sample correlations and the adjusted covariance."""
+    frame = pd.DataFrame(returns)
+    corr = frame.corr()
+    distance = np.sqrt(np.clip((1.0 - corr) / 2.0, a_min=0.0, a_max=1.0))
+    clusters = sch.linkage(ssd.squareform(distance, checks=False), linkage)
+    order = corr.index[HRPOpt._get_quasi_diag(clusters)].tolist()
+    cov = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
+    theirs = HRPOpt._raw_hrp_allocation(pd.DataFrame(cov), order).sort_index().to_numpy()
+    if np.abs(theirs - weights).max() > 1e-12:
+        raise ValueError(f"PyPortfolioOpt disagrees: {theirs} vs {weights}")
 
 
 def risk_parity(cov: np.ndarray, budgets: np.ndarray) -> np.ndarray | str:
@@ -483,12 +544,8 @@ def risk_parity(cov: np.ndarray, budgets: np.ndarray) -> np.ndarray | str:
     raise ValueError("coordinate descent didn't converge")
 
 
-def herc(returns: np.ndarray, linkage: str, clusters: int | None) -> np.ndarray:
-    data = pd.DataFrame(returns, columns=[str(i) for i in range(returns.shape[1])])
-    weights = riskfolio.HCPortfolio(returns=data).optimization(
-        model="HERC", codependence="pearson", rm="MV", linkage=linkage, k=clusters
-    )
-    return weights["weights"].to_numpy()
+def herc(returns: np.ndarray, linkage: str, clusters: int | None, params: dict) -> np.ndarray:
+    return hierarchical(returns, "HERC", linkage, clusters, params)
 
 
 def kinked(
@@ -814,9 +871,9 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             budgets = np.array(params.get("risk_budgets", np.ones(returns.shape[1])), dtype=float)
             return risk_parity(adjusted, budgets)
         case "hrp":
-            return hrp(returns, params.get("linkage", "single"))
+            return hrp(returns, params.get("linkage", "single"), params)
         case "herc":
-            return herc(returns, params.get("linkage", "single"), params.get("clusters"))
+            return herc(returns, params.get("linkage", "single"), params.get("clusters"), params)
         case "black_litterman":
             return black_litterman(adjusted, params)
         case "min_cvar":
@@ -1050,6 +1107,21 @@ def cases(datasets: dict) -> list[dict]:
         out.append({"dataset": "prices10x60", "method": "herc", "params": {"clusters": clusters}, "tolerance": clustering})
     out.append({"dataset": "prices10x60", "method": "herc", "params": {"linkage": "ward", "clusters": 5}, "tolerance": clustering})
     out.append({"dataset": "two_blocks5", "method": "herc", "params": {"linkage": "average", "clusters": 3}, "tolerance": clustering})
+
+    # HRP and HERC with an adjusted covariance, which changes the risk split but not the
+    # hierarchy. Full shrinkage leaves every variance equal, and rank_deficient6's singular
+    # covariance is no obstacle, since neither method inverts it.
+    for name in ["two_blocks5", "prices10x60", "near_singular4", "rank_deficient6"]:
+        for lam in [0.1, 0.5, 1.0]:
+            out.append({"dataset": name, "method": "hrp", "params": {"shrinkage": lam}, "tolerance": clustering})
+            out.append({"dataset": name, "method": "herc", "params": {"shrinkage": lam}, "tolerance": clustering})
+    out.append({"dataset": "prices10x60", "method": "hrp", "params": {"linkage": "ward", "shrinkage": 0.3}, "tolerance": clustering})
+    out.append({"dataset": "prices10x60", "method": "herc", "params": {"clusters": 4, "shrinkage": 0.3}, "tolerance": clustering})
+    out.append({"dataset": "two_blocks5", "method": "herc", "params": {"linkage": "average", "clusters": 3, "shrinkage": 0.3}, "tolerance": clustering})
+    for name in ["prices10x60", "near_singular4"]:
+        for method in ["hrp", "herc"]:
+            out.append({"dataset": name, "method": method, "params": {"regularization": 1e-5}, "tolerance": clustering})
+            out.append({"dataset": name, "method": method, "params": {"shrinkage": 0.2, "regularization": 1e-6}, "tolerance": clustering})
 
     # Rebalancing from current weights: turnover caps that bind and don't, a turnover penalty,
     # transaction costs, uniform and per asset, with bounds the current weights break, long-

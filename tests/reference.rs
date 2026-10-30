@@ -131,11 +131,15 @@ fn linkage(params: &Value) -> Linkage {
 }
 
 fn hrp(params: &Value) -> Hrp {
-    Hrp::default().linkage(linkage(params))
+    Hrp::default()
+        .linkage(linkage(params))
+        .covariance(covariance_config(params))
 }
 
 fn herc(params: &Value) -> Herc {
-    let method = Herc::default().linkage(linkage(params));
+    let method = Herc::default()
+        .linkage(linkage(params))
+        .covariance(covariance_config(params));
     match params["clusters"].as_u64() {
         Some(k) => method.clusters(k as usize),
         None => method,
