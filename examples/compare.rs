@@ -26,7 +26,7 @@ fn main() -> Result<(), CutupError> {
         [139.5, 1595.0, 236.0, 675.0],
         [141.0, 1615.0, 241.0, 680.0],
     ];
-    let allocator = Returns::from_prices(&prices)?;
+    let data = Returns::from_prices(&prices)?;
 
     let methods: Vec<(&str, Box<dyn Allocation>)> = vec![
         ("Equal weight", Box::new(EqualWeight)),
@@ -91,7 +91,7 @@ fn main() -> Result<(), CutupError> {
     );
     for (name, method) in &methods {
         print!("{name:<width$}");
-        for w in &allocator.allocate(method)? {
+        for w in &data.allocate(method)? {
             print!("{w:>9.3}");
         }
         println!();

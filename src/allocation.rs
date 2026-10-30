@@ -7,8 +7,7 @@ use crate::{
 };
 use nalgebra::DVector;
 
-/// An allocation method: anything that turns a [`Returns`]'s returns into
-/// [`Weights`].
+/// An allocation method: anything that turns [`Returns`] into [`Weights`].
 ///
 /// Each built-in method is a value that implements it, built from `default()` and chained
 /// settings, and run with [`Returns::allocate`]:

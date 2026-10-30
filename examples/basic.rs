@@ -19,8 +19,8 @@ fn main() -> Result<(), CutupError> {
         141.0, 1615.0, 241.0, 680.0,
     ];
 
-    let allocator = Returns::from_prices_flat(&prices, 4)?;
-    let weights = allocator.allocate(&MinVariance::default())?;
+    let data = Returns::from_prices_flat(&prices, 4)?;
+    let weights = data.allocate(&MinVariance::default())?;
     println!("Long-only min variance weights: {:?}", weights.as_slice());
 
     Ok(())

@@ -740,6 +740,8 @@ impl Returns {
     ///
     /// Use this when you already have returns (for example log returns, or returns net of a
     /// benchmark). They are used as-is; at least two rows are needed for a sample covariance.
+    /// For prices, use [`Returns::from_prices`]: in 0.1, `PortfolioAllocator::new` took prices,
+    /// but this takes returns, and prices passed here are treated as returns.
     ///
     /// Rows can be arrays, `Vec`s or slices: anything that is `AsRef<[f64]>`. For one flat,
     /// row-major slice, use [`Returns::new_flat`].

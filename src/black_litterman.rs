@@ -43,8 +43,8 @@ use nalgebra::{DMatrix, DVector};
 ///   prior, 0.05 by default.
 ///
 /// Σ is the covariance of the [`Returns`], after the same adjustments as the allocation methods:
-/// use the same shrinkage here as in the method you pass the returns to. Returns are in the
-/// returns' units and period, so the views and the risk-free rate must be too. `δ` is
+/// use the same shrinkage here as in the method you pass the returns to. Expected returns are
+/// in the units and period of the data, so the views and the risk-free rate must be too. `δ` is
 /// the same whatever the period, since the mean and the variance of returns both scale with
 /// it: 2.5 is a common choice.
 #[derive(Debug, Clone, PartialEq)]
