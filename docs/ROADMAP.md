@@ -156,7 +156,8 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
       MSRV set here holds through 0.3.x and into 1.0.
     - **What 1.85 brings:**
       - edition 2024, the current edition, which 1.85 is the first to support.
-        Let chains (`if let Some(x) = a && x > 0`) need it too, from 1.88 on;
+        Let chains (`if let Some(x) = a && x > 0`) need it too, but they're
+        stable only from 1.88, so they stay off-limits while the MSRV is 1.85;
       - `#[expect(lint)]` (1.81), which warns once the lint it silences stops
         firing, in place of `#[allow]`;
       - the MSRV-aware dependency resolver (1.84), which picks dependency
@@ -168,12 +169,15 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
     - **No dependency forces it:** the highest requirement among them is
       `matrixmultiply`'s 1.75.
     - **The work:**
-      - `rust-version = "1.85"` and `edition = "2024"` in `Cargo.toml`;
+      - `rust-version = "1.85.0"` and `edition = "2024"` in `Cargo.toml`;
       - the CI matrix moves from 1.78.0 to 1.85.0;
-      - the step in `tests.yml` that regenerates `Cargo.lock` for the 1.78 job
-        goes. 1.78 couldn't read the version 4 lockfile format that newer
-        Cargo writes, and 1.85 can; the edition 2024 resolver keeps the locked
-        versions buildable on the MSRV;
+      - the step in `tests.yml` that regenerated `Cargo.lock` for the 1.78 job
+        if it was in the version 4 format goes. 1.78 can't read version 4 and
+        1.85 can. The committed lockfile is version 3, so the step never ran.
+        The edition 2024 resolver doesn't change a committed lockfile; it
+        picks versions that build on the MSRV only when the lockfile is
+        regenerated or updated, so the 1.85 job is what catches a locked
+        version that needs a newer Rust;
       - `cargo fix --edition` for the mechanical changes, in a commit of
         their own so the review can skip it;
       - the README's MSRV, and a CHANGELOG entry.
@@ -240,6 +244,10 @@ No API changes.
 
 ### Tooling
 
+- **Lint jobs in CI:** clippy and `cargo doc` with `-D warnings` on stable
+  and the MSRV, and `cargo fmt --check` on stable. The release rule above is
+  checked by hand until then. Beta and nightly stay test-only, so a new lint
+  there doesn't fail a PR.
 - **`#![forbid(unsafe_code)]`.** cutup has no `unsafe` code; this makes that
   a guarantee.
 - **`cargo-semver-checks` in CI** on every PR to `main`, so 0.3.x stays

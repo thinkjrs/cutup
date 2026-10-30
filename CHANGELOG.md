@@ -23,9 +23,8 @@ All notable changes to this project are documented here. The format follows
   like every other setter. Its fields are private: set them through the setters, and read
   them with the new `lambda()` and `epsilon()`, which return the λ and ε set, or `None`.
 - The minimum supported Rust version is 1.85, up from 1.78, and the crate is on edition 2024.
-  Edition 2024 resolves dependencies to versions that support the declared `rust-version`,
-  so the committed `Cargo.lock` builds on 1.85, and CI tests on 1.85 rather than 1.78. A
-  crate's edition doesn't affect the crates that depend on it.
+  CI tests on 1.85 rather than 1.78. A crate's edition doesn't affect the crates that depend
+  on it.
 - `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
   written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
   `default()` still works.
