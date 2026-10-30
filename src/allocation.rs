@@ -939,6 +939,13 @@ impl Allocation for RiskParity {
 /// negative, and sum to 1. A half with zero variance, such as a perfectly hedged pair, takes
 /// its parent's whole weight and leaves the other half at zero, as in `HRPOpt`.
 ///
+/// [Shrinkage and regularization](Hrp::covariance) adjust the variances that split the weight,
+/// but not the correlations the hierarchy is built on, so [`Hrp::cluster_order`] doesn't
+/// change. That's what riskfolio-lib's `HCPortfolio.optimization(model="HRP", rm="MV",
+/// method_cov="shrunk", leaf_order=False)` does, and results match it up to floating-point
+/// rounding. Full shrinkage leaves every variance equal and every covariance zero, which gives
+/// equal weights.
+///
 /// Like the original algorithm and `HRPOpt`, the result can depend on the order of the input
 /// columns. The hierarchy puts the lower-indexed subtree on the left, and the bisection splits
 /// the ordered list at its midpoint rather than at the tree's branches, so reordering the
@@ -947,7 +954,10 @@ impl Allocation for RiskParity {
 ///
 /// # Errors
 ///
-/// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+/// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance, even with
+///   shrinkage or regularization: a constant asset has no correlation to cluster on.
+/// * [`CutupError::InvalidConfig`] if the shrinkage is outside `[0, 1]` or the regularization
+///   is negative or not finite.
 /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
 ///   variances are too small.
 ///
@@ -970,10 +980,11 @@ impl Allocation for RiskParity {
 /// assert!(weights.iter().all(|&w| w >= 0.0));
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct Hrp {
     linkage: Linkage,
+    covariance: CovarianceConfig,
 }
 
 impl Hrp {
@@ -983,6 +994,8 @@ impl Hrp {
         self.linkage = linkage;
         self
     }
+
+    covariance_setters!();
 
     /// Returns the order HRP puts the assets in: the leaves of the clustering hierarchy, left
     /// to right, so that correlated assets sit next to each other.
@@ -1029,7 +1042,7 @@ impl Hrp {
 
 impl Allocation for Hrp {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        data.hrp(self.linkage)
+        data.hrp(self.linkage, &self.covariance)
     }
 }
 
@@ -1068,11 +1081,19 @@ const HERC_MAX_CLUSTERS: usize = 10;
 /// never negative, and sum to 1. Two branches that both have zero risk split their weight
 /// evenly.
 ///
+/// [Shrinkage and regularization](Herc::covariance) adjust the cluster risks and the
+/// inverse-variance weights within clusters, but not the correlations the hierarchy is built
+/// on, so the clusters, and the number the gap statistic chooses, don't change. That's what
+/// riskfolio-lib does with `method_cov="shrunk"`, and results match it up to floating-point
+/// rounding.
+///
 /// # Errors
 ///
 /// * [`CutupError::InvalidConfig`] if the number of clusters is 0 or more than the number of
-///   assets, or, when the number isn't set, the most clusters is 0.
-/// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
+///   assets, or, when the number isn't set, the most clusters is 0; or if the shrinkage is
+///   outside `[0, 1]` or the regularization is negative or not finite.
+/// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance, even with
+///   shrinkage or regularization: a constant asset has no correlation to cluster on.
 /// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
 ///   variances are too small.
 ///
@@ -1099,12 +1120,13 @@ const HERC_MAX_CLUSTERS: usize = 10;
 /// assert!((ratio(1, 3) - inverse_variance[1] / inverse_variance[3]).abs() < 1e-12);
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Herc {
     linkage: Linkage,
     clusters: Option<usize>,
     max_clusters: usize,
+    covariance: CovarianceConfig,
 }
 
 impl Default for Herc {
@@ -1113,6 +1135,7 @@ impl Default for Herc {
             linkage: Linkage::default(),
             clusters: None,
             max_clusters: HERC_MAX_CLUSTERS,
+            covariance: CovarianceConfig::default(),
         }
     }
 }
@@ -1138,10 +1161,17 @@ impl Herc {
         self.max_clusters = max_clusters;
         self
     }
+
+    covariance_setters!();
 }
 
 impl Allocation for Herc {
     fn allocate(&self, data: &PortfolioAllocator) -> Result<Weights, CutupError> {
-        data.herc(self.linkage, self.clusters, self.max_clusters)
+        data.herc(
+            self.linkage,
+            self.clusters,
+            self.max_clusters,
+            &self.covariance,
+        )
     }
 }

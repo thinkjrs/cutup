@@ -1098,6 +1098,8 @@ proptest! {
         check!(low_rate().allow_short());
         check!(MaxDiversification::default());
         check!(RiskParity::default());
+        check!(Hrp::default());
+        check!(Herc::default());
 
         let model = BlackLitterman::new(vec![1.0 / n as f64; n], 2.5);
         let expected = model.clone().covariance(config).expected_returns(&allocator);
@@ -1119,13 +1121,32 @@ proptest! {
     }
 
     #[test]
+    fn hrp_with_full_shrinkage_is_equal_weight(returns in returns(), linkage in 0usize..4) {
+        prop_assume!(well_posed(&returns));
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        // Every variance is equal and every covariance zero, so each half's variance is
+        // inversely proportional to its size, and each split shares weight by size.
+        let hrp = Hrp::default().linkage(LINKAGES[linkage]);
+        let weights = allocator.allocate(&hrp.clone().shrinkage(1.0)).unwrap();
+        let equal = allocator.allocate(&EqualWeight).unwrap();
+        for (h, e) in weights.iter().zip(&equal) {
+            prop_assert!((h - e).abs() < 1e-12, "{weights:?}");
+        }
+        // No adjustment is the same as no covariance setting at all.
+        prop_assert_eq!(
+            allocator.allocate(&hrp.clone().covariance(CovarianceConfig::default())),
+            allocator.allocate(&hrp)
+        );
+    }
+
+    #[test]
     fn herc_with_one_cluster_is_inverse_variance(returns in returns(), linkage in 0usize..4) {
         prop_assume!(well_posed(&returns));
         let allocator = PortfolioAllocator::from_returns(returns).unwrap();
         let herc = Herc::default().linkage(LINKAGES[linkage]);
         // One cluster holds every asset, so its weight is shared by inverse variance. A gap
         // statistic allowed at most one cluster must choose it.
-        let one = allocator.allocate(&herc.clusters(1)).unwrap();
+        let one = allocator.allocate(&herc.clone().clusters(1)).unwrap();
         prop_assert_eq!(&allocator.allocate(&herc.max_clusters(1)).unwrap(), &one);
         let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
         for (h, i) in one.iter().zip(&inverse_variance) {

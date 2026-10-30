@@ -1307,31 +1307,31 @@ impl PortfolioAllocator {
         Ok(cluster::hierarchy(&distance, linkage).leaf_order())
     }
 
-    /// Returns the variance of the inverse-variance portfolio over `cluster`.
-    fn cluster_variance(&self, cluster: &[usize]) -> f64 {
-        let weights = self.inverse_variance_weights(cluster);
+    /// Returns the variance under `cov` of the inverse-variance portfolio over `cluster`.
+    fn cluster_variance(cov: &DMatrix<f64>, cluster: &[usize]) -> f64 {
+        let weights = PortfolioAllocator::inverse_variance_weights(cov, cluster);
         let mut variance = 0.0;
         for (a, &i) in cluster.iter().enumerate() {
             for (b, &j) in cluster.iter().enumerate() {
-                variance += weights[a] * weights[b] * self.cov_matrix[(i, j)];
+                variance += weights[a] * weights[b] * cov[(i, j)];
             }
         }
         variance
     }
 
-    /// Returns the inverse-variance weights of the assets in `cluster`, summing to 1.
-    fn inverse_variance_weights(&self, cluster: &[usize]) -> Vec<f64> {
-        let inverse: Vec<f64> = cluster
-            .iter()
-            .map(|&i| 1.0 / self.cov_matrix[(i, i)])
-            .collect();
+    /// Returns the inverse-variance weights under `cov` of the assets in `cluster`, summing
+    /// to 1.
+    fn inverse_variance_weights(cov: &DMatrix<f64>, cluster: &[usize]) -> Vec<f64> {
+        let inverse: Vec<f64> = cluster.iter().map(|&i| 1.0 / cov[(i, i)]).collect();
         let total: f64 = inverse.iter().sum();
         inverse.iter().map(|w| w / total).collect()
     }
 
-    /// The HRP weights, for [`Hrp`].
-    fn hrp(&self, linkage: Linkage) -> Result<Weights, CutupError> {
+    /// The HRP weights, for [`Hrp`]. The hierarchy is built on the sample correlations, and
+    /// `covariance` adjusts only the variances that split the weight.
+    fn hrp(&self, linkage: Linkage, covariance: &CovarianceConfig) -> Result<Weights, CutupError> {
         let order = self.cluster_order(linkage)?;
+        let cov = self.adjusted_covariance(covariance)?;
         let mut weights = vec![1.0; order.len()];
         // Clusters are ranges of positions in `order`, bisected one level at a time.
         let mut ranges = vec![(0, order.len())];
@@ -1351,8 +1351,8 @@ impl PortfolioAllocator {
                 let right = &order[pair[1].0..pair[1].1];
                 // On singular data rounding can leave a variance slightly below zero, which
                 // would push α outside [0, 1] and short the other half.
-                let v_left = self.cluster_variance(left).max(0.0);
-                let v_right = self.cluster_variance(right).max(0.0);
+                let v_left = PortfolioAllocator::cluster_variance(&cov, left).max(0.0);
+                let v_right = PortfolioAllocator::cluster_variance(&cov, right).max(0.0);
                 // Two halves with zero variance each (perfectly hedged pairs) split evenly.
                 let alpha = match v_left + v_right {
                     total if total > 0.0 => 1.0 - v_left / total,
@@ -1370,12 +1370,14 @@ impl PortfolioAllocator {
         Ok(Weights(weights))
     }
 
-    /// The HERC weights, for [`Herc`].
+    /// The HERC weights, for [`Herc`]. The hierarchy and the cut are built on the sample
+    /// correlations, and `covariance` adjusts only the variances that split the weight.
     fn herc(
         &self,
         linkage: Linkage,
         clusters: Option<usize>,
         max_clusters: usize,
+        covariance: &CovarianceConfig,
     ) -> Result<Weights, CutupError> {
         let n = self.cov_matrix.ncols();
         if let Some(k) = clusters.filter(|k| !(1..=n).contains(k)) {
@@ -1390,9 +1392,12 @@ impl PortfolioAllocator {
                 value: 0.0,
             });
         }
+        // Shrinkage would give a constant asset a variance, but not a correlation to cluster
+        // on, so this comes first.
         if let Some(asset) = self.find_zero_variance() {
             return Err(CutupError::ZeroVariance { asset });
         }
+        let cov = self.adjusted_covariance(covariance)?;
         let distance = self.correlation_distance()?;
         let hierarchy = cluster::hierarchy(&distance, linkage);
         let k = clusters.unwrap_or_else(|| hierarchy.cluster_count(&distance, max_clusters));
@@ -1403,7 +1408,7 @@ impl PortfolioAllocator {
         for (node, members) in &clusters {
             // On singular data rounding can leave a variance slightly below zero, which would
             // push α outside [0, 1].
-            risk[*node] = self.cluster_variance(members).max(0.0);
+            risk[*node] = PortfolioAllocator::cluster_variance(&cov, members).max(0.0);
         }
         // The last k − 1 merges are the ones above the cut. A node's children always have
         // lower ids, so one pass up sums each branch's risk and one pass down splits weight.
@@ -1426,7 +1431,8 @@ impl PortfolioAllocator {
 
         let mut weights = vec![0.0; n];
         for (node, members) in &clusters {
-            for (&i, w) in members.iter().zip(self.inverse_variance_weights(members)) {
+            let within = PortfolioAllocator::inverse_variance_weights(&cov, members);
+            for (&i, w) in members.iter().zip(within) {
                 weights[i] = branch_weight[*node] * w;
             }
         }
@@ -4267,8 +4273,8 @@ mod tests {
         let weights = allocator.allocate(&Herc::default().clusters(2)).unwrap();
         let (a, b) = ([0, 2, 4], [1, 3]);
         let (risk_a, risk_b) = (
-            allocator.cluster_variance(&a),
-            allocator.cluster_variance(&b),
+            PortfolioAllocator::cluster_variance(&allocator.cov_matrix, &a),
+            PortfolioAllocator::cluster_variance(&allocator.cov_matrix, &b),
         );
         let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
         assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
@@ -4342,6 +4348,73 @@ mod tests {
                 .unwrap()
                 .allocate(&Herc::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
+        );
+    }
+
+    #[test]
+    fn test_hierarchical_covariance_errors() {
+        // Shrinkage gives a constant asset a variance, but it still has no correlation to
+        // cluster on.
+        let returns = dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01];
+        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        assert_eq!(
+            allocator.allocate(&Hrp::default().shrinkage(0.5)),
+            Err(CutupError::ZeroVariance { asset: 1 })
+        );
+        assert_eq!(
+            allocator.allocate(&Herc::default().regularization(1e-6)),
+            Err(CutupError::ZeroVariance { asset: 1 })
+        );
+        // Even when every asset is constant, which shrinkage alone can't fix.
+        let constant = PortfolioAllocator::from_returns(dmatrix![0.0, 0.0; 0.0, 0.0]).unwrap();
+        assert_eq!(
+            constant.allocate(&Hrp::default().shrinkage(0.5)),
+            Err(CutupError::ZeroVariance { asset: 0 })
+        );
+        assert_eq!(
+            constant.allocate(&Herc::default().shrinkage(0.5)),
+            Err(CutupError::ZeroVariance { asset: 0 })
+        );
+
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let invalid = Err(CutupError::InvalidConfig {
+            field: "shrinkage",
+            value: 1.5,
+        });
+        assert_eq!(allocator.allocate(&Hrp::default().shrinkage(1.5)), invalid);
+        assert_eq!(allocator.allocate(&Herc::default().shrinkage(1.5)), invalid);
+        // The number of clusters is checked first.
+        assert_eq!(
+            allocator.allocate(&Herc::default().clusters(0).shrinkage(1.5)),
+            Err(CutupError::InvalidConfig {
+                field: "clusters",
+                value: 0.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_hierarchical_covariance_changes_only_the_risk_split() {
+        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let shrunk = allocator
+            .adjusted_covariance(&CovarianceConfig::default().shrinkage(0.4))
+            .unwrap();
+        let weights = allocator
+            .allocate(&Herc::default().clusters(2).shrinkage(0.4))
+            .unwrap();
+        // The same blocks as without shrinkage, split by their shrunk risk.
+        let (a, b) = ([0, 2, 4], [1, 3]);
+        let (risk_a, risk_b) = (
+            PortfolioAllocator::cluster_variance(&shrunk, &a),
+            PortfolioAllocator::cluster_variance(&shrunk, &b),
+        );
+        let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
+        assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
+        let within = PortfolioAllocator::inverse_variance_weights(&shrunk, &a);
+        assert!((weights[0] / weights[4] - within[0] / within[2]).abs() < 1e-12);
+        assert_ne!(
+            weights,
+            allocator.allocate(&Herc::default().clusters(2)).unwrap()
         );
     }
 }
