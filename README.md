@@ -79,6 +79,8 @@ Add `cutup` to your `Cargo.toml`:
 cutup = "0.2.8"
 ```
 
+cutup 0.3 needs Rust 1.85 or newer. cutup 0.2 needs 1.78.
+
 ## Usage
 
 Pass a matrix of prices (rows: time, columns: assets) to `PortfolioAllocator::from_prices`. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
@@ -243,13 +245,14 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
-Three other changes in 0.3.0:
+Four other changes in 0.3.0:
 
 | 0.2 | 0.3 |
 | --- | --- |
 | `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
 | `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
+| Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 
 ## Testing
 

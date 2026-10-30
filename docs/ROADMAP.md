@@ -171,7 +171,9 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
       - `rust-version = "1.85"` and `edition = "2024"` in `Cargo.toml`;
       - the CI matrix moves from 1.78.0 to 1.85.0;
       - the step in `tests.yml` that regenerates `Cargo.lock` for the 1.78 job
-        goes, since the resolver now handles it;
+        goes. 1.78 couldn't read the version 4 lockfile format that newer
+        Cargo writes, and 1.85 can; the edition 2024 resolver keeps the locked
+        versions buildable on the MSRV;
       - `cargo fix --edition` for the mechanical changes, in a commit of
         their own so the review can skip it;
       - the README's MSRV, and a CHANGELOG entry.
@@ -233,10 +235,6 @@ No API changes.
   named after the old methods were renamed in 0.3.0.
 - **`docs/PLAN.md`:** fold anything still open into this document, and keep
   the rest as history or remove it.
-- **MSRV clippy:** clippy passes on the MSRV as well as on stable. 1.78's
-  `box_default` lints in `examples/compare.rs` and `tests/integration.rs` go
-  away with the move to 1.85, or get fixed here if 1.85's clippy flags them
-  too.
 - **`Cargo.toml`:** a description and keywords that fit a portfolio
   allocation crate.
 
