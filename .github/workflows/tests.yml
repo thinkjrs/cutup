@@ -11,15 +11,6 @@ jobs:
     strategy:
       matrix:
         rust: [1.85.0, stable, beta, nightly]
-        include:
-          - rust: stable
-            cache-key: stable
-          - rust: beta
-            cache-key: beta
-          - rust: nightly
-            cache-key: nightly
-          - rust: 1.85.0
-            cache-key: msrv
 
     steps:
       - name: Checkout repository
@@ -38,9 +29,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ matrix.cache-key }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ matrix.rust }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ matrix.cache-key }}-${{ runner.os }}-
+            cargo-${{ matrix.rust }}-${{ runner.os }}-
 
       - name: Run tests
         run: cargo test --all-features --all-targets
