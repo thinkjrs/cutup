@@ -20,16 +20,15 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// ```
 /// use cutup::{MinCvar, PortfolioAllocator, WeightBounds};
-/// use nalgebra::dmatrix;
 ///
-/// let returns = dmatrix![
-///      0.010, -0.020,  0.005;
-///     -0.004,  0.015,  0.002;
-///      0.007,  0.003, -0.006;
-///      0.002, -0.001,  0.004;
-///     -0.003,  0.006,  0.001
+/// let returns = [
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// let method = MinCvar::default().confidence(0.8).bounds(WeightBounds::uniform(0.0, 0.6));
 /// let weights = allocator.allocate(&method)?;
@@ -195,11 +194,10 @@ impl PortfolioAllocator {
     ///
     /// ```
     /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
     ///
     /// // Losses of 4%, 2%, 1% and a 1% gain: the worst half averages 3%.
-    /// let returns = dmatrix![-0.04; -0.02; -0.01; 0.01];
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let returns = [[-0.04], [-0.02], [-0.01], [0.01]];
+    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
     /// let cvar = allocator.cvar(&vec![1.0].into(), 0.5)?;
     /// assert!((cvar - 0.03).abs() < 1e-15);
     /// # Ok::<(), cutup::CutupError>(())
@@ -254,7 +252,7 @@ mod tests {
     use nalgebra::dmatrix;
 
     fn allocator() -> PortfolioAllocator {
-        PortfolioAllocator::from_returns(dmatrix![
+        PortfolioAllocator::returns_matrix(dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
@@ -270,7 +268,7 @@ mod tests {
     #[test]
     fn cvar_averages_the_tail() {
         let allocator =
-            PortfolioAllocator::from_returns(dmatrix![-0.04; -0.02; -0.01; 0.01]).unwrap();
+            PortfolioAllocator::returns_matrix(dmatrix![-0.04; -0.02; -0.01; 0.01]).unwrap();
         let one = Weights::from(vec![1.0]);
         // Half of four scenarios: the two worst, 4% and 2%.
         assert!((allocator.cvar(&one, 0.5).unwrap() - 0.03).abs() < 1e-15);
@@ -324,7 +322,7 @@ mod tests {
     #[test]
     fn lower_bounds_summing_to_one_fix_the_weights() {
         // 1 − 0.9 rounds to just under 0.1, the first asset's room above its floor.
-        let allocator = PortfolioAllocator::from_returns(dmatrix![
+        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
              0.010, -0.020;
             -0.004,  0.015;
              0.007,  0.003
@@ -388,7 +386,7 @@ mod tests {
             -0.01926202201906651, 0.001966764898914833, 0.0, 0.0, -0.025971216114690443, 0.0,
             0.0, -0.02382851848035964, 0.0013794705644694543, -0.004727636380476252,
         ];
-        let allocator = PortfolioAllocator::from_returns(DMatrix::from_vec(9, 6, data)).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(DMatrix::from_vec(9, 6, data)).unwrap();
         let beta = 0.8549681742164362;
         let weights = allocator
             .allocate(&MinCvar::default().confidence(beta))

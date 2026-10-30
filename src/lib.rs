@@ -75,16 +75,16 @@ use std::ops::Index;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CutupError {
-    /// The input matrix has no columns, so there are no assets to allocate to.
+    /// The input has no assets to allocate to: no rows, empty rows, or zero assets.
     NoAssets,
-    /// The input matrix has too few rows (observations) for a sample covariance.
+    /// The input has too few rows (observations) for a sample covariance.
     InsufficientData {
         /// Minimum number of rows needed.
         required: usize,
         /// Number of rows supplied.
         actual: usize,
     },
-    /// A value in the input matrix is NaN or infinite.
+    /// A value in the input is NaN or infinite.
     NonFiniteValue {
         /// Row of the offending value.
         row: usize,
@@ -114,6 +114,17 @@ pub enum CutupError {
         field: &'static str,
         /// The value supplied.
         value: f64,
+    },
+    /// A row of the input has a different number of values from the first row. For flat
+    /// input, the last row is short: the number of values isn't a multiple of the number of
+    /// assets.
+    RaggedRows {
+        /// The row, counting from 0.
+        row: usize,
+        /// The number of values in the first row, or the number of assets for flat input.
+        expected: usize,
+        /// The number of values in this row.
+        actual: usize,
     },
     /// A configuration vector doesn't have one entry per asset.
     DimensionMismatch {
@@ -199,7 +210,7 @@ pub enum CutupError {
 impl fmt::Display for CutupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CutupError::NoAssets => write!(f, "input has no assets (zero columns)"),
+            CutupError::NoAssets => write!(f, "input has no assets"),
             CutupError::InsufficientData { required, actual } => write!(
                 f,
                 "input has {actual} rows but at least {required} are required"
@@ -224,6 +235,14 @@ impl fmt::Display for CutupError {
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
             }
+            CutupError::RaggedRows {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "row {row} has {actual} values but the first row has {expected}"
+            ),
             CutupError::DimensionMismatch { expected, actual } => write!(
                 f,
                 "expected one value per asset ({expected}) but got {actual}"
@@ -304,15 +323,14 @@ impl std::error::Error for CutupError {}
 ///
 /// ```
 /// use cutup::{EqualWeight, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
-/// let prices = dmatrix![
-///     100.0, 200.0;
-///     110.0, 190.0;
-///     121.0, 209.0
+/// let prices = [
+///    [100.0, 200.0],
+///    [110.0, 190.0],
+///    [121.0, 209.0],
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_prices(prices)?.allocate(&EqualWeight)?;
+/// let weights = PortfolioAllocator::from_prices(&prices)?.allocate(&EqualWeight)?;
 ///
 /// assert_eq!(weights.len(), 2);
 /// assert_eq!(weights[0], 0.5);
@@ -378,6 +396,14 @@ impl From<Weights> for Vec<f64> {
     }
 }
 
+/// The weights as a column vector, with the `nalgebra` feature.
+#[cfg(feature = "nalgebra")]
+impl From<Weights> for DVector<f64> {
+    fn from(weights: Weights) -> Self {
+        DVector::from_vec(weights.0)
+    }
+}
+
 /// Weights in column order, for an [`Allocation`] of your own. [`PortfolioAllocator::allocate`]
 /// checks there's one finite weight per asset, but not the sum, so make them sum to 1, as every
 /// method in this crate does.
@@ -397,7 +423,6 @@ impl From<Vec<f64>> for Weights {
 ///
 /// ```
 /// use cutup::{CovarianceConfig, MinVariance, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// let config = CovarianceConfig::default().shrinkage(0.1).regularization(1e-8);
 /// assert_eq!((config.lambda(), config.epsilon()), (Some(0.1), Some(1e-8)));
@@ -405,10 +430,10 @@ impl From<Vec<f64>> for Weights {
 ///
 /// // Full shrinkage leaves every asset with the same variance and no correlation, so the
 /// // minimum variance portfolio holds them equally.
-/// let allocator = PortfolioAllocator::from_returns(dmatrix![
-///      0.010,  0.021,  0.004;
-///     -0.008, -0.015, -0.002;
-///      0.004,  0.009,  0.006
+/// let allocator = PortfolioAllocator::from_returns(&[
+///      [ 0.010,  0.021,  0.004],
+///      [-0.008, -0.015, -0.002],
+///      [ 0.004,  0.009,  0.006],
 /// ])?;
 /// let full = CovarianceConfig::default().shrinkage(1.0);
 /// let weights = allocator.allocate(&MinVariance::default().covariance(full))?;
@@ -620,21 +645,22 @@ pub struct PortfolioAllocator {
 }
 
 impl PortfolioAllocator {
-    /// Creates a new `PortfolioAllocator` from a matrix of asset prices.
+    /// Creates a new `PortfolioAllocator` from asset prices, one row per period and one value
+    /// per asset in each row.
     ///
     /// Prices are converted to simple returns, `r_t = p_t / p_{t-1} - 1`, before the covariance
-    /// matrix is computed. This matches `pandas.DataFrame.pct_change`. A price matrix with `T`
-    /// rows produces `T - 1` rows of returns, so at least three rows of prices are needed for a
+    /// matrix is computed. This matches `pandas.DataFrame.pct_change`. `T` rows of prices
+    /// produce `T - 1` rows of returns, so at least three rows of prices are needed for a
     /// sample covariance.
     ///
-    /// # Arguments
-    ///
-    /// * `prices` - A `DMatrix<f64>` representing asset price history (rows: time, columns: assets).
+    /// Rows can be arrays, `Vec`s or slices: anything that is `AsRef<[f64]>`. For one flat,
+    /// row-major slice, use [`PortfolioAllocator::from_prices_flat`].
     ///
     /// # Errors
     ///
-    /// * [`CutupError::NoAssets`] if `prices` has no columns.
-    /// * [`CutupError::InsufficientData`] if `prices` has fewer than three rows.
+    /// * [`CutupError::NoAssets`] if there are no rows, or the rows are empty.
+    /// * [`CutupError::RaggedRows`] if a row has a different length from the first.
+    /// * [`CutupError::InsufficientData`] if there are fewer than three rows.
     /// * [`CutupError::NonFiniteValue`] if any price is NaN or infinite.
     /// * [`CutupError::NonPositivePrice`] if any price is zero or negative.
     /// * [`CutupError::NonFiniteCovariance`] if the returns are too extreme for a finite covariance.
@@ -643,38 +669,79 @@ impl PortfolioAllocator {
     ///
     /// ```
     /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
     ///
-    /// let prices = dmatrix![
-    ///     100.0, 200.0, 300.0;
-    ///     110.0, 210.0, 310.0;
-    ///     120.0, 220.0, 320.0
+    /// let prices = [
+    ///    [100.0, 200.0, 300.0],
+    ///    [110.0, 210.0, 310.0],
+    ///    [120.0, 220.0, 320.0],
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::from_prices(prices)?;
+    /// let allocator = PortfolioAllocator::from_prices(&prices)?;
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
-    pub fn from_prices(prices: DMatrix<f64>) -> Result<Self, CutupError> {
-        PortfolioAllocator::validate(&prices, 3)?;
-        if let Some((row, col)) = PortfolioAllocator::find(&prices, |p| p <= 0.0) {
-            return Err(CutupError::NonPositivePrice { row, col });
-        }
-        PortfolioAllocator::build(PortfolioAllocator::compute_returns(&prices))
+    pub fn from_prices<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, CutupError> {
+        PortfolioAllocator::prices_matrix(PortfolioAllocator::rows_matrix(rows)?)
     }
 
-    /// Creates a new `PortfolioAllocator` from a matrix of asset returns.
+    /// Creates a new `PortfolioAllocator` from asset prices in one flat slice, row-major: the
+    /// first `assets` values are the first period's prices, the next `assets` the second's,
+    /// and so on. This is the layout of a JavaScript `Float64Array` or a CSV read row by row.
+    /// Otherwise it's the same as [`PortfolioAllocator::from_prices`].
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::NoAssets`] if `assets` is 0.
+    /// * [`CutupError::RaggedRows`] if the number of values isn't a multiple of `assets`.
+    /// * Otherwise as for [`PortfolioAllocator::from_prices`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    ///
+    /// let prices = [
+    ///     100.0, 200.0, 300.0,
+    ///     110.0, 210.0, 310.0,
+    ///     120.0, 220.0, 320.0,
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_prices_flat(&prices, 3)?;
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn from_prices_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
+        PortfolioAllocator::prices_matrix(PortfolioAllocator::flat_matrix(values, assets)?)
+    }
+
+    /// Creates a new `PortfolioAllocator` from a matrix of asset prices (rows: time, columns:
+    /// assets), with the `nalgebra` feature. Otherwise it's the same as
+    /// [`PortfolioAllocator::from_prices`].
+    ///
+    /// The feature tracks the nalgebra version cutup depends on, so a nalgebra release that
+    /// isn't compatible can change which `DMatrix` this takes.
+    ///
+    /// # Errors
+    ///
+    /// As for [`PortfolioAllocator::from_prices`], except [`CutupError::RaggedRows`], which a
+    /// matrix can't have.
+    #[cfg(feature = "nalgebra")]
+    pub fn from_prices_matrix(prices: DMatrix<f64>) -> Result<Self, CutupError> {
+        PortfolioAllocator::prices_matrix(prices)
+    }
+
+    /// Creates a new `PortfolioAllocator` from asset returns, one row per period and one value
+    /// per asset in each row.
     ///
     /// Use this when you already have returns (for example log returns, or returns net of a
     /// benchmark). They are used as-is; at least two rows are needed for a sample covariance.
     ///
-    /// # Arguments
-    ///
-    /// * `returns` - A `DMatrix<f64>` of periodic asset returns (rows: time, columns: assets).
+    /// Rows can be arrays, `Vec`s or slices: anything that is `AsRef<[f64]>`. For one flat,
+    /// row-major slice, use [`PortfolioAllocator::from_returns_flat`].
     ///
     /// # Errors
     ///
-    /// * [`CutupError::NoAssets`] if `returns` has no columns.
-    /// * [`CutupError::InsufficientData`] if `returns` has fewer than two rows.
+    /// * [`CutupError::NoAssets`] if there are no rows, or the rows are empty.
+    /// * [`CutupError::RaggedRows`] if a row has a different length from the first.
+    /// * [`CutupError::InsufficientData`] if there are fewer than two rows.
     /// * [`CutupError::NonFiniteValue`] if any return is NaN or infinite.
     /// * [`CutupError::NonFiniteCovariance`] if the returns are too extreme for a finite covariance.
     ///
@@ -682,18 +749,119 @@ impl PortfolioAllocator {
     ///
     /// ```
     /// use cutup::PortfolioAllocator;
-    /// use nalgebra::dmatrix;
     ///
-    /// let returns = dmatrix![
-    ///      0.010, -0.020,  0.005;
-    ///     -0.004,  0.015,  0.002;
-    ///      0.007,  0.003, -0.006
+    /// let returns = [
+    ///    [0.010, -0.020, 0.005],
+    ///    [-0.004, 0.015, 0.002],
+    ///    [0.007, 0.003, -0.006],
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
+    ///
+    /// // Rows built at runtime work the same way.
+    /// let rows: Vec<Vec<f64>> = returns.iter().map(|row| row.to_vec()).collect();
+    /// let from_vecs = PortfolioAllocator::from_returns(&rows)?;
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
-    pub fn from_returns(returns: DMatrix<f64>) -> Result<Self, CutupError> {
+    pub fn from_returns<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, CutupError> {
+        PortfolioAllocator::returns_matrix(PortfolioAllocator::rows_matrix(rows)?)
+    }
+
+    /// Creates a new `PortfolioAllocator` from asset returns in one flat slice, row-major: the
+    /// first `assets` values are the first period's returns, the next `assets` the second's,
+    /// and so on. This is the layout of a JavaScript `Float64Array` or a CSV read row by row.
+    /// Otherwise it's the same as [`PortfolioAllocator::from_returns`].
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::NoAssets`] if `assets` is 0.
+    /// * [`CutupError::RaggedRows`] if the number of values isn't a multiple of `assets`.
+    /// * Otherwise as for [`PortfolioAllocator::from_returns`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::PortfolioAllocator;
+    ///
+    /// let returns = [
+    ///     0.010, -0.020, 0.005,
+    ///     -0.004, 0.015, 0.002,
+    ///     0.007, 0.003, -0.006,
+    /// ];
+    ///
+    /// let allocator = PortfolioAllocator::from_returns_flat(&returns, 3)?;
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn from_returns_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
+        PortfolioAllocator::returns_matrix(PortfolioAllocator::flat_matrix(values, assets)?)
+    }
+
+    /// Creates a new `PortfolioAllocator` from a matrix of asset returns (rows: time, columns:
+    /// assets), with the `nalgebra` feature. Otherwise it's the same as
+    /// [`PortfolioAllocator::from_returns`].
+    ///
+    /// The feature tracks the nalgebra version cutup depends on, so a nalgebra release that
+    /// isn't compatible can change which `DMatrix` this takes.
+    ///
+    /// # Errors
+    ///
+    /// As for [`PortfolioAllocator::from_returns`], except [`CutupError::RaggedRows`], which a
+    /// matrix can't have.
+    #[cfg(feature = "nalgebra")]
+    pub fn from_returns_matrix(returns: DMatrix<f64>) -> Result<Self, CutupError> {
+        PortfolioAllocator::returns_matrix(returns)
+    }
+
+    /// Builds the matrix for rows, checking that they all have the first row's length.
+    fn rows_matrix<R: AsRef<[f64]>>(rows: &[R]) -> Result<DMatrix<f64>, CutupError> {
+        let assets = rows.first().map_or(0, |row| row.as_ref().len());
+        if let Some((row, values)) = rows
+            .iter()
+            .map(AsRef::as_ref)
+            .enumerate()
+            .find(|(_, values)| values.len() != assets)
+        {
+            return Err(CutupError::RaggedRows {
+                row,
+                expected: assets,
+                actual: values.len(),
+            });
+        }
+        Ok(DMatrix::from_fn(rows.len(), assets, |t, j| {
+            rows[t].as_ref()[j]
+        }))
+    }
+
+    /// Builds the matrix for flat, row-major values, checking that they fill whole rows.
+    fn flat_matrix(values: &[f64], assets: usize) -> Result<DMatrix<f64>, CutupError> {
+        if assets == 0 {
+            return Err(CutupError::NoAssets);
+        }
+        if values.len() % assets != 0 {
+            return Err(CutupError::RaggedRows {
+                row: values.len() / assets,
+                expected: assets,
+                actual: values.len() % assets,
+            });
+        }
+        Ok(DMatrix::from_row_slice(
+            values.len() / assets,
+            assets,
+            values,
+        ))
+    }
+
+    /// The allocator for a matrix of prices.
+    fn prices_matrix(prices: DMatrix<f64>) -> Result<Self, CutupError> {
+        PortfolioAllocator::validate(&prices, 3)?;
+        if let Some((row, col)) = PortfolioAllocator::find(&prices, |p| p <= 0.0) {
+            return Err(CutupError::NonPositivePrice { row, col });
+        }
+        PortfolioAllocator::build(PortfolioAllocator::compute_returns(&prices))
+    }
+
+    /// The allocator for a matrix of returns.
+    fn returns_matrix(returns: DMatrix<f64>) -> Result<Self, CutupError> {
         PortfolioAllocator::validate(&returns, 2)?;
         PortfolioAllocator::build(returns)
     }
@@ -711,15 +879,14 @@ impl PortfolioAllocator {
     ///
     /// ```
     /// use cutup::{MinVariance, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
     ///
-    /// let returns = dmatrix![
-    ///      0.010, -0.020,  0.005;
-    ///     -0.004,  0.015,  0.002;
-    ///      0.007,  0.003, -0.006;
-    ///      0.002, -0.001,  0.004
+    /// let returns = [
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
     /// ];
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
     ///
     /// let long_only = allocator.allocate(&MinVariance::default())?;
     /// let long_short = allocator.allocate(&MinVariance::default().allow_short())?;
@@ -1754,20 +1921,125 @@ mod tests {
     fn test_from_prices_matches_from_returns() {
         let prices = full_rank_prices();
         let returns = PortfolioAllocator::compute_returns(&prices);
-        let from_prices = PortfolioAllocator::from_prices(prices).unwrap();
-        let from_returns = PortfolioAllocator::from_returns(returns).unwrap();
+        let from_prices = PortfolioAllocator::prices_matrix(prices).unwrap();
+        let from_returns = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(from_prices.cov_matrix, from_returns.cov_matrix);
     }
 
     #[test]
+    fn test_plain_inputs_match_the_matrix() {
+        let rows = [
+            [0.01, -0.02, 0.005],
+            [-0.004, 0.015, 0.002],
+            [0.007, 0.003, -0.006],
+        ];
+        let flat: Vec<f64> = rows.iter().flatten().copied().collect();
+        let matrix = DMatrix::from_fn(3, 3, |t, j| rows[t][j]);
+        let expected = PortfolioAllocator::returns_matrix(matrix.clone()).unwrap();
+        let vecs: Vec<Vec<f64>> = rows.iter().map(|row| row.to_vec()).collect();
+        let slices: Vec<&[f64]> = rows.iter().map(|row| row.as_slice()).collect();
+        for allocator in [
+            PortfolioAllocator::from_returns(&rows).unwrap(),
+            PortfolioAllocator::from_returns(&vecs).unwrap(),
+            PortfolioAllocator::from_returns(&slices).unwrap(),
+            PortfolioAllocator::from_returns_flat(&flat, 3).unwrap(),
+        ] {
+            assert_eq!(allocator.returns, expected.returns);
+            assert_eq!(allocator.cov_matrix, expected.cov_matrix);
+        }
+
+        let prices = [[100.0, 50.0], [102.0, 49.0], [101.0, 51.5]];
+        let flat: Vec<f64> = prices.iter().flatten().copied().collect();
+        let expected =
+            PortfolioAllocator::prices_matrix(DMatrix::from_fn(3, 2, |t, j| prices[t][j])).unwrap();
+        for allocator in [
+            PortfolioAllocator::from_prices(&prices).unwrap(),
+            PortfolioAllocator::from_prices_flat(&flat, 2).unwrap(),
+        ] {
+            assert_eq!(allocator.returns, expected.returns);
+            assert_eq!(allocator.cov_matrix, expected.cov_matrix);
+        }
+    }
+
+    #[test]
+    fn test_plain_inputs_reject_bad_shapes() {
+        let ragged = vec![vec![0.01, 0.02], vec![0.03], vec![0.04, 0.05]];
+        let error = Some(CutupError::RaggedRows {
+            row: 1,
+            expected: 2,
+            actual: 1,
+        });
+        assert_eq!(PortfolioAllocator::from_returns(&ragged).err(), error);
+        assert_eq!(PortfolioAllocator::from_prices(&ragged).err(), error);
+        // Seven values don't fill rows of three: the third row has one.
+        let flat = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07];
+        let error = Some(CutupError::RaggedRows {
+            row: 2,
+            expected: 3,
+            actual: 1,
+        });
+        assert_eq!(PortfolioAllocator::from_returns_flat(&flat, 3).err(), error);
+        assert_eq!(PortfolioAllocator::from_prices_flat(&flat, 3).err(), error);
+
+        let none: [[f64; 2]; 0] = [];
+        let empty: [[f64; 0]; 3] = [[], [], []];
+        for result in [
+            PortfolioAllocator::from_returns(&none),
+            PortfolioAllocator::from_returns(&empty),
+            PortfolioAllocator::from_prices(&none),
+            PortfolioAllocator::from_returns_flat(&flat, 0),
+            PortfolioAllocator::from_returns_flat(&[], 0),
+            PortfolioAllocator::from_prices_flat(&flat, 0),
+        ] {
+            assert_eq!(result.err(), Some(CutupError::NoAssets));
+        }
+        // No values for a known number of assets is too few rows, not too few assets.
+        assert_eq!(
+            PortfolioAllocator::from_returns_flat(&[], 3).err(),
+            Some(CutupError::InsufficientData {
+                required: 2,
+                actual: 0
+            })
+        );
+        assert_eq!(
+            CutupError::RaggedRows {
+                row: 1,
+                expected: 2,
+                actual: 1
+            }
+            .to_string(),
+            "row 1 has 1 values but the first row has 2"
+        );
+    }
+
+    #[cfg(feature = "nalgebra")]
+    #[test]
+    fn test_matrix_inputs_and_vector_weights() {
+        let prices = dmatrix![100.0, 50.0; 102.0, 49.0; 101.0, 51.5];
+        let allocator = PortfolioAllocator::from_prices_matrix(prices.clone()).unwrap();
+        assert_eq!(
+            allocator.cov_matrix,
+            PortfolioAllocator::prices_matrix(prices)
+                .unwrap()
+                .cov_matrix
+        );
+        let returns = allocator.returns.clone();
+        let weights = PortfolioAllocator::from_returns_matrix(returns)
+            .unwrap()
+            .allocate(&EqualWeight)
+            .unwrap();
+        assert_eq!(DVector::from(weights), DVector::from_element(2, 0.5));
+    }
+
+    #[test]
     fn test_from_prices_rejects_no_assets() {
-        let result = PortfolioAllocator::from_prices(DMatrix::zeros(3, 0));
+        let result = PortfolioAllocator::prices_matrix(DMatrix::zeros(3, 0));
         assert_eq!(result.err(), Some(CutupError::NoAssets));
     }
 
     #[test]
     fn test_from_prices_rejects_too_few_rows() {
-        let result = PortfolioAllocator::from_prices(dmatrix![100.0, 200.0; 110.0, 210.0]);
+        let result = PortfolioAllocator::prices_matrix(dmatrix![100.0, 200.0; 110.0, 210.0]);
         assert_eq!(
             result.err(),
             Some(CutupError::InsufficientData {
@@ -1779,7 +2051,7 @@ mod tests {
 
     #[test]
     fn test_from_returns_rejects_too_few_rows() {
-        let result = PortfolioAllocator::from_returns(dmatrix![0.01, -0.02]);
+        let result = PortfolioAllocator::returns_matrix(dmatrix![0.01, -0.02]);
         assert_eq!(
             result.err(),
             Some(CutupError::InsufficientData {
@@ -1794,7 +2066,7 @@ mod tests {
         let mut prices = full_rank_prices();
         prices[(2, 1)] = f64::NAN;
         prices[(4, 0)] = f64::INFINITY;
-        let result = PortfolioAllocator::from_prices(prices);
+        let result = PortfolioAllocator::prices_matrix(prices);
         assert_eq!(
             result.err(),
             Some(CutupError::NonFiniteValue { row: 2, col: 1 })
@@ -1803,7 +2075,8 @@ mod tests {
 
     #[test]
     fn test_from_returns_rejects_non_finite_values() {
-        let result = PortfolioAllocator::from_returns(dmatrix![0.01, 0.02; f64::NEG_INFINITY, 0.0]);
+        let result =
+            PortfolioAllocator::returns_matrix(dmatrix![0.01, 0.02; f64::NEG_INFINITY, 0.0]);
         assert_eq!(
             result.err(),
             Some(CutupError::NonFiniteValue { row: 1, col: 0 })
@@ -1814,14 +2087,14 @@ mod tests {
     fn test_from_prices_rejects_non_positive_prices() {
         let mut prices = full_rank_prices();
         prices[(3, 2)] = 0.0;
-        let result = PortfolioAllocator::from_prices(prices.clone());
+        let result = PortfolioAllocator::prices_matrix(prices.clone());
         assert_eq!(
             result.err(),
             Some(CutupError::NonPositivePrice { row: 3, col: 2 })
         );
 
         prices[(1, 0)] = -5.0;
-        let result = PortfolioAllocator::from_prices(prices);
+        let result = PortfolioAllocator::prices_matrix(prices);
         assert_eq!(
             result.err(),
             Some(CutupError::NonPositivePrice { row: 1, col: 0 })
@@ -1831,7 +2104,7 @@ mod tests {
     #[test]
     fn test_from_returns_accepts_negative_returns() {
         let returns = dmatrix![-0.5, 0.01; 0.2, -0.03; -0.1, 0.02];
-        assert!(PortfolioAllocator::from_returns(returns).is_ok());
+        assert!(PortfolioAllocator::returns_matrix(returns).is_ok());
     }
 
     #[test]
@@ -1936,8 +2209,8 @@ mod tests {
         let mut scaled = prices.clone();
         scaled.column_mut(1).scale_mut(1000.0);
 
-        let base = PortfolioAllocator::from_prices(prices).unwrap();
-        let rescaled = PortfolioAllocator::from_prices(scaled).unwrap();
+        let base = PortfolioAllocator::prices_matrix(prices).unwrap();
+        let rescaled = PortfolioAllocator::prices_matrix(scaled).unwrap();
         assert!(base.cov_matrix.clone().try_inverse().is_some());
 
         assert_weights_close(
@@ -1963,7 +2236,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let ew_weights = allocator.allocate(&EqualWeight).unwrap();
         assert_eq!(ew_weights.as_slice(), &[1.0 / 3.0; 3]);
     }
@@ -1975,7 +2248,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -1985,7 +2258,7 @@ mod tests {
 
     #[test]
     fn test_min_variance_errors_on_non_finite_covariance() {
-        let mut allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let mut allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
 
         // Unreachable through the constructors, which reject non-finite input; this guards the
         // pseudo-inverse, whose SVD would otherwise never converge.
@@ -2017,7 +2290,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let hrp_weights = allocator.allocate(&Hrp::default()).unwrap();
         assert_eq!(hrp_weights.len(), 3);
         assert!((hrp_weights.iter().sum::<f64>() - 1.0).abs() < 1e-6);
@@ -2031,7 +2304,7 @@ mod tests {
             102.0, 202.0, 302.0, 402.0;
             103.0, 203.0, 303.0, 403.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let weights = allocator.allocate(&Hrp::default()).unwrap();
 
         assert_eq!(weights.len(), 4);
@@ -2050,7 +2323,7 @@ mod tests {
             101.0, 50.0, 20.2;
             104.0, 50.0, 20.9
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 1 })
@@ -2068,13 +2341,13 @@ mod tests {
     fn test_constructors_reject_overflowing_covariance() {
         let prices = dmatrix![100.0, 50.0; 1e300, 51.0; 100.0, 50.5];
         assert_eq!(
-            PortfolioAllocator::from_prices(prices).err(),
+            PortfolioAllocator::prices_matrix(prices).err(),
             Some(CutupError::NonFiniteCovariance)
         );
 
         let returns = dmatrix![1e200, 0.01; -1e200, 0.02];
         assert_eq!(
-            PortfolioAllocator::from_returns(returns).err(),
+            PortfolioAllocator::returns_matrix(returns).err(),
             Some(CutupError::NonFiniteCovariance)
         );
     }
@@ -2083,7 +2356,7 @@ mod tests {
     fn test_rounding_noise_counts_as_zero_variance() {
         // Constant returns whose computed variance is rounding noise rather than exactly zero.
         let allocator =
-            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+            PortfolioAllocator::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
@@ -2097,7 +2370,7 @@ mod tests {
 
         // Prices growing at a constant 10% per period.
         let prices = dmatrix![100.0, 50.0; 110.0, 49.0; 121.0, 51.5; 133.1, 51.0];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
@@ -2106,7 +2379,7 @@ mod tests {
 
     #[test]
     fn test_min_variance_rejects_invalid_config() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let cases = [
             (Some(-1e-3), None, "regularization"),
             (Some(f64::NAN), None, "regularization"),
@@ -2172,7 +2445,7 @@ mod tests {
 
     #[test]
     fn test_full_shrinkage_gives_equal_weights() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.0);
         let weights = allocator
             .allocate(
@@ -2191,8 +2464,8 @@ mod tests {
         let returns = PortfolioAllocator::compute_returns(&full_rank_prices());
         let config = CovarianceConfig::default().shrinkage(0.5);
 
-        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
-        let scaled = PortfolioAllocator::from_returns(returns * 100.0).unwrap();
+        let base = PortfolioAllocator::returns_matrix(returns.clone()).unwrap();
+        let scaled = PortfolioAllocator::returns_matrix(returns * 100.0).unwrap();
 
         assert_weights_close(
             &base
@@ -2224,7 +2497,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2238,7 +2511,7 @@ mod tests {
     #[test]
     fn test_min_variance_two_asset_closed_form() {
         let prices = full_rank_prices().columns(0, 2).into_owned();
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2251,7 +2524,7 @@ mod tests {
 
     #[test]
     fn test_min_variance_beats_equal_weight() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let min_variance = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2271,7 +2544,7 @@ mod tests {
             130.0, 1510.0, 220.0, 610.0;
             128.0, 1530.0, 225.0, 630.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2287,7 +2560,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_target_return() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let mu = sample_mean(&allocator);
         let target = mu.mean() * 1.5;
         let weights = allocator
@@ -2301,7 +2574,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_target_at_min_variance_return_is_min_variance() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let min_variance = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2317,7 +2590,7 @@ mod tests {
     #[test]
     fn test_mean_variance_risk_aversion_first_order_condition() {
         // At the optimum of μᵀw − (γ/2) wᵀΣw subject to 1ᵀw = 1, μ − γΣw is a multiple of 1.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let gamma = 3.0;
         let weights = allocator
             .allocate(&MeanVariance::risk_aversion(gamma).allow_short())
@@ -2331,7 +2604,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_high_risk_aversion_approaches_min_variance() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let weights = allocator
             .allocate(&MeanVariance::risk_aversion(1e9).allow_short())
             .unwrap();
@@ -2346,7 +2619,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_equal_expected_returns() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let flat = DVector::from_element(3, 0.01);
 
         // With nothing to choose between on return, risk aversion reduces to minimum variance.
@@ -2369,7 +2642,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_defaults_to_sample_mean() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let default = MeanVariance::risk_aversion(5.0);
         let explicit = default
             .clone()
@@ -2382,7 +2655,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_applies_covariance_config() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let plain = MeanVariance::risk_aversion(5.0);
         let shrunk = plain
             .clone()
@@ -2404,7 +2677,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_rejects_invalid_config() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         for gamma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             match allocator.allocate(&MeanVariance::risk_aversion(gamma).allow_short()) {
                 Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_aversion"),
@@ -2437,7 +2710,7 @@ mod tests {
     #[test]
     fn test_mean_variance_rejects_zero_variance() {
         let allocator =
-            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+            PortfolioAllocator::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator
                 .allocate(&MeanVariance::risk_aversion(1.0).allow_short())
@@ -2457,7 +2730,7 @@ mod tests {
 
     #[test]
     fn test_min_variance_finds_zero_variance_portfolio_on_singular_covariance() {
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2469,7 +2742,7 @@ mod tests {
     fn test_min_variance_anti_correlated_pair() {
         // 1 lies in Σ's null space, so 1ᵀΣ⁺1 is rounding noise; the hedged pair has zero variance.
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
@@ -2537,7 +2810,7 @@ mod tests {
                 0.034392821320402465,
             ],
         );
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let config = CovarianceConfig::default().shrinkage(0.9832865013278819);
         let weights = allocator
             .allocate(
@@ -2564,7 +2837,7 @@ mod tests {
         // Shrinkage lets constant assets past the zero-variance check, but shrinking a zero
         // covariance leaves it zero.
         let returns = dmatrix![0.01, 0.02; 0.01, 0.02; 0.01, 0.02];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let shrunk = CovarianceConfig::default().shrinkage(0.5);
         let mean_variance = MeanVariance::risk_aversion(10.0).covariance(shrunk.clone());
         let max_sharpe = MaxSharpe::default().covariance(shrunk.clone());
@@ -2607,7 +2880,7 @@ mod tests {
                 0.04613336884944048,
             ],
         );
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         // numpy.linalg.pinv's minimum-norm solution of the same KKT system, in correlation
         // units u = diag(σ)w.
         let expected = Weights(vec![0.275093649, 0.331571165, 0.219203116, 0.174132070]);
@@ -2633,7 +2906,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_weights_close(
             &allocator.allocate(&MinVariance::default()).unwrap(),
             &allocator
@@ -2647,7 +2920,7 @@ mod tests {
     fn test_long_only_min_variance_drops_the_hedge() {
         // Unconstrained, (2, −1) hedges the collinear pair to zero variance. Long-only, any mix
         // of the two has more variance than the first asset alone.
-        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(collinear_returns()).unwrap();
         assert!(
             allocator
                 .allocate(&MinVariance::default().allow_short())
@@ -2663,14 +2936,14 @@ mod tests {
     #[test]
     fn test_long_only_min_variance_on_singular_covariance() {
         // [4/7, 0, 3/7] is long-only with zero variance, so the minimum is zero.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let weights = allocator.allocate(&MinVariance::default()).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(portfolio_variance(&allocator, &weights) < 1e-18);
 
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_weights_close(
             &allocator.allocate(&MinVariance::default()).unwrap(),
             &Weights(vec![0.5, 0.5]),
@@ -2694,7 +2967,7 @@ mod tests {
             let assets = 4 + case % 9;
             let rows = 2 + case % (assets - 1);
             let returns = DMatrix::from_fn(rows, assets, |_, _| next());
-            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
             let weights = allocator.allocate(&MinVariance::default()).unwrap();
             let w = DVector::from_column_slice(weights.as_slice());
             let marginal = &allocator.cov_matrix * &w;
@@ -2710,7 +2983,7 @@ mod tests {
 
     #[test]
     fn test_long_only_min_variance_rejects_bad_input() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
             allocator.allocate(&MinVariance::default().covariance(config.clone())),
@@ -2721,7 +2994,7 @@ mod tests {
         );
 
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&MinVariance::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
@@ -2739,7 +3012,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let expected = dvector![0.001, 0.002, 0.003];
         for config in [
             MeanVariance::risk_aversion(100.0),
@@ -2754,7 +3027,7 @@ mod tests {
 
     #[test]
     fn test_long_only_mean_variance_at_the_extremes() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
 
         // With almost no aversion to risk, everything goes to the highest expected return.
@@ -2776,7 +3049,7 @@ mod tests {
 
     #[test]
     fn test_long_only_mean_variance_hits_the_target() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         for target in [0.001, 0.0012, 0.0025, 0.0029] {
             let config = MeanVariance::target_return(target).expected_returns(expected.as_slice());
@@ -2795,7 +3068,7 @@ mod tests {
     fn test_a_range_narrower_than_rounding_snaps_to_the_nearer_end() {
         // Returns of 100, 100 + 5e-11 and 100: the whole range is within rounding, and a
         // target at its top is only reached by the second asset.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = MeanVariance::target_return(100.0 + 5e-11)
             .expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0].as_slice());
         assert_weights_close(
@@ -2807,7 +3080,7 @@ mod tests {
 
     #[test]
     fn test_long_only_mean_variance_rejects_unreachable_targets() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = MeanVariance::target_return(0.004)
             .expected_returns(dvector![0.001, 0.003, 0.002].as_slice());
         assert_eq!(
@@ -2848,7 +3121,7 @@ mod tests {
 
     #[test]
     fn test_bounded_min_variance_water_fills() {
-        let allocator = PortfolioAllocator::from_returns(uncorrelated_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(uncorrelated_returns()).unwrap();
         let config = CovarianceConfig::default();
         assert_weights_close(
             &allocator
@@ -2895,7 +3168,7 @@ mod tests {
 
     #[test]
     fn test_bounds_that_dont_bind_change_nothing() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(0.2);
         let loose = WeightBounds::uniform(0.0, 1.0);
         assert_eq!(
@@ -2926,7 +3199,7 @@ mod tests {
 
     #[test]
     fn test_bounded_mean_variance_targets_the_reachable_range() {
-        let allocator = PortfolioAllocator::from_returns(uncorrelated_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(uncorrelated_returns()).unwrap();
         let mu = dvector![0.003, 0.003, 0.001];
         let bounds = WeightBounds::uniform(0.0, 0.6);
 
@@ -2969,7 +3242,7 @@ mod tests {
 
     #[test]
     fn test_invalid_bounds_are_rejected() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let n = full_rank_prices().ncols();
         let config = CovarianceConfig::default();
         let solve = |bounds: WeightBounds| {
@@ -3050,7 +3323,7 @@ mod tests {
         }
 
         // Within rounding of a budget of 1 is feasible: ten caps of 0.1 sum to just under it.
-        let ten = PortfolioAllocator::from_returns(DMatrix::from_fn(12, 10, |i, j| {
+        let ten = PortfolioAllocator::returns_matrix(DMatrix::from_fn(12, 10, |i, j| {
             ((i * 7 + j * 3) % 11) as f64 * 0.001 - 0.005 + (i == j) as u8 as f64 * 0.01
         }))
         .unwrap();
@@ -3066,7 +3339,7 @@ mod tests {
 
     #[test]
     fn test_long_only_mean_variance_target_edge_cases() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
 
         // A target a rounding error above the highest expected return is that return.
         let expected = dvector![0.001, 0.003, 0.002];
@@ -3091,7 +3364,7 @@ mod tests {
 
         // An unreachable target is reported before the covariance is checked.
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let config = MeanVariance::target_return(1.0);
         assert!(matches!(
             allocator.allocate(&config),
@@ -3110,7 +3383,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let config = MaxSharpe::default()
             .risk_free_rate(0.0005)
             .expected_returns(dvector![0.001, 0.002, 0.003].as_slice());
@@ -3121,7 +3394,7 @@ mod tests {
 
     #[test]
     fn test_long_only_max_sharpe_risk_free_rate_limits() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         let at = |rate: f64| {
             let config = MaxSharpe::default()
@@ -3155,7 +3428,7 @@ mod tests {
 
     #[test]
     fn test_long_only_max_sharpe_extreme_returns() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let at = |rate: f64, expected: DVector<f64>| {
             let config = MaxSharpe::default()
                 .risk_free_rate(rate)
@@ -3194,7 +3467,7 @@ mod tests {
             -0.01, -0.03, 0.0;
             0.0, 0.01, -0.02
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let cov = &allocator.cov_matrix;
         let sigma = cov.diagonal().map(f64::sqrt);
         let correlation = DMatrix::from_fn(3, 3, |i, j| cov[(i, j)] / (sigma[i] * sigma[j]));
@@ -3241,7 +3514,7 @@ mod tests {
         };
         for s in [1e-4, 1e-8, 1e-12] {
             let returns = dmatrix![1.0, s; -1.0, s; 1.0, -s; -1.0, -s];
-            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
             let inverse_volatility = allocator.allocate(&InverseVolatility).unwrap();
             let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
             close(
@@ -3285,7 +3558,7 @@ mod tests {
     #[test]
     fn test_max_diversification_on_singular_covariance() {
         // [4/7, 0, 3/7] is long-only with zero variance, so the ratio has no upper bound.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         assert_eq!(
             allocator.allocate(&MaxDiversification::default()),
             Err(CutupError::SingularCovariance)
@@ -3301,14 +3574,14 @@ mod tests {
 
         // The collinear pair's zero-variance hedge shorts one asset, so long-only the ratio
         // is bounded: every mix of perfectly correlated assets has a ratio of 1.
-        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(collinear_returns()).unwrap();
         let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
     }
 
     #[test]
     fn test_max_diversification_rejects_bad_input() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
             allocator.allocate(&MaxDiversification::default().covariance(config.clone())),
@@ -3319,7 +3592,7 @@ mod tests {
         );
 
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&MaxDiversification::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
@@ -3330,7 +3603,7 @@ mod tests {
     fn test_long_only_max_sharpe_unbounded_on_singular_covariance() {
         // [4/7, 0, 3/7] is long-only with zero variance, and with these expected returns its
         // excess return is positive, so the Sharpe ratio grows without limit.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let config = MaxSharpe::default().expected_returns(dvector![0.01, 0.0, 0.01].as_slice());
         assert_eq!(allocator.allocate(&config), Err(CutupError::Unbounded));
 
@@ -3343,7 +3616,7 @@ mod tests {
 
     #[test]
     fn test_long_only_max_sharpe_rejects_bad_input() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = MaxSharpe::default().risk_free_rate(f64::NAN);
         assert!(matches!(
             allocator.allocate(&config),
@@ -3366,7 +3639,7 @@ mod tests {
     fn test_long_only_mean_variance_bounded_on_singular_covariance() {
         // Unconstrained, utility grows without limit (see the next test). Long-only, the
         // weights can't grow, so there is always an optimum.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let config = MeanVariance::risk_aversion(2.0);
         assert_eq!(
             allocator.allocate(&config.clone().allow_short()),
@@ -3379,7 +3652,7 @@ mod tests {
 
     #[test]
     fn test_long_only_mean_variance_rejects_bad_input() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         assert_eq!(
             allocator.allocate(&MeanVariance::risk_aversion(0.0)),
             Err(CutupError::InvalidConfig {
@@ -3408,7 +3681,7 @@ mod tests {
     fn test_mean_variance_unbounded_on_singular_covariance() {
         // With Σ singular, d = [5, -7, 2] has Σd = 0 and 1ᵀd = 0, but μᵀd ≠ 0 for the sample
         // mean, so utility grows without limit along d.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let config = MeanVariance::risk_aversion(2.0);
         assert_eq!(
             allocator.allocate(&config.clone().allow_short()).err(),
@@ -3421,7 +3694,7 @@ mod tests {
 
     #[test]
     fn test_mean_variance_target_on_singular_covariance() {
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let target = 0.004;
         let weights = allocator
             .allocate(&MeanVariance::target_return(target).allow_short())
@@ -3437,7 +3710,7 @@ mod tests {
     fn test_mean_variance_target_equal_to_common_return() {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let config = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_element(3, 0.01).as_slice());
         assert_weights_close(
@@ -3452,7 +3725,7 @@ mod tests {
     #[test]
     fn test_covariance_adjustment_allows_constant_asset() {
         let returns = dmatrix![0.1, 0.01, 0.02; 0.1, -0.02, 0.01; 0.1, 0.03, -0.01];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator
                 .allocate(&MinVariance::default().allow_short())
@@ -3503,7 +3776,7 @@ mod tests {
     fn test_hrp_matches_pyportfolioopt() {
         // HRPOpt(returns).optimize() on the returns of full_rank_prices, with PyPortfolioOpt
         // 1.6.0 and SciPy 1.17.1.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let expected = Weights(vec![
             0.43205598172341897,
             0.23653580200415913,
@@ -3519,7 +3792,7 @@ mod tests {
     #[test]
     fn test_hrp_two_assets_is_inverse_variance() {
         let prices = full_rank_prices().columns(0, 2).into_owned();
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let (v1, v2) = (allocator.cov_matrix[(0, 0)], allocator.cov_matrix[(1, 1)]);
         let w1 = (1.0 / v1) / (1.0 / v1 + 1.0 / v2);
         assert_weights_close(
@@ -3540,7 +3813,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
         let total: f64 = inverse.iter().sum();
         let expected = Weights(inverse.iter().map(|x| x / total).collect());
@@ -3553,7 +3826,7 @@ mod tests {
 
     #[test]
     fn test_hrp_order_groups_correlated_assets() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let order = Hrp::default().cluster_order(&allocator).unwrap();
 
         let mut sorted = order.clone();
@@ -3568,7 +3841,7 @@ mod tests {
 
     #[test]
     fn test_hrp_every_linkage_groups_correlated_assets() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         for linkage in [
             Linkage::Single,
             Linkage::Complete,
@@ -3595,7 +3868,7 @@ mod tests {
 
     #[test]
     fn test_hrp_defaults_to_single_linkage() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         assert_eq!(Hrp::default(), Hrp::default().linkage(Linkage::Single));
         assert_eq!(
             allocator.allocate(&Hrp::default()).unwrap(),
@@ -3614,11 +3887,11 @@ mod tests {
         let permutation = [3, 0, 4, 1, 2];
         let permuted = DMatrix::from_fn(returns.nrows(), 5, |t, j| returns[(t, permutation[j])]);
 
-        let base = PortfolioAllocator::from_returns(returns)
+        let base = PortfolioAllocator::returns_matrix(returns)
             .unwrap()
             .allocate(&Hrp::default())
             .unwrap();
-        let shuffled = PortfolioAllocator::from_returns(permuted)
+        let shuffled = PortfolioAllocator::returns_matrix(permuted)
             .unwrap()
             .allocate(&Hrp::default())
             .unwrap();
@@ -3630,7 +3903,7 @@ mod tests {
 
     #[test]
     fn test_hrp_single_asset() {
-        let allocator = PortfolioAllocator::from_prices(dmatrix![100.0; 110.0; 105.0]).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(dmatrix![100.0; 110.0; 105.0]).unwrap();
         assert_eq!(Hrp::default().cluster_order(&allocator).unwrap(), vec![0]);
         assert_eq!(
             allocator.allocate(&Hrp::default()).unwrap().as_slice(),
@@ -3641,7 +3914,7 @@ mod tests {
     #[test]
     fn test_hrp_singular_covariance() {
         // HRP never inverts Σ, so rank-deficient data still gives positive weights.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         let weights = allocator.allocate(&Hrp::default()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
@@ -3660,7 +3933,7 @@ mod tests {
             2 => b[t],
             _ => b[t] + noise[t],
         });
-        let weights = PortfolioAllocator::from_returns(returns)
+        let weights = PortfolioAllocator::returns_matrix(returns)
             .unwrap()
             .allocate(&Hrp::default())
             .unwrap();
@@ -3678,7 +3951,7 @@ mod tests {
         let infinite = dmatrix![s, 2.0 * s; -s, 3.0 * s; 2.0 * s, -s];
         let nan = dmatrix![s, s; -s, s; s, -s; -s, -s];
         for returns in [infinite, nan] {
-            let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+            let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
             assert_eq!(
                 allocator.allocate(&Hrp::default()).err(),
                 Some(CutupError::NonFiniteCovariance)
@@ -3691,7 +3964,7 @@ mod tests {
         // A perfectly anti-correlated pair with equal variances: the two assets are as far apart
         // as possible, and each half carries the same risk.
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.03, -0.03];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_weights_close(
             &allocator.allocate(&Hrp::default()).unwrap(),
             &Weights(vec![0.5, 0.5]),
@@ -3709,7 +3982,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
 
         let normalize = |raw: [f64; 3]| {
             let total: f64 = raw.iter().sum();
@@ -3736,7 +4009,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let inverse_variance = allocator.allocate(&InverseVariance).unwrap();
         assert_weights_close(
             &inverse_variance,
@@ -3763,7 +4036,7 @@ mod tests {
             s1, -s2, -s3;
             -s1, -s2, s3
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let weights = allocator.allocate(&InverseVolatility).unwrap();
         let contributions: Vec<f64> = (0..3)
             .map(|i| weights[i] * weights[i] * allocator.cov_matrix[(i, i)])
@@ -3776,8 +4049,8 @@ mod tests {
     #[test]
     fn test_inverse_weights_ignore_return_scale_and_stay_positive() {
         let returns = PortfolioAllocator::compute_returns(&full_rank_prices());
-        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
-        let scaled = PortfolioAllocator::from_returns(returns * 50.0).unwrap();
+        let base = PortfolioAllocator::returns_matrix(returns.clone()).unwrap();
+        let scaled = PortfolioAllocator::returns_matrix(returns * 50.0).unwrap();
 
         for (a, b) in [
             (
@@ -3798,7 +4071,7 @@ mod tests {
     #[test]
     fn test_inverse_weights_reject_zero_variance() {
         let allocator =
-            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+            PortfolioAllocator::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator.allocate(&InverseVolatility).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
@@ -3827,7 +4100,7 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_closed_form() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
         let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
         let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
@@ -3840,7 +4113,7 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_beats_every_other_method() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
         let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
         let best = sharpe(
@@ -3869,7 +4142,7 @@ mod tests {
     #[test]
     fn test_max_sharpe_lies_on_the_efficient_frontier() {
         // The tangency portfolio is the minimum variance portfolio for its own return.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
         let tangency = allocator
             .allocate(
@@ -3887,7 +4160,7 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_rejects_risk_free_rate_at_or_above_min_variance_return() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
         for risk_free_rate in [threshold, threshold + 0.001] {
             let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
@@ -3908,7 +4181,7 @@ mod tests {
     fn test_max_sharpe_singular_covariance() {
         // The sample mean isn't in Σ's range, so some zero-variance portfolio earns excess
         // return and the Sharpe ratio has no maximum. Shrinkage restores one.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         assert_eq!(
             allocator
                 .allocate(&MaxSharpe::default().allow_short())
@@ -3938,7 +4211,7 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_collinear_assets() {
-        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(collinear_returns()).unwrap();
 
         // The zero-variance portfolio is the minimum variance portfolio.
         assert_weights_close(
@@ -3972,7 +4245,7 @@ mod tests {
     fn test_max_sharpe_just_below_the_threshold() {
         // A rate clearly below the threshold (by far more than the rounding tolerance) has a
         // maximum, however leveraged.
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
         let config = MaxSharpe::default().risk_free_rate(threshold - 1e-6);
         let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
@@ -3981,7 +4254,7 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_rejects_invalid_config() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         match allocator.allocate(&MaxSharpe::default().risk_free_rate(f64::NAN).allow_short()) {
             Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_free_rate"),
             other => panic!("NaN risk-free rate gave {other:?}"),
@@ -3997,7 +4270,7 @@ mod tests {
         );
 
         let constant =
-            PortfolioAllocator::from_returns(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+            PortfolioAllocator::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             constant.allocate(&MaxSharpe::default().allow_short()).err(),
             Some(CutupError::ZeroVariance { asset: 0 })
@@ -4011,7 +4284,7 @@ mod tests {
             110.0;
             120.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
         let ew_weights = allocator.allocate(&EqualWeight).unwrap();
         assert_eq!(ew_weights.as_slice(), &[1.0]);
     }
@@ -4023,7 +4296,7 @@ mod tests {
             110.0, 210.0, 310.0;
             120.0, 220.0, 320.0
         ];
-        let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(prices).unwrap();
 
         let configs = [
             // 1. No regularization or shrinkage
@@ -4071,7 +4344,7 @@ mod tests {
 
     #[test]
     fn test_risk_parity_equalizes_risk_contributions() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let weights = allocator.allocate(&RiskParity::default()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
@@ -4082,7 +4355,7 @@ mod tests {
 
     #[test]
     fn test_risk_parity_meets_risk_budgets() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         // Spanning eight orders of magnitude, and not summing to 1.
         let budgets = [1e-8, 3.0, 1.0];
         let config =
@@ -4118,7 +4391,7 @@ mod tests {
                 -0.04666742643312797,
             ],
         );
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let config = RiskParity::default()
             .risk_budgets(
                 DVector::from_row_slice(&[0.8571666963481355, 0.45606979884293564]).as_slice(),
@@ -4129,7 +4402,7 @@ mod tests {
 
     #[test]
     fn test_risk_parity_extreme_budgets() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let budgets =
             |b: &[f64]| RiskParity::default().risk_budgets(DVector::from_row_slice(b).as_slice());
         // Budgets whose sum overflows give the same weights as equal budgets.
@@ -4158,7 +4431,8 @@ mod tests {
     fn test_risk_parity_two_assets_is_inverse_volatility() {
         // With two assets, equal contributions mean w₀σ₀ = w₁σ₁ whatever the correlation.
         let allocator =
-            PortfolioAllocator::from_prices(full_rank_prices().columns(0, 2).into_owned()).unwrap();
+            PortfolioAllocator::prices_matrix(full_rank_prices().columns(0, 2).into_owned())
+                .unwrap();
         assert_weights_close(
             &allocator.allocate(&RiskParity::default()).unwrap(),
             &allocator.allocate(&InverseVolatility).unwrap(),
@@ -4168,8 +4442,8 @@ mod tests {
 
     #[test]
     fn test_risk_parity_ignores_return_and_budget_scale() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
-        let scaled = PortfolioAllocator::from_returns(&allocator.returns * 1e-3).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
+        let scaled = PortfolioAllocator::returns_matrix(&allocator.returns * 1e-3).unwrap();
         let budgets = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
         let config = RiskParity::default().risk_budgets(budgets.as_slice());
         let scaled_config = RiskParity::default().risk_budgets((budgets * 7.0).as_slice());
@@ -4183,12 +4457,12 @@ mod tests {
     #[test]
     fn test_risk_parity_on_singular_covariance() {
         // Positively collinear assets have a singular Σ, but every long-only portfolio is risky.
-        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(collinear_returns()).unwrap();
         let weights = allocator.allocate(&RiskParity::default()).unwrap();
         assert_weights_close(&weights, &Weights(vec![2.0 / 3.0, 1.0 / 3.0]), 1e-12);
 
         // Here the long-only portfolio (1, 1, 1) / 3 has zero variance.
-        let allocator = PortfolioAllocator::from_returns(rank_one_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(rank_one_returns()).unwrap();
         assert_eq!(
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
@@ -4202,7 +4476,7 @@ mod tests {
     #[test]
     fn test_risk_parity_anti_correlated_pair() {
         let returns = dmatrix![0.01, -0.01; -0.02, 0.02; 0.015, -0.015];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
@@ -4215,7 +4489,7 @@ mod tests {
 
     #[test]
     fn test_risk_parity_rejects_invalid_config() {
-        let allocator = PortfolioAllocator::from_prices(full_rank_prices()).unwrap();
+        let allocator = PortfolioAllocator::prices_matrix(full_rank_prices()).unwrap();
         let budgets =
             |b: &[f64]| RiskParity::default().risk_budgets(DVector::from_row_slice(b).as_slice());
         assert_eq!(
@@ -4254,7 +4528,7 @@ mod tests {
     #[test]
     fn test_risk_parity_rejects_zero_variance() {
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
@@ -4268,7 +4542,7 @@ mod tests {
 
     #[test]
     fn test_herc_with_one_cluster_is_inverse_variance() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let config = Herc::default().clusters(1);
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
@@ -4279,7 +4553,7 @@ mod tests {
 
     #[test]
     fn test_herc_splits_between_blocks_by_risk() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let weights = allocator.allocate(&Herc::default().clusters(2)).unwrap();
         let (a, b) = ([0, 2, 4], [1, 3]);
         let (risk_a, risk_b) = (
@@ -4296,7 +4570,7 @@ mod tests {
 
     #[test]
     fn test_herc_chooses_the_blocks() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let config = Herc::default().clusters(2);
         assert_eq!(
             allocator.allocate(&Herc::default()),
@@ -4306,7 +4580,7 @@ mod tests {
 
     #[test]
     fn test_herc_two_assets_is_inverse_variance() {
-        let allocator = PortfolioAllocator::from_returns(collinear_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(collinear_returns()).unwrap();
         let iv = allocator.allocate(&InverseVariance).unwrap();
         for clusters in [1, 2] {
             let config = Herc::default().clusters(clusters);
@@ -4323,7 +4597,7 @@ mod tests {
             -0.02, 0.02, 0.01, -0.01;
             0.015, -0.015, -0.01, 0.01
         ];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         let config = Herc::default().clusters(4);
         let weights = allocator.allocate(&config).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -4332,7 +4606,7 @@ mod tests {
 
     #[test]
     fn test_herc_rejects_invalid_config() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         for clusters in [0, 6] {
             assert_eq!(
                 allocator.allocate(&Herc::default().clusters(clusters)),
@@ -4354,7 +4628,7 @@ mod tests {
         );
         let returns = dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01];
         assert_eq!(
-            PortfolioAllocator::from_returns(returns)
+            PortfolioAllocator::returns_matrix(returns)
                 .unwrap()
                 .allocate(&Herc::default()),
             Err(CutupError::ZeroVariance { asset: 1 })
@@ -4366,7 +4640,7 @@ mod tests {
         // Shrinkage gives a constant asset a variance, but it still has no correlation to
         // cluster on.
         let returns = dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01];
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default().shrinkage(0.5)),
             Err(CutupError::ZeroVariance { asset: 1 })
@@ -4376,7 +4650,7 @@ mod tests {
             Err(CutupError::ZeroVariance { asset: 1 })
         );
         // Even when every asset is constant, which shrinkage alone can't fix.
-        let constant = PortfolioAllocator::from_returns(dmatrix![0.0, 0.0; 0.0, 0.0]).unwrap();
+        let constant = PortfolioAllocator::returns_matrix(dmatrix![0.0, 0.0; 0.0, 0.0]).unwrap();
         assert_eq!(
             constant.allocate(&Hrp::default().shrinkage(0.5)),
             Err(CutupError::ZeroVariance { asset: 0 })
@@ -4386,7 +4660,7 @@ mod tests {
             Err(CutupError::ZeroVariance { asset: 0 })
         );
 
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let invalid = Err(CutupError::InvalidConfig {
             field: "shrinkage",
             value: 1.5,
@@ -4406,7 +4680,7 @@ mod tests {
             negative
         );
         // The settings are checked before the data, so a constant asset doesn't hide them.
-        let constant = PortfolioAllocator::from_returns(
+        let constant = PortfolioAllocator::returns_matrix(
             dmatrix![0.01, 0.0, 0.02; -0.02, 0.0, 0.01; 0.03, 0.0, -0.01],
         )
         .unwrap();
@@ -4424,7 +4698,7 @@ mod tests {
 
     #[test]
     fn test_hierarchical_covariance_changes_only_the_risk_split() {
-        let allocator = PortfolioAllocator::from_returns(two_block_returns()).unwrap();
+        let allocator = PortfolioAllocator::returns_matrix(two_block_returns()).unwrap();
         let shrunk = allocator
             .adjusted_covariance(&CovarianceConfig::default().shrinkage(0.4))
             .unwrap();

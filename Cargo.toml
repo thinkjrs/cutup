@@ -20,6 +20,13 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 nalgebra = "0.33.2"
 
+[features]
+# Constructors that take nalgebra's `DMatrix`, and `DVector` conversions for `Weights`.
+nalgebra = []
+
+[package.metadata.docs.rs]
+all-features = true
+
 [dev-dependencies]
 proptest = "1"
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }

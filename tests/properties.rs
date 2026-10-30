@@ -25,6 +25,11 @@ fn returns() -> impl Strategy<Value = DMatrix<f64>> {
         })
 }
 
+/// The allocator for a matrix of returns, through the flat row-major constructor.
+fn from_matrix(returns: DMatrix<f64>) -> Result<PortfolioAllocator, CutupError> {
+    PortfolioAllocator::from_returns_flat(returns.transpose().as_slice(), returns.ncols())
+}
+
 /// Rejects inputs the invariants don't apply to: a near-constant asset (an error by design)
 /// or a covariance so ill-conditioned that rounding swamps a 1e-9 comparison.
 fn well_posed(returns: &DMatrix<f64>) -> bool {
@@ -96,7 +101,7 @@ fn sharpe(cov: &DMatrix<f64>, excess: &DVector<f64>, weights: &Weights) -> f64 {
 /// returns only rescales its weight. Long-only max Sharpe gets each asset's mean absolute
 /// return as its expected return, which is positive and rescales with the asset.
 fn unit_free_methods(returns: &DMatrix<f64>) -> Vec<(String, Weights)> {
-    let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+    let allocator = from_matrix(returns.clone()).unwrap();
     let mean_absolute = returns.abs().row_mean().transpose();
     let zero_rate = MaxSharpe::default().expected_returns(mean_absolute.as_slice());
     vec![
@@ -400,7 +405,7 @@ proptest! {
     fn weights_are_finite_and_sum_to_one(returns in returns()) {
         prop_assume!(well_posed(&returns));
         let mean = returns.mean() * 1.5;
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         for (name, weights) in all_methods(&allocator, mean) {
             prop_assert!(weights.iter().all(|w| w.is_finite()), "{name}: {weights:?}");
             // Long-short weights can be in the thousands when expected returns are nearly
@@ -418,7 +423,7 @@ proptest! {
     #[test]
     fn long_only_methods_never_short(returns in returns()) {
         prop_assume!(well_posed(&returns));
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let mut long_only = vec![
             allocator.allocate(&EqualWeight).unwrap(),
             allocator.allocate(&InverseVolatility).unwrap(),
@@ -443,7 +448,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let mean = returns.mean() * 1.5;
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let long_short = allocator.allocate(&MinVariance::default().allow_short()).unwrap();
         let minimum = variance(&cov, &long_short);
         for (name, weights) in all_methods(&allocator, mean) {
@@ -469,7 +474,7 @@ proptest! {
             let average = cov.trace() / n as f64;
             cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
         }
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let weights = allocator.allocate(&MinVariance::default().covariance(config)).unwrap();
         prop_assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -488,7 +493,7 @@ proptest! {
     fn long_only_min_variance_is_lowest_among_long_only(returns in returns()) {
         prop_assume!(well_posed(&returns));
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let unconstrained = allocator.allocate(&MinVariance::default().allow_short()).unwrap();
         let long_only = allocator.allocate(&MinVariance::default()).unwrap();
         let minimum = variance(&cov, &long_only);
@@ -512,8 +517,8 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
-        let base = risk_only_methods(&PortfolioAllocator::from_returns(returns).unwrap());
-        let flipped = risk_only_methods(&PortfolioAllocator::from_returns(reversed).unwrap());
+        let base = risk_only_methods(&from_matrix(returns).unwrap());
+        let flipped = risk_only_methods(&from_matrix(reversed).unwrap());
         for ((name, a), (_, b)) in base.iter().zip(&flipped) {
             for j in 0..n {
                 prop_assert!((a[j] - b[n - 1 - j]).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
@@ -524,8 +529,8 @@ proptest! {
     #[test]
     fn return_scale_does_not_matter(returns in returns(), scale in 0.1f64..10.0) {
         prop_assume!(well_posed(&returns));
-        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
-        let scaled = PortfolioAllocator::from_returns(returns * scale).unwrap();
+        let base = from_matrix(returns.clone()).unwrap();
+        let scaled = from_matrix(returns * scale).unwrap();
         assert_same(&risk_only_methods(&base), &risk_only_methods(&scaled))?;
     }
 
@@ -536,8 +541,8 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
-        let base = herc_methods(&PortfolioAllocator::from_returns(returns).unwrap());
-        let flipped = herc_methods(&PortfolioAllocator::from_returns(reversed).unwrap());
+        let base = herc_methods(&from_matrix(returns).unwrap());
+        let flipped = herc_methods(&from_matrix(reversed).unwrap());
         for ((name, a), (_, b)) in base.iter().zip(&flipped) {
             for j in 0..n {
                 prop_assert!((a[j] - b[n - 1 - j]).abs() < 1e-9, "{name}: {a:?} vs {b:?}");
@@ -561,7 +566,7 @@ proptest! {
         let config = RiskParity::default()
             .risk_budgets(budgets.as_slice())
             .covariance(covariance_config);
-        let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let allocator = from_matrix(returns.clone()).unwrap();
         let weights = allocator.allocate(&config).unwrap();
         prop_assert!(weights.iter().all(|&w| w > 0.0), "{weights:?}");
 
@@ -586,8 +591,8 @@ proptest! {
         // and a near-tie between distances can't flip a merge. Any other factor could round
         // a tie differently and legitimately move a split.
         prop_assume!(well_posed(&returns));
-        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
-        let scaled = PortfolioAllocator::from_returns(returns * 2f64.powi(exponent)).unwrap();
+        let base = from_matrix(returns.clone()).unwrap();
+        let scaled = from_matrix(returns * 2f64.powi(exponent)).unwrap();
         assert_same(&hrp_methods(&base), &hrp_methods(&scaled))?;
         assert_same(&herc_methods(&base), &herc_methods(&scaled))?;
     }
@@ -598,7 +603,7 @@ proptest! {
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
         let target = mu.mean() * 1.5;
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
 
         let targeted = allocator
             .allocate(&MeanVariance::target_return(target).allow_short())
@@ -626,7 +631,7 @@ proptest! {
         let n = returns.ncols();
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
 
         // For a risk aversion, the gradient g = μ − γΣw of the utility is the same on every
         // held asset and no higher on the others: no shift of weight between assets adds
@@ -682,7 +687,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let mu = returns.row_mean().transpose();
         let target = mu.min() + fraction * (mu.max() - mu.min());
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         for config in [
             MeanVariance::risk_aversion(gamma),
             MeanVariance::target_return(target),
@@ -707,7 +712,7 @@ proptest! {
         prop_assume!(mu.max() - mu.min() > 1e-6);
         let rate = mu.min() + fraction * (mu.max() - mu.min());
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let config = MaxSharpe::default().risk_free_rate(rate);
         let weights = allocator.allocate(&config).unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
@@ -737,7 +742,7 @@ proptest! {
         let rate = mu.min() + fraction * (mu.max() - mu.min());
         let excess = mu.add_scalar(-rate);
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let config = MaxSharpe::default().risk_free_rate(rate);
         let best = sharpe(&cov, &excess, &allocator.allocate(&config).unwrap());
 
@@ -765,7 +770,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let cov = covariance(&returns);
         let volatilities = cov.diagonal().map(f64::sqrt);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
         prop_assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
@@ -787,7 +792,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let cov = covariance(&returns);
         let volatilities = cov.diagonal().map(f64::sqrt);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let ratio = |weights: &Weights| sharpe(&cov, &volatilities, weights);
         let best = ratio(&allocator.allocate(&MaxDiversification::default()).unwrap());
         // A weighted average volatility is at least the portfolio's volatility.
@@ -808,7 +813,7 @@ proptest! {
     ) {
         // With two periods, the covariance has rank 1. Both methods have no answer exactly
         // when some long-only portfolio has zero variance.
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let risk_parity = allocator.allocate(&RiskParity::default());
         let max_diversification = allocator.allocate(&MaxDiversification::default());
         prop_assert_eq!(
@@ -855,7 +860,7 @@ proptest! {
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
         let mean = returns.mean() * 1.5;
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
 
         // The maximum exists for any risk-free rate below the minimum variance return.
         let min_variance = allocator.allocate(&MinVariance::default().allow_short()).unwrap();
@@ -887,7 +892,7 @@ proptest! {
         let n = returns.ncols();
         let covariance = CovarianceConfig::default().shrinkage(if shrink { 0.3 } else { 0.0 });
         let mu = DVector::from_column_slice(&custom[..n]);
-        let allocator = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let allocator = from_matrix(returns.clone()).unwrap();
 
         // A rate below the minimum variance return (under the same covariance) has a maximum.
         let long_short = MinVariance::default().allow_short().covariance(covariance.clone());
@@ -903,13 +908,13 @@ proptest! {
 
         let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
         let mu_reversed = DVector::from_fn(n, |j, _| mu[n - 1 - j]);
-        let flipped = PortfolioAllocator::from_returns(reversed)
+        let flipped = from_matrix(reversed)
             .unwrap()
             .allocate(&config(mu_reversed, rate).allow_short())
             .unwrap();
 
         let s = 2f64.powi(exponent);
-        let scaled = PortfolioAllocator::from_returns(returns * s)
+        let scaled = from_matrix(returns * s)
             .unwrap()
             .allocate(&config(mu.clone() * s, rate * s).allow_short())
             .unwrap();
@@ -939,7 +944,7 @@ proptest! {
             let average = cov.trace() / n as f64;
             cov = cov * (1.0 - lambda) + DMatrix::identity(n, n) * (lambda * average);
         }
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
 
         // Min variance has gradient Σw, and risk aversion γΣw − μ.
         let weights = match gamma {
@@ -969,7 +974,7 @@ proptest! {
         let bounds = WeightBounds::per_asset(lower.clone(), upper.clone());
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
 
         // An unreachable target reports the reachable range.
         let Err(CutupError::TargetReturnOutOfRange { lowest, highest, .. }) = allocator
@@ -1028,7 +1033,7 @@ proptest! {
         let asset = asset % n;
         let (lower, upper) = weight_bounds(&fractions, n);
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let solve = |upper: Vec<f64>| {
             allocator.allocate(&MinVariance::default().bounds(WeightBounds::per_asset(lower.clone(), upper)))
         };
@@ -1049,7 +1054,7 @@ proptest! {
     #[test]
     fn bounds_that_never_bind_change_nothing(returns in returns(), gamma in 1.0f64..500.0) {
         prop_assume!(well_posed(&returns));
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let loose = WeightBounds::uniform(0.0, 1.0);
         prop_assert_eq!(
             allocator.allocate(&MinVariance::default().bounds(loose.clone())).unwrap(),
@@ -1071,7 +1076,7 @@ proptest! {
     ) {
         // No `well_posed` filter: errors must match too.
         let n = returns.ncols();
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let config = CovarianceConfig::default()
             .shrinkage(shrinkage)
             .regularization(regularization);
@@ -1123,7 +1128,7 @@ proptest! {
     #[test]
     fn hrp_with_full_shrinkage_is_equal_weight(returns in returns(), linkage in 0usize..4) {
         prop_assume!(well_posed(&returns));
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         // Every variance is equal and every covariance zero, so each half's variance is
         // inversely proportional to its size, and each split shares weight by size.
         let hrp = Hrp::default().linkage(LINKAGES[linkage]);
@@ -1142,7 +1147,7 @@ proptest! {
     #[test]
     fn herc_with_one_cluster_is_inverse_variance(returns in returns(), linkage in 0usize..4) {
         prop_assume!(well_posed(&returns));
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let herc = Herc::default().linkage(LINKAGES[linkage]);
         // One cluster holds every asset, so its weight is shared by inverse variance. A gap
         // statistic allowed at most one cluster must choose it.
@@ -1165,7 +1170,7 @@ proptest! {
         // returns it implies, at the same risk aversion, whatever the risk-free rate.
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let caps = caps[..n].to_vec();
         let total: f64 = caps.iter().sum();
         let prior = BlackLitterman::new(caps.clone(), delta)
@@ -1191,7 +1196,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let model = BlackLitterman::new(caps[..n].to_vec(), 2.5);
         let prior = model.prior_returns(&allocator).unwrap();
 
@@ -1242,7 +1247,7 @@ proptest! {
         let costs = costs[..n].to_vec();
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let mut method = MeanVariance::risk_aversion(gamma)
             .current_weights(current.clone())
             .transaction_costs_per_asset(costs.clone());
@@ -1281,7 +1286,7 @@ proptest! {
         let n = returns.ncols();
         let current = current_weights(&fractions, n);
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let method = |cap: Option<f64>| {
             let mut method = MinVariance::default().current_weights(current.clone());
             if let Some(cap) = cap {
@@ -1329,7 +1334,7 @@ proptest! {
         let current = current_weights(&fractions, n);
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         // Long-only, every return from the lowest asset mean to the highest is reachable,
         // the ends only by the assets tied there.
         let target = mu.min() + mix * (mu.max() - mu.min());
@@ -1386,7 +1391,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let current = current_weights(&fractions, n);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         // No turnover exceeds 2, the most a portfolio of positive weights can turn over.
         let idle = MeanVariance::risk_aversion(gamma)
             .current_weights(current.clone())
@@ -1413,7 +1418,7 @@ proptest! {
         prop_assume!(well_posed(&returns));
         let n = returns.ncols();
         let current = current_weights(&fractions, n);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let trade = |cost: f64| {
             let method = MeanVariance::risk_aversion(gamma)
                 .current_weights(current.clone())
@@ -1431,7 +1436,7 @@ proptest! {
         tries in prop::collection::vec(prop::collection::vec(0.0f64..1.0, 6), 30),
     ) {
         let n = returns.ncols();
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let weights = allocator.allocate(&MinCvar::default().confidence(beta)).unwrap();
         prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         prop_assert!(weights.iter().all(|&w| w >= 0.0));
@@ -1458,7 +1463,7 @@ proptest! {
         let n = returns.ncols();
         let mu = returns.row_mean();
         let (lower, upper) = weight_bounds(&fractions, n);
-        let allocator = PortfolioAllocator::from_returns(returns).unwrap();
+        let allocator = from_matrix(returns).unwrap();
         let bounded = MinCvar::default()
             .confidence(beta)
             .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
@@ -1495,11 +1500,11 @@ proptest! {
         beta in 0.5f64..0.99,
     ) {
         let (t, n) = returns.shape();
-        let base = PortfolioAllocator::from_returns(returns.clone()).unwrap();
+        let base = from_matrix(returns.clone()).unwrap();
         let best = base.cvar(&base.allocate(&MinCvar::default().confidence(beta)).unwrap(), beta).unwrap();
         // The optimal CVaR, not the weights, which needn't be unique.
         let reversed = DMatrix::from_fn(t, n, |s, i| returns[(t - 1 - s, n - 1 - i)]);
-        let other = PortfolioAllocator::from_returns(reversed).unwrap();
+        let other = from_matrix(reversed).unwrap();
         let again = other.cvar(&other.allocate(&MinCvar::default().confidence(beta)).unwrap(), beta).unwrap();
         prop_assert!((best - again).abs() <= 1e-12 * best.abs().max(1e-3), "{best} vs {again}");
     }

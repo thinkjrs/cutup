@@ -12,16 +12,15 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// ```
 /// use cutup::{BlackLitterman, MeanVariance, PortfolioAllocator, View};
-/// use nalgebra::dmatrix;
 ///
-/// let returns = dmatrix![
-///      0.010, -0.020,  0.005;
-///     -0.004,  0.015,  0.002;
-///      0.007,  0.003, -0.006;
-///      0.002, -0.001,  0.004;
-///     -0.003,  0.006,  0.001
+/// let returns = [
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
 ///     // Asset 0 returns 0.1% a period, and you're 60% sure of it.
@@ -400,7 +399,7 @@ mod tests {
     use nalgebra::dmatrix;
 
     fn allocator() -> PortfolioAllocator {
-        PortfolioAllocator::from_returns(dmatrix![
+        PortfolioAllocator::returns_matrix(dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
@@ -620,7 +619,7 @@ mod tests {
     #[test]
     fn views_on_riskless_portfolios_need_a_variance() {
         // Assets 0 and 1 move together, so going long one and short the other has no variance.
-        let allocator = PortfolioAllocator::from_returns(dmatrix![
+        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
              0.01,  0.01,  0.004;
             -0.02, -0.02,  0.001;
              0.005, 0.005, -0.003

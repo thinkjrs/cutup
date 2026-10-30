@@ -309,7 +309,7 @@ mod tests {
     use nalgebra::dmatrix;
 
     fn allocator() -> PortfolioAllocator {
-        PortfolioAllocator::from_returns(dmatrix![
+        PortfolioAllocator::returns_matrix(dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
@@ -540,7 +540,7 @@ mod tests {
     fn an_unreachable_capped_target_is_rejected_before_the_covariance() {
         // The third asset never moves, so its variance is zero and the covariance can't be
         // built, but the target is out of range first, with a cap as without one.
-        let allocator = PortfolioAllocator::from_returns(dmatrix![
+        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
             0.01, -0.02, 0.0;
             -0.004, 0.015, 0.0;
             0.007, 0.003, 0.0
@@ -631,7 +631,7 @@ mod tests {
     fn a_cap_bounds_an_unbounded_long_short_objective() {
         // Two periods of three assets: Σ is singular, so long-short mean-variance gains
         // expected return without limit, until a turnover cap stops it.
-        let allocator = PortfolioAllocator::from_returns(dmatrix![
+        let allocator = PortfolioAllocator::returns_matrix(dmatrix![
             0.01, -0.02, 0.005;
             -0.004, 0.015, 0.002
         ])

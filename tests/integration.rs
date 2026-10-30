@@ -2,17 +2,16 @@ use cutup::{
     Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
     MinVariance, PortfolioAllocator, Weights,
 };
-use nalgebra::dmatrix;
 
 #[test]
 fn test_portfolio_allocations() {
-    let prices = dmatrix![
-        100.0, 200.0, 300.0;
-        110.0, 210.0, 310.0;
-        120.0, 220.0, 320.0
+    let prices = [
+        [100.0, 200.0, 300.0],
+        [110.0, 210.0, 310.0],
+        [120.0, 220.0, 320.0],
     ];
 
-    let allocator = PortfolioAllocator::from_prices(prices).unwrap();
+    let allocator = PortfolioAllocator::from_prices(&prices).unwrap();
 
     let ew = allocator.allocate(&EqualWeight).unwrap();
     assert_eq!(ew.len(), 3);
@@ -62,14 +61,14 @@ impl Allocation for Fixed {
 }
 
 fn allocator() -> PortfolioAllocator {
-    let returns = dmatrix![
-         0.010, -0.020,  0.005;
-        -0.004,  0.015,  0.002;
-         0.007,  0.003, -0.006;
-         0.002, -0.001,  0.004;
-        -0.003,  0.006,  0.001
+    let returns = [
+        [0.010, -0.020, 0.005],
+        [-0.004, 0.015, 0.002],
+        [0.007, 0.003, -0.006],
+        [0.002, -0.001, 0.004],
+        [-0.003, 0.006, 0.001],
     ];
-    PortfolioAllocator::from_returns(returns).unwrap()
+    PortfolioAllocator::from_returns(&returns).unwrap()
 }
 
 #[test]

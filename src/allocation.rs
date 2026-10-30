@@ -15,16 +15,15 @@ use nalgebra::DVector;
 ///
 /// ```
 /// use cutup::{Hrp, Linkage, MaxSharpe, MinVariance, PortfolioAllocator, WeightBounds};
-/// use nalgebra::dmatrix;
 ///
-/// let returns = dmatrix![
-///      0.010, -0.020,  0.005;
-///     -0.004,  0.015,  0.002;
-///      0.007,  0.003, -0.006;
-///      0.002, -0.001,  0.004;
-///     -0.003,  0.006,  0.001
+/// let returns = [
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// let capped = allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5)))?;
 /// let tangency = allocator.allocate(&MaxSharpe::default().expected_returns([0.004, 0.006, 0.002]))?;
@@ -38,12 +37,11 @@ use nalgebra::DVector;
 ///
 /// ```
 /// use cutup::{Allocation, EqualWeight, InverseVolatility, PortfolioAllocator, RiskParity};
-/// use nalgebra::dmatrix;
 ///
-/// let allocator = PortfolioAllocator::from_returns(dmatrix![
-///      0.01,  0.02;
-///     -0.01, -0.02;
-///      0.01, -0.02
+/// let allocator = PortfolioAllocator::from_returns(&[
+///      [ 0.01,  0.02],
+///      [-0.01, -0.02],
+///      [ 0.01, -0.02],
 /// ])?;
 /// let methods: Vec<Box<dyn Allocation>> = vec![
 ///     Box::new(EqualWeight),
@@ -83,15 +81,14 @@ impl<A: Allocation + ?Sized> Allocation for Box<A> {
 ///
 /// ```
 /// use cutup::{EqualWeight, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
-/// let prices = dmatrix![
-///     100.0, 200.0, 300.0;
-///     110.0, 210.0, 310.0;
-///     120.0, 220.0, 320.0
+/// let prices = [
+///    [100.0, 200.0, 300.0],
+///    [110.0, 210.0, 310.0],
+///    [120.0, 220.0, 320.0],
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_prices(prices)?.allocate(&EqualWeight)?;
+/// let weights = PortfolioAllocator::from_prices(&prices)?.allocate(&EqualWeight)?;
 /// assert!(weights.iter().all(|&w| w == 1.0 / 3.0));
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -122,17 +119,16 @@ impl Allocation for EqualWeight {
 ///
 /// ```
 /// use cutup::{InverseVolatility, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// // Volatilities in the ratio 1 : 2.
-/// let returns = dmatrix![
-///      0.01,  0.02;
-///     -0.01, -0.02;
-///      0.01, -0.02;
-///     -0.01,  0.02
+/// let returns = [
+///      [ 0.01,  0.02],
+///      [-0.01, -0.02],
+///      [ 0.01, -0.02],
+///      [-0.01,  0.02],
 /// ];
 ///
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 /// let weights = allocator.allocate(&InverseVolatility)?;
 ///
 /// assert!((weights[0] - 2.0 / 3.0).abs() < 1e-12);
@@ -164,17 +160,16 @@ impl Allocation for InverseVolatility {
 ///
 /// ```
 /// use cutup::{InverseVariance, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// // Volatilities in the ratio 1 : 2, so variances in the ratio 1 : 4.
-/// let returns = dmatrix![
-///      0.01,  0.02;
-///     -0.01, -0.02;
-///      0.01, -0.02;
-///     -0.01,  0.02
+/// let returns = [
+///      [ 0.01,  0.02],
+///      [-0.01, -0.02],
+///      [ 0.01, -0.02],
+///      [-0.01,  0.02],
 /// ];
 ///
-/// let weights = PortfolioAllocator::from_returns(returns)?.allocate(&InverseVariance)?;
+/// let weights = PortfolioAllocator::from_returns(&returns)?.allocate(&InverseVariance)?;
 ///
 /// assert!((weights[0] - 0.8).abs() < 1e-12);
 /// assert!((weights[1] - 0.2).abs() < 1e-12);
@@ -257,18 +252,17 @@ impl Allocation for InverseVariance {
 ///
 /// ```
 /// use cutup::{MinVariance, PortfolioAllocator, WeightBounds};
-/// use nalgebra::dmatrix;
 ///
 /// // The second asset moves with the first but twice as far, so the long-short minimum
 /// // variance portfolio shorts it as a hedge.
-/// let returns = dmatrix![
-///      0.010,  0.021,  0.004;
-///     -0.008, -0.015, -0.002;
-///      0.004,  0.009,  0.006;
-///     -0.002, -0.006, -0.003;
-///      0.006,  0.011,  0.001
+/// let returns = [
+///      [ 0.010,  0.021,  0.004],
+///      [-0.008, -0.015, -0.002],
+///      [ 0.004,  0.009,  0.006],
+///      [-0.002, -0.006, -0.003],
+///      [ 0.006,  0.011,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 /// assert!(allocator.allocate(&MinVariance::default().allow_short())?[1] < 0.0);
 ///
 /// let weights = allocator.allocate(&MinVariance::default())?;
@@ -447,16 +441,15 @@ impl Allocation for MinVariance {
 ///
 /// ```
 /// use cutup::{MeanVariance, PortfolioAllocator, WeightBounds};
-/// use nalgebra::dmatrix;
 ///
-/// let returns = dmatrix![
-///      0.010, -0.020,  0.005;
-///     -0.004,  0.015,  0.002;
-///      0.007,  0.003, -0.006;
-///      0.002, -0.001,  0.004;
-///     -0.003,  0.006,  0.001
+/// let returns = [
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 /// let expected = [0.004, 0.006, 0.002];
 ///
 /// // With little aversion to risk, the long-short portfolio leverages up on the highest
@@ -681,16 +674,15 @@ impl Allocation for MeanVariance {
 ///
 /// ```
 /// use cutup::{MaxSharpe, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// // Uncorrelated assets: the tangency weights are proportional to (μᵢ − r_f) / σᵢ².
-/// let returns = dmatrix![
-///      0.01,  0.02;
-///     -0.01, -0.02;
-///      0.01, -0.02;
-///     -0.01,  0.02
+/// let returns = [
+///      [ 0.01,  0.02],
+///      [-0.01, -0.02],
+///      [ 0.01, -0.02],
+///      [-0.01,  0.02],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// // σ² is in the ratio 1 : 4 and μ in the ratio 1 : 2, so the weights are 2 : 1.
 /// let weights = allocator.allocate(&MaxSharpe::default().expected_returns([0.002, 0.004]))?;
@@ -797,16 +789,15 @@ impl Allocation for MaxSharpe {
 ///
 /// ```
 /// use cutup::{MaxDiversification, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// // Uncorrelated assets, with volatilities in the ratio 1 : 2 : 4.
-/// let returns = dmatrix![
-///      0.01,  0.02,  0.04;
-///     -0.01,  0.02, -0.04;
-///      0.01, -0.02, -0.04;
-///     -0.01, -0.02,  0.04
+/// let returns = [
+///      [ 0.01,  0.02,  0.04],
+///      [-0.01,  0.02, -0.04],
+///      [ 0.01, -0.02, -0.04],
+///      [-0.01, -0.02,  0.04],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 /// let weights = allocator.allocate(&MaxDiversification::default())?;
 ///
 /// // Inverse volatility: 4 : 2 : 1.
@@ -815,9 +806,9 @@ impl Allocation for MaxSharpe {
 /// }
 ///
 /// // Fewer observations than assets: some long-only portfolio has no variance.
-/// let allocator = PortfolioAllocator::from_returns(dmatrix![
-///      0.01, -0.02,  0.03;
-///     -0.01,  0.02, -0.03
+/// let allocator = PortfolioAllocator::from_returns(&[
+///      [ 0.01, -0.02,  0.03],
+///      [-0.01,  0.02, -0.03],
 /// ])?;
 /// assert!(allocator.allocate(&MaxDiversification::default()).is_err());
 /// assert!(allocator.allocate(&MaxDiversification::default().shrinkage(0.3)).is_ok());
@@ -874,16 +865,15 @@ impl Allocation for MaxDiversification {
 ///
 /// ```
 /// use cutup::{PortfolioAllocator, RiskParity};
-/// use nalgebra::dmatrix;
 ///
 /// // Uncorrelated assets with volatilities in the ratio 1 : 2.
-/// let returns = dmatrix![
-///      0.01,  0.02;
-///     -0.01, -0.02;
-///      0.01, -0.02;
-///     -0.01,  0.02
+/// let returns = [
+///      [ 0.01,  0.02],
+///      [-0.01, -0.02],
+///      [ 0.01, -0.02],
+///      [-0.01,  0.02],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// // Equal budgets: weights in inverse proportion to volatility, 2 : 1.
 /// let weights = allocator.allocate(&RiskParity::default())?;
@@ -965,15 +955,14 @@ impl Allocation for RiskParity {
 ///
 /// ```
 /// use cutup::{Hrp, Linkage, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
-/// let returns = dmatrix![
-///      0.010,  0.020,  0.011,  0.019;
-///     -0.010,  0.010, -0.012,  0.012;
-///      0.020, -0.020,  0.018, -0.021;
-///     -0.015, -0.010, -0.014, -0.009
+/// let returns = [
+///      [ 0.010,  0.020,  0.011,  0.019],
+///      [-0.010,  0.010, -0.012,  0.012],
+///      [ 0.020, -0.020,  0.018, -0.021],
+///      [-0.015, -0.010, -0.014, -0.009],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 ///
 /// let weights = allocator.allocate(&Hrp::default().linkage(Linkage::Ward))?;
 /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -1017,17 +1006,16 @@ impl Hrp {
     ///
     /// ```
     /// use cutup::{Hrp, PortfolioAllocator};
-    /// use nalgebra::dmatrix;
     ///
     /// // Assets 0 and 2 move together, as do 1 and 3.
-    /// let returns = dmatrix![
-    ///      0.010,  0.020,  0.011,  0.019;
-    ///     -0.010,  0.010, -0.012,  0.012;
-    ///      0.020, -0.020,  0.018, -0.021;
-    ///     -0.015, -0.010, -0.014, -0.009
+    /// let returns = [
+    ///      [ 0.010,  0.020,  0.011,  0.019],
+    ///      [-0.010,  0.010, -0.012,  0.012],
+    ///      [ 0.020, -0.020,  0.018, -0.021],
+    ///      [-0.015, -0.010, -0.014, -0.009],
     /// ];
     ///
-    /// let allocator = PortfolioAllocator::from_returns(returns)?;
+    /// let allocator = PortfolioAllocator::from_returns(&returns)?;
     /// let order = Hrp::default().cluster_order(&allocator)?;
     ///
     /// let position = |asset| order.iter().position(|&a| a == asset).unwrap();
@@ -1101,16 +1089,15 @@ const HERC_MAX_CLUSTERS: usize = 10;
 ///
 /// ```
 /// use cutup::{Herc, InverseVariance, PortfolioAllocator};
-/// use nalgebra::dmatrix;
 ///
 /// // Assets 0 and 2 move together, as do 1 and 3.
-/// let returns = dmatrix![
-///      0.010,  0.020,  0.011,  0.019;
-///     -0.010,  0.010, -0.012,  0.012;
-///      0.020, -0.020,  0.018, -0.021;
-///     -0.015, -0.010, -0.014, -0.009
+/// let returns = [
+///      [ 0.010,  0.020,  0.011,  0.019],
+///      [-0.010,  0.010, -0.012,  0.012],
+///      [ 0.020, -0.020,  0.018, -0.021],
+///      [-0.015, -0.010, -0.014, -0.009],
 /// ];
-/// let allocator = PortfolioAllocator::from_returns(returns)?;
+/// let allocator = PortfolioAllocator::from_returns(&returns)?;
 /// let weights = allocator.allocate(&Herc::default().clusters(2))?;
 ///
 /// // With two clusters, {0, 2} and {1, 3}, each pair is weighted by inverse variance.

@@ -15,13 +15,15 @@ use serde_json::Value;
 const DATASETS: &str = include_str!("fixtures/datasets.json");
 const EXPECTED: &str = include_str!("fixtures/expected.json");
 
-fn matrix(rows: &Value) -> DMatrix<f64> {
-    let rows: Vec<Vec<f64>> = rows
-        .as_array()
+fn rows(rows: &Value) -> Vec<Vec<f64>> {
+    rows.as_array()
         .expect("data is an array of rows")
         .iter()
         .map(floats)
-        .collect();
+        .collect()
+}
+
+fn matrix(rows: &[Vec<f64>]) -> DMatrix<f64> {
     DMatrix::from_fn(rows.len(), rows[0].len(), |i, j| rows[i][j])
 }
 
@@ -35,10 +37,10 @@ fn floats(values: &Value) -> Vec<f64> {
 }
 
 fn allocator(dataset: &Value) -> PortfolioAllocator {
-    let data = matrix(&dataset["data"]);
+    let data = rows(&dataset["data"]);
     match dataset["kind"].as_str() {
-        Some("prices") => PortfolioAllocator::from_prices(data),
-        Some("returns") => PortfolioAllocator::from_returns(data),
+        Some("prices") => PortfolioAllocator::from_prices(&data),
+        Some("returns") => PortfolioAllocator::from_returns(&data),
         other => panic!("unknown dataset kind {other:?}"),
     }
     .expect("reference datasets are valid input")
@@ -47,7 +49,7 @@ fn allocator(dataset: &Value) -> PortfolioAllocator {
 /// The largest absolute return in a dataset, with prices turned into simple returns as
 /// `PortfolioAllocator::from_prices` does.
 fn returns_scale(dataset: &Value) -> f64 {
-    let data = matrix(&dataset["data"]);
+    let data = matrix(&rows(&dataset["data"]));
     let returns = match dataset["kind"].as_str() {
         Some("prices") => DMatrix::from_fn(data.nrows() - 1, data.ncols(), |t, i| {
             data[(t + 1, i)] / data[(t, i)] - 1.0
