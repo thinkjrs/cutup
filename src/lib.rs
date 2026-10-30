@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 /// The `covariance`, `shrinkage` and `regularization` setters, for a method with a
 /// `covariance: CovarianceConfig` field.
@@ -241,7 +242,7 @@ impl fmt::Display for CutupError {
                 actual,
             } => write!(
                 f,
-                "row {row} has {actual} values but the first row has {expected}"
+                "row {row} has the wrong number of values: {actual}, not {expected}"
             ),
             CutupError::DimensionMismatch { expected, actual } => write!(
                 f,
@@ -398,6 +399,7 @@ impl From<Weights> for Vec<f64> {
 
 /// The weights as a column vector, with the `nalgebra` feature.
 #[cfg(feature = "nalgebra")]
+#[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
 impl From<Weights> for DVector<f64> {
     fn from(weights: Weights) -> Self {
         DVector::from_vec(weights.0)
@@ -724,6 +726,7 @@ impl PortfolioAllocator {
     /// As for [`PortfolioAllocator::from_prices`], except [`CutupError::RaggedRows`], which a
     /// matrix can't have.
     #[cfg(feature = "nalgebra")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_prices_matrix(prices: DMatrix<f64>) -> Result<Self, CutupError> {
         PortfolioAllocator::prices_matrix(prices)
     }
@@ -808,6 +811,7 @@ impl PortfolioAllocator {
     /// As for [`PortfolioAllocator::from_returns`], except [`CutupError::RaggedRows`], which a
     /// matrix can't have.
     #[cfg(feature = "nalgebra")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_returns_matrix(returns: DMatrix<f64>) -> Result<Self, CutupError> {
         PortfolioAllocator::returns_matrix(returns)
     }
@@ -827,9 +831,11 @@ impl PortfolioAllocator {
                 actual: values.len(),
             });
         }
-        Ok(DMatrix::from_fn(rows.len(), assets, |t, j| {
-            rows[t].as_ref()[j]
-        }))
+        Ok(DMatrix::from_row_iterator(
+            rows.len(),
+            assets,
+            rows.iter().flat_map(|row| row.as_ref().iter().copied()),
+        ))
     }
 
     /// Builds the matrix for flat, row-major values, checking that they fill whole rows.
@@ -2008,7 +2014,7 @@ mod tests {
                 actual: 1
             }
             .to_string(),
-            "row 1 has 1 values but the first row has 2"
+            "row 1 has the wrong number of values: 1, not 2"
         );
     }
 

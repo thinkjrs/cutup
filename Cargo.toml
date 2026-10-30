@@ -26,6 +26,7 @@ nalgebra = []
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 proptest = "1"
