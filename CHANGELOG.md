@@ -14,10 +14,10 @@ All notable changes to this project are documented here. The format follows
   sample correlations, so `Hrp::cluster_order` and HERC's clusters don't change. Results
   match riskfolio-lib's `HCPortfolio` with `method_cov="shrunk"` and `leaf_order=False`, and
   the reference tests have 35 new cases for them.
-- `PortfolioAllocator::from_prices_flat` and `from_returns_flat`, which take one flat,
-  row-major slice and the number of assets, such as a JavaScript `Float64Array`.
-- A `nalgebra` feature, off by default, with `PortfolioAllocator::from_prices_matrix` and
-  `from_returns_matrix` for `DMatrix` input and `From<Weights> for DVector<f64>`. It tracks
+- `Returns::from_prices_flat` and `Returns::new_flat`, which take one flat, row-major slice
+  and the number of assets, such as a JavaScript `Float64Array`.
+- A `nalgebra` feature, off by default, with `Returns::from_prices_matrix` and
+  `Returns::from_matrix` for `DMatrix` input and `From<Weights> for DVector<f64>`. It tracks
   the nalgebra version cutup depends on.
 - `CutupError::RaggedRows`, for rows of different lengths, or flat input whose length isn't
   a multiple of the number of assets.
@@ -35,7 +35,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- `PortfolioAllocator::from_prices` and `from_returns` take rows, `&[R]` for any
+- `PortfolioAllocator` is now `Returns`: it holds the returns and their covariance, and the
+  methods are values passed to `Returns::allocate`. The returns constructor is
+  `Returns::new`. `Allocation::allocate` takes `&Returns`.
+- `Returns::from_prices` and `Returns::new` take rows, `&[R]` for any
   `R: AsRef<[f64]>`, such as `&[[f64; N]]` or `&[Vec<f64>]`, instead of a nalgebra `DMatrix`,
   so nalgebra is no longer part of cutup's public API without the `nalgebra` feature.
 - `CovarianceConfig`'s setters are `shrinkage(λ)` and `regularization(ε)`, without `with_`,
@@ -49,6 +52,11 @@ All notable changes to this project are documented here. The format follows
 - `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
   written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
   `default()` still works.
+
+### Deprecated
+
+- `PortfolioAllocator`, now an alias for `Returns`, and `Returns::from_returns`, the old name
+  of `Returns::new`. Both still compile, with a warning, and are removed in 1.0.0.
 
 ## [0.2.8] - 2026-10-29
 

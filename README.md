@@ -48,7 +48,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 ## Choosing a method
 
-Each method is a value you pass to `PortfolioAllocator::allocate`. Methods that can short are long-only unless you call `.allow_short()`.
+Each method is a value you pass to `Returns::allocate`. Methods that can short are long-only unless you call `.allow_short()`.
 
 | Method | Uses | Long-only | Notes |
 | --- | --- | --- | --- |
@@ -90,9 +90,9 @@ cutup = { version = "0.2.8", features = ["nalgebra"] }
 
 ## Usage
 
-Pass prices to `PortfolioAllocator::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `PortfolioAllocator::from_returns` instead.
+Pass prices to `Returns::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `Returns::new` instead.
 
-For data in one flat, row-major slice, such as a JavaScript `Float64Array` or a CSV read row by row, use `from_prices_flat(&values, assets)` or `from_returns_flat(&values, assets)`. With the `nalgebra` feature, `from_prices_matrix` and `from_returns_matrix` take a `DMatrix`.
+For data in one flat, row-major slice, such as a JavaScript `Float64Array` or a CSV read row by row, use `from_prices_flat(&values, assets)` or `new_flat(&values, assets)`. With the `nalgebra` feature, `from_prices_matrix` and `from_matrix` take a `DMatrix`.
 
 Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods from 0.2, such as `min_variance_allocation`, were removed in 0.3.0: see [Upgrading from 0.2](#upgrading-from-02).
 
@@ -101,7 +101,7 @@ Allocation methods return `Weights`: one weight per asset, in the same order as 
 ```rust
 use cutup::{
     CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance, MinVariance,
-    PortfolioAllocator, WeightBounds,
+    Returns, WeightBounds,
 };
 
 fn main() -> Result<(), CutupError> {
@@ -121,20 +121,20 @@ fn main() -> Result<(), CutupError> {
         [141.0, 1615.0, 241.0, 680.0],
     ];
 
-    let allocator = PortfolioAllocator::from_prices(&prices)?;
+    let data = Returns::from_prices(&prices)?;
 
-    let min_variance_weights = allocator.allocate(&MinVariance::default().allow_short())?;
+    let min_variance_weights = data.allocate(&MinVariance::default().allow_short())?;
     // No asset above 40%.
     let capped_weights =
-        allocator.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.4)))?;
+        data.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.4)))?;
     // Risk aversion is in the units of your returns: per-period returns have small variances,
     // so meaningful values are large. Shrinking the sample covariance toward its average
     // variance reduces estimation error.
     let mean_variance_weights =
-        allocator.allocate(&MeanVariance::risk_aversion(100.0).shrinkage(0.1))?;
-    let ew_weights = allocator.allocate(&EqualWeight)?;
-    let inverse_volatility_weights = allocator.allocate(&InverseVolatility)?;
-    let hrp_weights = allocator.allocate(&Hrp::default())?;
+        data.allocate(&MeanVariance::risk_aversion(100.0).shrinkage(0.1))?;
+    let ew_weights = data.allocate(&EqualWeight)?;
+    let inverse_volatility_weights = data.allocate(&InverseVolatility)?;
+    let hrp_weights = data.allocate(&Hrp::default())?;
 
     println!("Min Variance Weights: {:?}", min_variance_weights.as_slice());
     println!("Capped Min Variance Weights: {:?}", capped_weights.as_slice());
@@ -152,7 +152,7 @@ fn main() -> Result<(), CutupError> {
 Give `MinVariance` or `MeanVariance` your current weights to rebalance from them. Turnover is the total weight bought and sold, `Σ|wᵢ − w₀ᵢ|`. Transaction costs are in units of return, so only mean-variance takes them; for min variance with costs, use mean-variance with zero expected returns.
 
 ```rust
-use cutup::{CutupError, MeanVariance, MinVariance, PortfolioAllocator};
+use cutup::{CutupError, MeanVariance, MinVariance, Returns};
 
 fn main() -> Result<(), CutupError> {
     let returns = [
@@ -162,16 +162,16 @@ fn main() -> Result<(), CutupError> {
         [ 0.002, -0.001,  0.004],
         [-0.003,  0.006,  0.001],
     ];
-    let allocator = PortfolioAllocator::from_returns(&returns)?;
+    let data = Returns::new(&returns)?;
     let current = [0.5, 0.3, 0.2];
 
     // The lowest-variance portfolio within 10% turnover of the current one.
-    let capped = allocator.allocate(&MinVariance::default().current_weights(current).max_turnover(0.1))?;
+    let capped = data.allocate(&MinVariance::default().current_weights(current).max_turnover(0.1))?;
     let turnover: f64 = capped.iter().zip(current).map(|(w, c)| (w - c).abs()).sum();
     assert!(turnover <= 0.1 + 1e-12);
 
     // Mean-variance net of 10 basis points a trade.
-    let net = allocator.allocate(
+    let net = data.allocate(
         &MeanVariance::risk_aversion(100.0)
             .current_weights(current)
             .transaction_costs(0.001),
@@ -186,7 +186,7 @@ fn main() -> Result<(), CutupError> {
 Black-Litterman estimates expected returns rather than allocating. Start from the market weights (or capitalizations) and the market's risk aversion δ, add views, and pass the result to a method that uses expected returns:
 
 ```rust
-use cutup::{BlackLitterman, CutupError, MeanVariance, PortfolioAllocator, View};
+use cutup::{BlackLitterman, CutupError, MeanVariance, Returns, View};
 
 fn main() -> Result<(), CutupError> {
     let returns = [
@@ -196,16 +196,16 @@ fn main() -> Result<(), CutupError> {
         [ 0.002, -0.001,  0.004],
         [-0.003,  0.006,  0.001],
     ];
-    let allocator = PortfolioAllocator::from_returns(&returns)?;
+    let data = Returns::new(&returns)?;
 
     let mu = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
         // Asset 0 returns 0.1% a period, and you're 60% sure of it.
         .view(View::absolute(0, 0.001).confidence(0.6))
         // Asset 1 beats asset 2 by 0.05% a period.
         .view(View::relative(1, 2, 0.0005))
-        .expected_returns(&allocator)?;
+        .expected_returns(&data)?;
 
-    let weights = allocator.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
+    let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
     println!("Black-Litterman weights: {:?}", weights.as_slice());
     Ok(())
 }
@@ -235,7 +235,7 @@ fn main() -> Result<(), CutupError> {
 | `hrp_allocation()`, `_with_config(&config)` | `allocate(&Hrp::default())` |
 | `hrp_cluster_order(&config)` | `Hrp::default().linkage(l).cluster_order(&allocator)` |
 | `herc_allocation()`, `_with_config(&config)` | `allocate(&Herc::default())` |
-| `run_portfolio_allocation(prices)` | `PortfolioAllocator::from_prices(&prices)?.allocate(&MinVariance::default().allow_short())` |
+| `run_portfolio_allocation(prices)` | `Returns::from_prices(&prices)?.allocate(&MinVariance::default().allow_short())` |
 
 The config structs' settings are setters on the values, without the `with_`:
 
@@ -247,14 +247,15 @@ The config structs' settings are setters on the values, without the `with_`:
 | `.with_risk_free_rate(r)` | `.risk_free_rate(r)` |
 | `.with_linkage(l)`, `.with_clusters(k)`, `.with_max_clusters(m)` | `.linkage(l)`, `.clusters(k)`, `.max_clusters(m)` |
 
-Six other changes in 0.3.0:
+Seven other changes in 0.3.0:
 
 | 0.2 | 0.3 |
 | --- | --- |
 | `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
 | `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
-| `from_prices(dmatrix![..])`, `from_returns(dmatrix![..])` | `from_prices(&[[..], ..])` with rows, or `from_prices_flat(&values, assets)` with one row-major slice. To keep passing a `DMatrix`, turn on the `nalgebra` feature and call `from_prices_matrix(m)` or `from_returns_matrix(m)`. |
+| `PortfolioAllocator` | `Returns`, since it holds the data and the methods are values. `PortfolioAllocator` stays as a deprecated alias until 1.0.0, so old code still compiles, with a warning. |
+| `from_prices(dmatrix![..])`, `from_returns(dmatrix![..])` | `Returns::from_prices(&[[..], ..])` and `Returns::new(&[[..], ..])` with rows, or `from_prices_flat(&values, assets)` and `new_flat(&values, assets)` with one row-major slice. To keep passing a `DMatrix`, turn on the `nalgebra` feature and call `from_prices_matrix(m)` or `from_matrix(m)`. `from_returns` stays as a deprecated name for `new` until 1.0.0. |
 | `Hrp` and `Herc` are `Copy` and `Eq` | They're `Clone` and `PartialEq`, since they now take `.covariance(..)`, `.shrinkage(λ)` and `.regularization(ε)`. Clone a value to reuse it. |
 | Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 

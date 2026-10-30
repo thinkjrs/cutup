@@ -82,8 +82,12 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
    method, now that methods are values.
    - `PortfolioAllocator` stays as a deprecated alias through 0.3.x, so
      upgrading to 0.3.0 doesn't also force a rename.
-   - 1.0.0 drops the alias. That's the one removal in 1.0.0, and the
-     deprecation note says so.
+   - The returns constructor is `Returns::new`, since `Returns::from_returns`
+     repeats itself, with `new_flat` and, with the `nalgebra` feature,
+     `from_matrix`. `from_returns` stays as a deprecated name for `new`; the
+     flat and matrix forms were never released under their old names.
+   - Both deprecated names live in `src/deprecated.rs`. 1.0.0 deletes the
+     file, the one removal in 1.0.0, and each deprecation note says so.
 5. **Plain Rust inputs; nalgebra becomes internal.**
    - Constructors take `&[f64]` in row-major order with the asset count, or
      `&[Vec<f64>]` rows, instead of a `DMatrix`.
@@ -481,6 +485,8 @@ Worked through during 0.3.x. Nothing new lands in 1.0.0 itself.
 - **Docs:**
   - the method-selection guide, if it hasn't landed in 0.3.x;
   - an asserted doctest on every public item.
+- **Removal:** `src/deprecated.rs`, with the `PortfolioAllocator` alias and
+  `Returns::from_returns`.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
   tagging.
 
