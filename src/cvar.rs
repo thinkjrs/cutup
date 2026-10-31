@@ -189,6 +189,9 @@ impl Returns {
     ///
     /// * [`CutupError::InvalidConfig`] if `beta` isn't in `(0, 1)`.
     /// * [`CutupError::DimensionMismatch`] if there isn't one weight per asset.
+    /// * [`CutupError::LabelMismatch`] if the weights are labeled with other assets than the
+    ///   data, or in another order. Weights labeled by column, such as `Weights::from(vec)`,
+    ///   are taken in column order.
     ///
     /// # Example
     ///
@@ -210,6 +213,17 @@ impl Returns {
                 expected: n,
                 actual: weights.len(),
             });
+        }
+        let labels = weights.labels();
+        let by_column = labels.iter().enumerate().all(|(i, l)| *l == i.to_string());
+        if !by_column {
+            if let Some(column) = (0..n).find(|&i| labels[i] != self.labels()[i]) {
+                return Err(CutupError::LabelMismatch {
+                    column,
+                    expected: self.labels()[column].clone(),
+                    actual: labels[column].clone(),
+                });
+            }
         }
         let w = DVector::from_column_slice(weights.as_slice());
         let mut losses: Vec<f64> = (-(&self.returns * w)).iter().copied().collect();
@@ -263,6 +277,38 @@ mod tests {
              0.001,  0.002, -0.004
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn cvar_rejects_weights_labeled_for_other_data() {
+        let returns = dmatrix![
+            -0.04, 0.01, 0.02;
+            -0.02, 0.03, -0.01;
+            0.01, -0.02, 0.00
+        ];
+        let data = |labels: [&str; 3]| {
+            Returns::returns_matrix(returns.clone())
+                .unwrap()
+                .labeled(labels)
+                .unwrap()
+        };
+        let allocator = data(["SPY", "TLT", "GLD"]);
+        let weights = allocator.allocate(&crate::EqualWeight).unwrap();
+        assert!(allocator.cvar(&weights, 0.5).is_ok());
+        // Weights labeled by column are taken in column order.
+        let by_column = Weights::from(vec![1.0 / 3.0; 3]);
+        assert_eq!(
+            allocator.cvar(&by_column, 0.5),
+            allocator.cvar(&weights, 0.5)
+        );
+        assert_eq!(
+            data(["SPY", "GLD", "TLT"]).cvar(&weights, 0.5),
+            Err(CutupError::LabelMismatch {
+                column: 1,
+                expected: "GLD".into(),
+                actual: "TLT".into()
+            })
+        );
     }
 
     #[test]

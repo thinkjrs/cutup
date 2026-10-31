@@ -152,6 +152,16 @@ pub enum CutupError {
         /// The asset's label.
         asset: String,
     },
+    /// [`Weights`] are labeled with other assets than the data they're used with, or in another
+    /// order.
+    LabelMismatch {
+        /// The first column whose labels differ.
+        column: usize,
+        /// The data's label for it.
+        expected: String,
+        /// The weights' label for it.
+        actual: String,
+    },
     /// Every asset has the same expected return, so no portfolio can target a different one.
     DegenerateExpectedReturns,
     /// The mean-variance objective has no maximum: the covariance matrix is singular, and some
@@ -270,6 +280,14 @@ impl fmt::Display for CutupError {
             CutupError::DuplicateAsset { asset } => {
                 write!(f, "asset `{asset}` is given more than once")
             }
+            CutupError::LabelMismatch {
+                column,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "the weights label column {column} `{actual}`, but the data labels it `{expected}`"
+            ),
             CutupError::DegenerateExpectedReturns => write!(
                 f,
                 "every asset has the same expected return, so no other target return can be reached"
@@ -2327,6 +2345,15 @@ mod tests {
             }
             .to_string(),
             "asset `SPY` is given more than once"
+        );
+        assert_eq!(
+            CutupError::LabelMismatch {
+                column: 1,
+                expected: "TLT".into(),
+                actual: "GLD".into()
+            }
+            .to_string(),
+            "the weights label column 1 `GLD`, but the data labels it `TLT`"
         );
         assert_eq!(
             CutupError::InvalidConfig {
