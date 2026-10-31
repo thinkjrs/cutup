@@ -1,7 +1,7 @@
 //! [`Hrp`]: Hierarchical Risk Parity.
 
+use super::cluster_variance;
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
-use nalgebra::DMatrix;
 
 /// Hierarchical Risk Parity (López de Prado, 2016).
 ///
@@ -129,30 +129,6 @@ impl Allocation for Hrp {
 }
 
 impl Returns {
-    /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
-    /// assets.
-    ///
-    /// Returns [`CutupError::NonFiniteCovariance`] if a correlation can't be computed, for
-    /// example when variances are so small that their product underflows to zero.
-    pub(crate) fn correlation_distance(&self) -> Result<DMatrix<f64>, CutupError> {
-        let cov = &self.cov_matrix;
-        let n = cov.ncols();
-        let mut distance = DMatrix::zeros(n, n);
-        for i in 0..n {
-            for j in i + 1..n {
-                let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
-                // Clamping would hide an infinite correlation, so reject it first.
-                if !rho.is_finite() {
-                    return Err(CutupError::NonFiniteCovariance);
-                }
-                let d = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
-                distance[(i, j)] = d;
-                distance[(j, i)] = d;
-            }
-        }
-        Ok(distance)
-    }
-
     /// The order HRP puts the assets in, for [`Hrp::cluster_order`].
     fn cluster_order(&self, linkage: Linkage) -> Result<Vec<usize>, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
@@ -160,26 +136,6 @@ impl Returns {
         }
         let distance = self.correlation_distance()?;
         Ok(cluster::hierarchy(&distance, linkage).leaf_order())
-    }
-
-    /// Returns the variance under `cov` of the inverse-variance portfolio over `cluster`.
-    pub(crate) fn cluster_variance(cov: &DMatrix<f64>, cluster: &[usize]) -> f64 {
-        let weights = Returns::inverse_variance_weights(cov, cluster);
-        let mut variance = 0.0;
-        for (a, &i) in cluster.iter().enumerate() {
-            for (b, &j) in cluster.iter().enumerate() {
-                variance += weights[a] * weights[b] * cov[(i, j)];
-            }
-        }
-        variance
-    }
-
-    /// Returns the inverse-variance weights under `cov` of the assets in `cluster`, summing
-    /// to 1.
-    pub(crate) fn inverse_variance_weights(cov: &DMatrix<f64>, cluster: &[usize]) -> Vec<f64> {
-        let inverse: Vec<f64> = cluster.iter().map(|&i| 1.0 / cov[(i, i)]).collect();
-        let total: f64 = inverse.iter().sum();
-        inverse.iter().map(|w| w / total).collect()
     }
 
     /// The HRP weights, for [`Hrp`]. The hierarchy is built on the sample correlations, and
@@ -208,8 +164,8 @@ impl Returns {
                 let right = &order[pair[1].0..pair[1].1];
                 // On singular data rounding can leave a variance slightly below zero, which
                 // would push α outside [0, 1] and short the other half.
-                let v_left = Returns::cluster_variance(&cov, left).max(0.0);
-                let v_right = Returns::cluster_variance(&cov, right).max(0.0);
+                let v_left = cluster_variance(&cov, left).max(0.0);
+                let v_right = cluster_variance(&cov, right).max(0.0);
                 // Two halves with zero variance each (perfectly hedged pairs) split evenly.
                 let alpha = match v_left + v_right {
                     total if total > 0.0 => 1.0 - v_left / total,
@@ -235,7 +191,7 @@ mod tests {
         assert_weights_close, full_rank_prices, rank_one_returns, two_block_returns,
     };
     use crate::{EqualWeight, MinVariance};
-    use nalgebra::dmatrix;
+    use nalgebra::{DMatrix, dmatrix};
 
     #[test]
     fn test_hrp() {

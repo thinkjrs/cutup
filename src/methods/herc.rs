@@ -1,5 +1,6 @@
 //! [`Herc`]: Hierarchical Equal Risk Contribution.
 
+use super::{cluster_variance, inverse_variance_weights};
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
 
 /// The most clusters [`Herc`]'s gap statistic may choose, unless set.
@@ -171,7 +172,7 @@ impl Returns {
         for (node, members) in &clusters {
             // On singular data rounding can leave a variance slightly below zero, which would
             // push α outside [0, 1].
-            risk[*node] = Returns::cluster_variance(&cov, members).max(0.0);
+            risk[*node] = cluster_variance(&cov, members).max(0.0);
         }
         // The last k − 1 merges are the ones above the cut. A node's children always have
         // lower ids, so one pass up sums each branch's risk and one pass down splits weight.
@@ -194,7 +195,7 @@ impl Returns {
 
         let mut weights = vec![0.0; n];
         for (node, members) in &clusters {
-            let within = Returns::inverse_variance_weights(&cov, members);
+            let within = inverse_variance_weights(&cov, members);
             for (&i, w) in members.iter().zip(within) {
                 weights[i] = branch_weight[*node] * w;
             }
@@ -227,8 +228,8 @@ mod tests {
         let weights = allocator.allocate(&Herc::default().clusters(2)).unwrap();
         let (a, b) = ([0, 2, 4], [1, 3]);
         let (risk_a, risk_b) = (
-            Returns::cluster_variance(&allocator.cov_matrix, &a),
-            Returns::cluster_variance(&allocator.cov_matrix, &b),
+            cluster_variance(&allocator.cov_matrix, &a),
+            cluster_variance(&allocator.cov_matrix, &b),
         );
         let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
         assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
@@ -391,13 +392,10 @@ mod tests {
             .unwrap();
         // The same blocks as without shrinkage, split by their shrunk risk.
         let (a, b) = ([0, 2, 4], [1, 3]);
-        let (risk_a, risk_b) = (
-            Returns::cluster_variance(&shrunk, &a),
-            Returns::cluster_variance(&shrunk, &b),
-        );
+        let (risk_a, risk_b) = (cluster_variance(&shrunk, &a), cluster_variance(&shrunk, &b));
         let weight_a: f64 = a.iter().map(|&i| weights[i]).sum();
         assert!((weight_a - risk_b / (risk_a + risk_b)).abs() < 1e-12);
-        let within = Returns::inverse_variance_weights(&shrunk, &a);
+        let within = inverse_variance_weights(&shrunk, &a);
         assert!((weights[0] / weights[4] - within[0] / within[2]).abs() < 1e-12);
         assert_ne!(
             weights,

@@ -21,7 +21,7 @@ pub use min_variance::MinVariance;
 pub use risk_parity::RiskParity;
 
 use crate::eigen::SymmetricEigen;
-use crate::{CutupError, qp};
+use crate::{CutupError, Returns, qp};
 use nalgebra::{DMatrix, DVector};
 
 /// Splits a covariance into the correlation matrix `C` and the volatilities `σ`, with
@@ -113,4 +113,50 @@ pub(crate) fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, 
     }
     let eigen = SymmetricEigen::new(c).ok_or(CutupError::SingularCovariance)?;
     Ok(cutoff(eigen.values.amax()))
+}
+
+impl Returns {
+    /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
+    /// assets.
+    ///
+    /// Returns [`CutupError::NonFiniteCovariance`] if a correlation can't be computed, for
+    /// example when variances are so small that their product underflows to zero.
+    pub(crate) fn correlation_distance(&self) -> Result<DMatrix<f64>, CutupError> {
+        let cov = &self.cov_matrix;
+        let n = cov.ncols();
+        let mut distance = DMatrix::zeros(n, n);
+        for i in 0..n {
+            for j in i + 1..n {
+                let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
+                // Clamping would hide an infinite correlation, so reject it first.
+                if !rho.is_finite() {
+                    return Err(CutupError::NonFiniteCovariance);
+                }
+                let d = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
+                distance[(i, j)] = d;
+                distance[(j, i)] = d;
+            }
+        }
+        Ok(distance)
+    }
+}
+
+/// Returns the variance under `cov` of the inverse-variance portfolio over `cluster`.
+pub(crate) fn cluster_variance(cov: &DMatrix<f64>, cluster: &[usize]) -> f64 {
+    let weights = inverse_variance_weights(cov, cluster);
+    let mut variance = 0.0;
+    for (a, &i) in cluster.iter().enumerate() {
+        for (b, &j) in cluster.iter().enumerate() {
+            variance += weights[a] * weights[b] * cov[(i, j)];
+        }
+    }
+    variance
+}
+
+/// Returns the inverse-variance weights under `cov` of the assets in `cluster`, summing
+/// to 1.
+pub(crate) fn inverse_variance_weights(cov: &DMatrix<f64>, cluster: &[usize]) -> Vec<f64> {
+    let inverse: Vec<f64> = cluster.iter().map(|&i| 1.0 / cov[(i, i)]).collect();
+    let total: f64 = inverse.iter().sum();
+    inverse.iter().map(|w| w / total).collect()
 }
