@@ -51,8 +51,8 @@ const HERC_MAX_CLUSTERS: usize = 10;
 ///   outside `[0, 1]` or the regularization is negative or not finite.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance, even with
 ///   shrinkage or regularization: a constant asset has no correlation to cluster on.
-/// * [`CutupError::NonFiniteCovariance`] if a variance is subnormal, below
-///   `f64::MIN_POSITIVE` (about 2.2e-308), too small to compute correlations from.
+/// * [`CutupError::NonFiniteCovariance`] if a variance is below about 1e-292,
+///   `f64::MIN_POSITIVE / f64::EPSILON`, too small to compute correlations from accurately.
 ///
 /// # Example
 ///

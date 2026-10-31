@@ -115,25 +115,36 @@ pub(crate) fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, 
     Ok(cutoff(eigen.values.amax()))
 }
 
+/// The smallest variance HRP and HERC accept, `f64::MIN_POSITIVE / f64::EPSILON`, about
+/// 1e-292. Above it, a covariance `ρσ²` with `|ρ|` above machine epsilon is a normal number,
+/// so correlations keep full precision, and inverse variances can't overflow when summed.
+/// Below it, covariances and then variances become subnormal and lose bits.
+const SMALLEST_HIERARCHICAL_VARIANCE: f64 = f64::MIN_POSITIVE / f64::EPSILON;
+
 impl Returns {
     /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
-    /// assets, with the correlations from [`correlation`], which can't underflow for tiny
-    /// variances.
+    /// assets.
     ///
-    /// Returns [`CutupError::NonFiniteCovariance`] if a variance is subnormal, below
-    /// `f64::MIN_POSITIVE`: it keeps too few bits for an accurate correlation, and its inverse,
-    /// which HRP and HERC split weight by, overflows.
+    /// Returns [`CutupError::NonFiniteCovariance`] if a variance is below
+    /// [`SMALLEST_HIERARCHICAL_VARIANCE`].
     pub(crate) fn correlation_distance(&self) -> Result<DMatrix<f64>, CutupError> {
         let cov = &self.cov_matrix;
-        if cov.diagonal().iter().any(|&v| v < f64::MIN_POSITIVE) {
+        if cov
+            .diagonal()
+            .iter()
+            .any(|&v| v < SMALLEST_HIERARCHICAL_VARIANCE)
+        {
             return Err(CutupError::NonFiniteCovariance);
         }
-        let (rho, _) = correlation(cov).map_err(|_| CutupError::NonFiniteCovariance)?;
+        // Dividing by each volatility in turn, so that tiny volatilities' product can't
+        // underflow, as in `correlation`.
+        let volatilities = cov.diagonal().map(f64::sqrt);
         let n = cov.ncols();
         let mut distance = DMatrix::zeros(n, n);
         for i in 0..n {
             for j in i + 1..n {
-                let d = ((1.0 - rho[(i, j)]) / 2.0).clamp(0.0, 1.0).sqrt();
+                let rho = cov[(i, j)] / volatilities[i] / volatilities[j];
+                let d = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
                 distance[(i, j)] = d;
                 distance[(j, i)] = d;
             }

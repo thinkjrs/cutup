@@ -42,8 +42,8 @@ use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights,
 ///   shrinkage or regularization: a constant asset has no correlation to cluster on.
 /// * [`CutupError::InvalidConfig`] if the shrinkage is outside `[0, 1]` or the regularization
 ///   is negative or not finite.
-/// * [`CutupError::NonFiniteCovariance`] if a variance is subnormal, below
-///   `f64::MIN_POSITIVE` (about 2.2e-308), too small to compute correlations from.
+/// * [`CutupError::NonFiniteCovariance`] if a variance is below about 1e-292,
+///   `f64::MIN_POSITIVE / f64::EPSILON`, too small to compute correlations from accurately.
 ///
 /// # Example
 ///
@@ -93,8 +93,8 @@ impl Hrp {
     /// # Errors
     ///
     /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance.
-    /// * [`CutupError::NonFiniteCovariance`] if a variance is subnormal, below
-    ///   `f64::MIN_POSITIVE` (about 2.2e-308), too small to compute correlations from.
+    /// * [`CutupError::NonFiniteCovariance`] if a variance is below about 1e-292,
+    ///   `f64::MIN_POSITIVE / f64::EPSILON`, too small to compute correlations from accurately.
     ///
     /// # Example
     ///
@@ -426,11 +426,11 @@ mod tests {
 
     #[test]
     fn test_hrp_and_herc_match_unit_scale_on_tiny_variances() {
-        // Variances between about 1e-160 and 1e-280, whose products underflow to zero, so
+        // Variances between about 1e-180 and 1e-290, whose products underflow to zero, so
         // dividing by sqrt(σᵢᵢ·σⱼⱼ) would give an infinite or NaN correlation.
         let unit = dmatrix![1.0, 2.0; -1.0, 3.0; 2.0, -1.0];
         let base = Returns::returns_matrix(unit.clone()).unwrap();
-        for s in [1e-80, 1e-100, 1e-140] {
+        for s in [1e-90, 1e-100, 1e-140, 1e-145] {
             let tiny = Returns::returns_matrix(&unit * s).unwrap();
             for method in [&Hrp::default() as &dyn Allocation, &Herc::default()] {
                 assert_weights_close(
@@ -443,15 +443,24 @@ mod tests {
     }
 
     #[test]
-    fn test_hrp_and_herc_reject_subnormal_variances() {
-        // Variances around 1e-320 pass validation, but they're subnormal: too few bits for a
-        // correlation, and their inverses overflow.
+    fn test_hrp_and_herc_reject_variances_too_small_to_correlate() {
+        let methods = [&Hrp::default() as &dyn Allocation, &Herc::default()];
+        // Variances around 1e-320 pass validation, but they're subnormal.
         let s = 1e-160;
         let correlated = dmatrix![s, 2.0 * s; -s, 3.0 * s; 2.0 * s, -s];
         let orthogonal = dmatrix![s, s; -s, s; s, -s; -s, -s];
-        for returns in [correlated, orthogonal] {
+        // Twelve assets with variances of 2.5e-308, just above the subnormal range: most
+        // covariances are subnormal, and the inverse variances of six of them, half of HRP's
+        // first split, sum past f64::MAX.
+        let cycle = [
+            1.0, 2.0, -1.0, 3.0, -2.0, 0.5, -0.7, 1.4, 0.2, -1.1, 0.8, -0.3, 2.2, -1.6,
+        ];
+        let unit = DMatrix::from_fn(14, 12, |t, j| cycle[(t + j) % 14]);
+        let variance = Returns::returns_matrix(unit.clone()).unwrap().cov_matrix[(0, 0)];
+        let near_subnormal = &unit * (2.5e-308 / variance).sqrt();
+        for returns in [correlated, orthogonal, near_subnormal] {
             let allocator = Returns::returns_matrix(returns).unwrap();
-            for method in [&Hrp::default() as &dyn Allocation, &Herc::default()] {
+            for method in methods {
                 assert_eq!(
                     allocator.allocate(method).err(),
                     Some(CutupError::NonFiniteCovariance)
