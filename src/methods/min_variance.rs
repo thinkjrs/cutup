@@ -1,9 +1,11 @@
 //! [`MinVariance`]: the minimum variance portfolio.
 
+use super::long_only_weights;
+use crate::bounds::interior_start;
 use crate::turnover::Trading;
 use crate::{
-    Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights,
-    interior_start, long_only_weights, qp, turnover,
+    Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
+    turnover,
 };
 use nalgebra::{DMatrix, DVector};
 
@@ -287,10 +289,13 @@ mod tests {
             (None, Some(f64::NAN), "shrinkage"),
         ];
         for (regularization, shrinkage, field) in cases {
-            let config = CovarianceConfig {
-                regularization,
-                shrinkage,
-            };
+            let mut config = CovarianceConfig::default();
+            if let Some(epsilon) = regularization {
+                config = config.regularization(epsilon);
+            }
+            if let Some(lambda) = shrinkage {
+                config = config.shrinkage(lambda);
+            }
             match allocator.allocate(
                 &MinVariance::default()
                     .allow_short()
@@ -301,10 +306,9 @@ mod tests {
             }
         }
 
-        let edges = CovarianceConfig {
-            regularization: Some(0.0),
-            shrinkage: Some(1.0),
-        };
+        let edges = CovarianceConfig::default()
+            .regularization(0.0)
+            .shrinkage(1.0);
         assert!(
             allocator
                 .allocate(
@@ -652,20 +656,13 @@ mod tests {
             // 1. No regularization or shrinkage
             CovarianceConfig::default(),
             // 2. Regularization only
-            CovarianceConfig {
-                regularization: Some(1e-6),
-                shrinkage: None,
-            },
+            CovarianceConfig::default().regularization(1e-6),
             // 3. Shrinkage only
-            CovarianceConfig {
-                regularization: None,
-                shrinkage: Some(0.1),
-            },
+            CovarianceConfig::default().shrinkage(0.1),
             // 4. Both regularization and shrinkage
-            CovarianceConfig {
-                regularization: Some(1e-6),
-                shrinkage: Some(0.2),
-            },
+            CovarianceConfig::default()
+                .regularization(1e-6)
+                .shrinkage(0.2),
         ];
 
         for config in &configs {

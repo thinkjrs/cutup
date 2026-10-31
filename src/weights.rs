@@ -42,11 +42,17 @@ use std::sync::Arc;
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Weights {
-    pub(crate) values: Vec<f64>,
-    pub(crate) labels: Arc<[String]>,
+    values: Vec<f64>,
+    labels: Arc<[String]>,
 }
 
 impl Weights {
+    /// `values` labeled with `labels`, one per value.
+    pub(crate) fn new(values: Vec<f64>, labels: Arc<[String]>) -> Self {
+        debug_assert_eq!(values.len(), labels.len());
+        Weights { values, labels }
+    }
+
     /// Returns the weight of the asset in column `asset`, or `None` if out of range.
     pub fn get(&self, asset: usize) -> Option<f64> {
         self.values.get(asset).copied()

@@ -32,8 +32,8 @@ use nalgebra::DMatrix;
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CovarianceConfig {
-    pub(crate) regularization: Option<f64>,
-    pub(crate) shrinkage: Option<f64>,
+    regularization: Option<f64>,
+    shrinkage: Option<f64>,
 }
 
 impl CovarianceConfig {

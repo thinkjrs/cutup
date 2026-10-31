@@ -365,7 +365,7 @@ impl Returns {
                 asset: self.labels[column].clone(),
             });
         }
-        Ok(self.weights(weights.values))
+        Ok(self.weights(weights.into_vec()))
     }
 
     /// `values` of the setting `field`, given for every asset, in column order as a vector.
@@ -395,10 +395,7 @@ impl Returns {
 
     /// `values`, one per asset in column order, as weights labeled with the data's labels.
     pub(crate) fn weights(&self, values: Vec<f64>) -> Weights {
-        Weights {
-            values,
-            labels: Arc::clone(&self.labels),
-        }
+        Weights::new(values, Arc::clone(&self.labels))
     }
 
     /// Builds a `Returns` from returns that have already been validated, rejecting a
