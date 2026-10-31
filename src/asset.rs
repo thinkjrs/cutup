@@ -3,6 +3,7 @@
 use crate::{CutupError, Weights};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
@@ -52,9 +53,35 @@ impl From<&String> for Asset {
     }
 }
 
+/// A label as itself, and a column as `column 3`.
+impl fmt::Display for Asset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Key::Column(column) => write!(f, "column {column}"),
+            Key::Label(label) => f.write_str(label),
+        }
+    }
+}
+
 impl Asset {
+    /// The asset's label, if it was given by label.
+    pub fn label(&self) -> Option<&str> {
+        match &self.0 {
+            Key::Label(label) => Some(label),
+            Key::Column(_) => None,
+        }
+    }
+
+    /// The asset's column, if it was given by column.
+    pub fn column(&self) -> Option<usize> {
+        match &self.0 {
+            Key::Column(column) => Some(*column),
+            Key::Label(_) => None,
+        }
+    }
+
     /// The asset's column among the assets `labels`.
-    pub(crate) fn column(&self, labels: &[String]) -> Result<usize, CutupError> {
+    pub(crate) fn resolve(&self, labels: &[String]) -> Result<usize, CutupError> {
         self.find(labels.len(), |label| labels.iter().position(|l| l == label))
     }
 
@@ -66,11 +93,11 @@ impl Asset {
     ) -> Result<usize, CutupError> {
         match &self.0 {
             Key::Column(column) if *column < n => Ok(*column),
-            Key::Column(column) => Err(CutupError::UnknownAsset {
-                asset: column.to_string(),
+            Key::Column(_) => Err(CutupError::UnknownAsset {
+                asset: self.clone(),
             }),
             Key::Label(label) => position(label).ok_or_else(|| CutupError::UnknownAsset {
-                asset: label.clone(),
+                asset: self.clone(),
             }),
         }
     }
@@ -122,11 +149,13 @@ impl PerAsset {
         ))
     }
 
-    /// The values in column order for the assets `labels`. In column order there must be one
-    /// per asset, or it's a [`CutupError::DimensionMismatch`]. Pairs that leave out an asset
-    /// give it `missing`, or without it are a [`CutupError::DimensionMismatch`] too.
+    /// The values of the setting `field` in column order for the assets `labels`. In column
+    /// order there must be one per asset, or it's a [`CutupError::DimensionMismatch`]. Pairs
+    /// that leave out an asset give it `missing`, or without it are a
+    /// [`CutupError::DimensionMismatch`] too.
     pub(crate) fn resolve(
         &self,
+        field: &'static str,
         labels: &[String],
         missing: Option<f64>,
     ) -> Result<Vec<f64>, CutupError> {
@@ -134,6 +163,7 @@ impl PerAsset {
         let pairs = match &self.0 {
             Values::Ordered(values) if values.len() != n => {
                 return Err(CutupError::DimensionMismatch {
+                    field,
                     expected: n,
                     actual: values.len(),
                 });
@@ -159,6 +189,7 @@ impl PerAsset {
             .into_iter()
             .map(|value| {
                 value.or(missing).ok_or(CutupError::DimensionMismatch {
+                    field,
                     expected: n,
                     actual: pairs.len(),
                 })
@@ -281,6 +312,22 @@ impl<K: Into<Asset>> From<BTreeMap<K, f64>> for PerAsset {
     }
 }
 
+/// A [`CutupError::InvalidAssetValue`] for `value`, the setting `field`'s value for the asset in
+/// `column` among the assets `labels`.
+pub(crate) fn invalid_value(
+    field: &'static str,
+    labels: &[String],
+    column: usize,
+    value: f64,
+) -> CutupError {
+    CutupError::InvalidAssetValue {
+        field,
+        column,
+        asset: labels[column].clone(),
+        value,
+    }
+}
+
 /// The labels of `n` assets without labels of their own: their columns.
 pub(crate) fn column_labels(n: usize) -> Arc<[String]> {
     (0..n).map(|i| i.to_string()).collect()
@@ -297,15 +344,17 @@ mod tests {
     #[test]
     fn assets_by_column_and_label() {
         let labels = labels();
-        assert_eq!(Asset::from(2).column(&labels), Ok(2));
-        assert_eq!(Asset::from("TLT").column(&labels), Ok(1));
-        assert_eq!(Asset::from(String::from("GLD")).column(&labels), Ok(2));
+        assert_eq!(Asset::from(2).resolve(&labels), Ok(2));
+        assert_eq!(Asset::from("TLT").resolve(&labels), Ok(1));
+        assert_eq!(Asset::from(String::from("GLD")).resolve(&labels), Ok(2));
         assert_eq!(
-            Asset::from(3).column(&labels),
-            Err(CutupError::UnknownAsset { asset: "3".into() })
+            Asset::from(3).resolve(&labels),
+            Err(CutupError::UnknownAsset {
+                asset: Asset::from(3)
+            })
         );
         assert_eq!(
-            Asset::from("QQQ").column(&labels),
+            Asset::from("QQQ").resolve(&labels),
             Err(CutupError::UnknownAsset {
                 asset: "QQQ".into()
             })
@@ -317,30 +366,43 @@ mod tests {
         let labels = labels();
         // One per asset, even where pairs could leave some out.
         assert_eq!(
-            PerAsset::from([1.0, 2.0]).resolve(&labels, Some(0.0)),
+            PerAsset::from([1.0, 2.0]).resolve("values", &labels, Some(0.0)),
             Err(CutupError::DimensionMismatch {
+                field: "values",
                 expected: 3,
                 actual: 2
             })
         );
         assert_eq!(
-            PerAsset::from(vec![1.0, 2.0, 3.0]).resolve(&labels, Some(0.0)),
+            PerAsset::from(vec![1.0, 2.0, 3.0]).resolve("values", &labels, Some(0.0)),
             Ok(vec![1.0, 2.0, 3.0])
         );
         // Everything that converted into the `Vec<f64>` these setters used to take.
         let mut values = [1.0, 2.0, 3.0];
         let expected = Ok(values.to_vec());
-        assert_eq!(PerAsset::from(&mut values).resolve(&labels, None), expected);
         assert_eq!(
-            PerAsset::from(&mut values[..]).resolve(&labels, None),
+            PerAsset::from(&mut values).resolve("values", &labels, None),
+            expected
+        );
+        assert_eq!(
+            PerAsset::from(&mut values[..]).resolve("values", &labels, None),
             expected
         );
         let boxed: Box<[f64]> = Box::new(values);
-        assert_eq!(PerAsset::from(boxed).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(boxed).resolve("values", &labels, None),
+            expected
+        );
         let deque = VecDeque::from(values.to_vec());
-        assert_eq!(PerAsset::from(deque).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(deque).resolve("values", &labels, None),
+            expected
+        );
         let cow = Cow::Borrowed(&values[..]);
-        assert_eq!(PerAsset::from(cow).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(cow).resolve("values", &labels, None),
+            expected
+        );
     }
 
     #[test]
@@ -348,29 +410,51 @@ mod tests {
         let labels = labels();
         let expected = Ok(vec![0.1, 0.2, 0.3]);
         let pairs = [("GLD", 0.3), ("SPY", 0.1), ("TLT", 0.2)];
-        assert_eq!(PerAsset::from(pairs).resolve(&labels, None), expected);
-        assert_eq!(PerAsset::from(&pairs).resolve(&labels, None), expected);
-        assert_eq!(PerAsset::from(&pairs[..]).resolve(&labels, None), expected);
         assert_eq!(
-            PerAsset::from(pairs.to_vec()).resolve(&labels, None),
+            PerAsset::from(pairs).resolve("values", &labels, None),
+            expected
+        );
+        assert_eq!(
+            PerAsset::from(&pairs).resolve("values", &labels, None),
+            expected
+        );
+        assert_eq!(
+            PerAsset::from(&pairs[..]).resolve("values", &labels, None),
+            expected
+        );
+        assert_eq!(
+            PerAsset::from(pairs.to_vec()).resolve("values", &labels, None),
             expected
         );
         let map: HashMap<&str, f64> = pairs.into_iter().collect();
-        assert_eq!(PerAsset::from(map).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(map).resolve("values", &labels, None),
+            expected
+        );
         let map: BTreeMap<String, f64> = pairs.map(|(k, v)| (k.to_owned(), v)).into();
-        assert_eq!(PerAsset::from(map).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(map).resolve("values", &labels, None),
+            expected
+        );
         let columns = [(2, 0.3), (0, 0.1), (1, 0.2)];
-        assert_eq!(PerAsset::from(columns).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(columns).resolve("values", &labels, None),
+            expected
+        );
     }
 
     #[test]
     fn pairs_that_leave_out_an_asset() {
         let labels = labels();
         let partial = PerAsset::from([("TLT", 0.4)]);
-        assert_eq!(partial.resolve(&labels, Some(0.0)), Ok(vec![0.0, 0.4, 0.0]));
         assert_eq!(
-            partial.resolve(&labels, None),
+            partial.resolve("values", &labels, Some(0.0)),
+            Ok(vec![0.0, 0.4, 0.0])
+        );
+        assert_eq!(
+            partial.resolve("values", &labels, None),
             Err(CutupError::DimensionMismatch {
+                field: "values",
                 expected: 3,
                 actual: 1
             })
@@ -382,20 +466,22 @@ mod tests {
         let labels = labels();
         let twice = PerAsset::from(vec![(Asset::from("SPY"), 0.5), (Asset::from(0), 0.5)]);
         assert_eq!(
-            twice.resolve(&labels, Some(0.0)),
+            twice.resolve("values", &labels, Some(0.0)),
             Err(CutupError::DuplicateAsset {
                 asset: "SPY".into()
             })
         );
         assert_eq!(
-            PerAsset::from([("SPY", 0.5), ("QQQ", 0.5)]).resolve(&labels, Some(0.0)),
+            PerAsset::from([("SPY", 0.5), ("QQQ", 0.5)]).resolve("values", &labels, Some(0.0)),
             Err(CutupError::UnknownAsset {
                 asset: "QQQ".into()
             })
         );
         assert_eq!(
-            PerAsset::from([(5, 1.0)]).resolve(&labels, Some(0.0)),
-            Err(CutupError::UnknownAsset { asset: "5".into() })
+            PerAsset::from([(5, 1.0)]).resolve("values", &labels, Some(0.0)),
+            Err(CutupError::UnknownAsset {
+                asset: Asset::from(5)
+            })
         );
     }
 
@@ -404,7 +490,7 @@ mod tests {
         let weights = Weights::from(vec![0.2, 0.3, 0.5]);
         let reordered = ["2", "0", "1"].map(String::from);
         assert_eq!(
-            PerAsset::from(&weights).resolve(&reordered, None),
+            PerAsset::from(&weights).resolve("values", &reordered, None),
             Ok(vec![0.5, 0.2, 0.3])
         );
         assert_eq!(
@@ -419,7 +505,7 @@ mod tests {
         for _ in 0..20 {
             let map: HashMap<&str, f64> = [("XLE", 0.5), ("QQQ", 0.5)].into_iter().collect();
             assert_eq!(
-                PerAsset::from(map).resolve(&labels, Some(0.0)),
+                PerAsset::from(map).resolve("values", &labels, Some(0.0)),
                 Err(CutupError::UnknownAsset {
                     asset: "QQQ".into()
                 })

@@ -226,9 +226,10 @@ impl Allocation for InverseVariance {
 ///
 /// # Errors
 ///
-/// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, `shrinkage`
-///   is outside `[0, 1]`, or a lower bound is negative or not finite, or an upper bound is
-///   below its lower bound or NaN.
+/// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
+///   `shrinkage` is outside `[0, 1]`.
+/// * [`CutupError::InvalidAssetValue`] if a lower bound is negative or not finite, or an upper
+///   bound is below its lower bound or NaN.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
@@ -244,8 +245,9 @@ impl Allocation for InverseVariance {
 /// With rebalancing settings, also:
 ///
 /// * [`CutupError::MissingCurrentWeights`] if one is set without current weights.
-/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9` or
-///   aren't finite, or the cap or penalty is negative or not finite.
+/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9`, or
+///   the cap or penalty is negative or not finite.
+/// * [`CutupError::InvalidAssetValue`] if a current weight isn't finite.
 /// * [`CutupError::DimensionMismatch`] if there isn't one current weight per asset.
 /// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
 ///   current weights into the bounds.
@@ -407,9 +409,9 @@ impl Allocation for MinVariance {
 /// # Errors
 ///
 /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
-///   target return or an expected return is not finite, a lower bound is negative or not
-///   finite, an upper bound is below its lower bound or NaN, or the covariance settings are
-///   invalid.
+///   target return is not finite, or the covariance settings are invalid.
+/// * [`CutupError::InvalidAssetValue`] if an expected return is not finite, a lower bound is
+///   negative or not finite, or an upper bound is below its lower bound or NaN.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds or the expected returns don't have
 ///   one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
@@ -434,8 +436,10 @@ impl Allocation for MinVariance {
 /// With rebalancing settings, also:
 ///
 /// * [`CutupError::MissingCurrentWeights`] if one is set without current weights.
-/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9` or
-///   aren't finite, or the cap, penalty or a cost is negative or not finite.
+/// * [`CutupError::InvalidConfig`] if the current weights don't sum to 1 within `1e-9`, or
+///   the cap, penalty or a uniform cost is negative or not finite.
+/// * [`CutupError::InvalidAssetValue`] if a current weight isn't finite, or a per-asset cost
+///   is negative or not finite.
 /// * [`CutupError::DimensionMismatch`] if there isn't one current weight, or per-asset cost,
 ///   per asset.
 /// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
@@ -567,7 +571,7 @@ impl MeanVariance {
 
 impl Allocation for MeanVariance {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let expected_returns = data.resolve(self.expected_returns.as_ref())?;
+        let expected_returns = data.resolve("expected_returns", self.expected_returns.as_ref())?;
         if self.trading.first_setting().is_some() {
             check_objective(self.objective)?;
             let covariance = || data.adjusted_covariance(&self.covariance);
@@ -658,8 +662,9 @@ impl Allocation for MeanVariance {
 ///
 /// # Errors
 ///
-/// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not finite,
-///   or the covariance settings are invalid.
+/// * [`CutupError::InvalidConfig`] if the risk-free rate is not finite, or the covariance
+///   settings are invalid.
+/// * [`CutupError::InvalidAssetValue`] if an expected return is not finite.
 /// * [`CutupError::DimensionMismatch`] if the expected returns don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
@@ -754,7 +759,7 @@ impl MaxSharpe {
 
 impl Allocation for MaxSharpe {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let mu = data.resolve(self.expected_returns.as_ref())?;
+        let mu = data.resolve("expected_returns", self.expected_returns.as_ref())?;
         if self.long_only {
             data.long_only_max_sharpe(self.risk_free_rate, mu.as_ref(), &self.covariance)
         } else {
@@ -860,8 +865,8 @@ impl Allocation for MaxDiversification {
 ///
 /// # Errors
 ///
-/// * [`CutupError::InvalidConfig`] if a risk budget isn't positive and finite, or the
-///   covariance settings are invalid.
+/// * [`CutupError::InvalidConfig`] if the covariance settings are invalid.
+/// * [`CutupError::InvalidAssetValue`] if a risk budget isn't positive and finite.
 /// * [`CutupError::DimensionMismatch`] if the risk budgets don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
@@ -915,7 +920,7 @@ impl RiskParity {
 
 impl Allocation for RiskParity {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let budgets = data.resolve(self.risk_budgets.as_ref())?;
+        let budgets = data.resolve("risk_budgets", self.risk_budgets.as_ref())?;
         data.risk_parity(budgets.as_ref(), &self.covariance)
     }
 }

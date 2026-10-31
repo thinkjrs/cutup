@@ -98,13 +98,59 @@ fn allocate_rejects_malformed_weights() {
     assert_eq!(
         allocator.allocate(&Fixed(vec![0.5, 0.5])),
         Err(CutupError::DimensionMismatch {
+            field: "weights",
             expected: 3,
             actual: 2
         })
     );
     assert_eq!(
         allocator.allocate(&Fixed(vec![0.5, f64::NAN, 0.5])),
-        Err(CutupError::NonFiniteWeight { asset: 1 })
+        Err(CutupError::NonFiniteWeight {
+            column: 1,
+            asset: "1".into()
+        })
     );
     assert!(allocator.allocate(&Fixed(vec![0.2, 0.3, 0.5])).is_ok());
+}
+
+/// Every public type can be shared and sent between threads. This fails to compile, rather
+/// than to run, if one stops being `Send + Sync`.
+#[test]
+fn public_types_are_send_and_sync() {
+    fn send_and_sync<T: Send + Sync>() {}
+    send_and_sync::<cutup::Asset>();
+    send_and_sync::<cutup::BlackLitterman>();
+    send_and_sync::<CovarianceConfig>();
+    send_and_sync::<CutupError>();
+    send_and_sync::<EqualWeight>();
+    send_and_sync::<cutup::Herc>();
+    send_and_sync::<Hrp>();
+    send_and_sync::<cutup::InverseVariance>();
+    send_and_sync::<InverseVolatility>();
+    send_and_sync::<cutup::Linkage>();
+    send_and_sync::<cutup::MaxDiversification>();
+    send_and_sync::<cutup::MaxSharpe>();
+    send_and_sync::<MeanVariance>();
+    send_and_sync::<cutup::MinCvar>();
+    send_and_sync::<MinVariance>();
+    send_and_sync::<cutup::PerAsset>();
+    send_and_sync::<Returns>();
+    send_and_sync::<cutup::RiskParity>();
+    send_and_sync::<cutup::View>();
+    send_and_sync::<cutup::WeightBounds>();
+    send_and_sync::<Weights>();
+}
+
+#[test]
+fn weights_display_as_a_labeled_table() {
+    let returns = [[0.01, -0.02], [-0.004, 0.015], [0.007, 0.003]];
+    let data = Returns::new(&returns)
+        .unwrap()
+        .labeled(["SPY", "GOOGL"])
+        .unwrap();
+    let weights = data.allocate(&EqualWeight).unwrap();
+    assert_eq!(weights.to_string(), "SPY    0.5000\nGOOGL  0.5000");
+    assert_eq!(format!("{weights:.2}"), "SPY    0.50\nGOOGL  0.50");
+    let values: Vec<f64> = weights.into_iter().collect();
+    assert_eq!(values, [0.5, 0.5]);
 }

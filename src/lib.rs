@@ -108,8 +108,10 @@ pub enum CutupError {
     },
     /// An asset has zero variance, which the method can't divide by.
     ZeroVariance {
-        /// Column (asset) with zero variance.
-        asset: usize,
+        /// The asset's column.
+        column: usize,
+        /// The asset's label.
+        asset: String,
     },
     /// The input is finite but too extreme for a finite covariance matrix (for example, a
     /// return large enough to overflow when squared).
@@ -120,6 +122,18 @@ pub enum CutupError {
     InvalidConfig {
         /// Name of the offending field.
         field: &'static str,
+        /// The value supplied.
+        value: f64,
+    },
+    /// One asset's value in a per-asset setting is out of range, such as a negative lower
+    /// bound or a current weight that isn't finite.
+    InvalidAssetValue {
+        /// Name of the setting.
+        field: &'static str,
+        /// The asset's column.
+        column: usize,
+        /// The asset's label.
+        asset: String,
         /// The value supplied.
         value: f64,
     },
@@ -134,17 +148,19 @@ pub enum CutupError {
         /// The number of values in this row.
         actual: usize,
     },
-    /// A configuration vector doesn't have one entry per asset.
+    /// A setting, or an [`Allocation`]'s weights, don't have one value per asset.
     DimensionMismatch {
+        /// Name of the setting, or `weights`.
+        field: &'static str,
         /// Number of assets.
         expected: usize,
-        /// Length supplied.
+        /// Number of values supplied.
         actual: usize,
     },
     /// An [`Asset`] isn't in the data: no asset has its label, or its column is out of range.
     UnknownAsset {
-        /// The label, or the column.
-        asset: String,
+        /// The asset, by label or by column, as given.
+        asset: Asset,
     },
     /// An asset is given more than once: a label repeated in [`Returns::labeled`], or an asset
     /// named twice in the pairs of a [`PerAsset`].
@@ -208,8 +224,10 @@ pub enum CutupError {
     },
     /// An [`Allocation`] returned a weight that is NaN or infinite.
     NonFiniteWeight {
-        /// The asset's column index.
-        asset: usize,
+        /// The asset's column.
+        column: usize,
+        /// The asset's label.
+        asset: String,
     },
     /// The views given to [`BlackLitterman`] are degenerate: certain views that repeat or
     /// contradict each other, or a view whose variance follows its portfolio's on a portfolio
@@ -250,7 +268,9 @@ impl fmt::Display for CutupError {
             CutupError::NonPositivePrice { row, col } => {
                 write!(f, "price at row {row}, column {col} is zero or negative")
             }
-            CutupError::ZeroVariance { asset } => write!(f, "asset {asset} has zero variance"),
+            CutupError::ZeroVariance { column, asset } => {
+                write!(f, "asset `{asset}` (column {column}) has zero variance")
+            }
             CutupError::NonFiniteCovariance => {
                 write!(
                     f,
@@ -264,6 +284,15 @@ impl fmt::Display for CutupError {
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
             }
+            CutupError::InvalidAssetValue {
+                field,
+                column,
+                asset,
+                value,
+            } => write!(
+                f,
+                "`{field}` for asset `{asset}` (column {column}) is out of range: {value}"
+            ),
             CutupError::RaggedRows {
                 row,
                 expected,
@@ -272,11 +301,18 @@ impl fmt::Display for CutupError {
                 f,
                 "row {row} has the wrong number of values: {actual}, not {expected}"
             ),
-            CutupError::DimensionMismatch { expected, actual } => write!(
+            CutupError::DimensionMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
                 f,
-                "expected one value per asset ({expected}) but got {actual}"
+                "`{field}` needs one value per asset ({expected}) but got {actual}"
             ),
-            CutupError::UnknownAsset { asset } => write!(f, "the data has no asset `{asset}`"),
+            CutupError::UnknownAsset { asset } => match asset.label() {
+                Some(label) => write!(f, "no asset is labeled `{label}`"),
+                None => write!(f, "there is no asset in {asset}"),
+            },
             CutupError::DuplicateAsset { asset } => {
                 write!(f, "asset `{asset}` is given more than once")
             }
@@ -332,8 +368,11 @@ impl fmt::Display for CutupError {
                 "weight bounds can't sum to 1: lower bounds sum to {lower_sum} and upper \
                  bounds to {upper_sum}"
             ),
-            CutupError::NonFiniteWeight { asset } => {
-                write!(f, "weight for asset {asset} is NaN or infinite")
+            CutupError::NonFiniteWeight { column, asset } => {
+                write!(
+                    f,
+                    "weight for asset `{asset}` (column {column}) is NaN or infinite"
+                )
             }
             CutupError::MissingCurrentWeights => write!(
                 f,
@@ -481,6 +520,45 @@ impl<'a> IntoIterator for &'a Weights {
 
     fn into_iter(self) -> Self::IntoIter {
         self.values.iter()
+    }
+}
+
+/// The weights in column order, by value.
+impl IntoIterator for Weights {
+    type Item = f64;
+    type IntoIter = std::vec::IntoIter<f64>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+/// A table of each asset's label and weight, one per line in column order, with the labels
+/// padded to the same width. Weights have 4 decimals, or the precision given, as in `{:.2}`.
+///
+/// ```
+/// use cutup::Weights;
+///
+/// let weights = Weights::from(vec![0.6, 0.3, 0.1]);
+/// assert_eq!(weights.to_string(), "0  0.6000\n1  0.3000\n2  0.1000");
+/// assert_eq!(format!("{weights:.1}"), "0  0.6\n1  0.3\n2  0.1");
+/// ```
+impl fmt::Display for Weights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let precision = f.precision().unwrap_or(4);
+        let width = self
+            .labels
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        for (i, (label, weight)) in self.labeled().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{label:<width$}  {weight:.precision$}")?;
+        }
+        Ok(())
     }
 }
 
@@ -647,12 +725,12 @@ enum Limit {
 }
 
 impl Limit {
-    fn resolve(&self, labels: &[String]) -> Result<DVector<f64>, CutupError> {
+    fn resolve(&self, field: &'static str, labels: &[String]) -> Result<DVector<f64>, CutupError> {
         let n = labels.len();
         match self {
             Limit::Uniform(value) => Ok(DVector::from_element(n, *value)),
             Limit::PerAsset(values) => {
-                let values = values.resolve(labels, None)?;
+                let values = values.resolve(field, labels, None)?;
                 Ok(DVector::from_vec(values))
             }
         }
@@ -697,28 +775,18 @@ impl WeightBounds {
     /// doesn't change which portfolios are feasible, and makes every upper bound finite.
     fn resolve(&self, labels: &[String]) -> Result<qp::Bounds, CutupError> {
         let n = labels.len();
-        let mut lower = self.lower.resolve(labels)?;
-        let mut upper = self.upper.resolve(labels)?;
+        let mut lower = self.lower.resolve("lower_bound", labels)?;
+        let mut upper = self.upper.resolve("upper_bound", labels)?;
         for (asset, l, u) in &self.assets {
-            let i = asset.column(labels)?;
+            let i = asset.resolve(labels)?;
             lower[i] = *l;
             upper[i] = *u;
         }
-        if let Some(&value) = lower.iter().find(|&&l| !(l.is_finite() && l >= 0.0)) {
-            return Err(CutupError::InvalidConfig {
-                field: "lower_bound",
-                value,
-            });
+        if let Some(i) = (0..n).find(|&i| !(lower[i].is_finite() && lower[i] >= 0.0)) {
+            return Err(asset::invalid_value("lower_bound", labels, i, lower[i]));
         }
-        if let Some((_, &value)) = lower
-            .iter()
-            .zip(upper.iter())
-            .find(|(l, u)| u.is_nan() || u < l)
-        {
-            return Err(CutupError::InvalidConfig {
-                field: "upper_bound",
-                value,
-            });
+        if let Some(i) = (0..n).find(|&i| upper[i].is_nan() || upper[i] < lower[i]) {
+            return Err(asset::invalid_value("upper_bound", labels, i, upper[i]));
         }
         let (lower_sum, upper_sum) = (lower.sum(), upper.sum());
         // Within rounding of a budget of 1, as when ten caps of 0.1 sum to 0.9999999999999999.
@@ -757,6 +825,7 @@ impl WeightBounds {
 /// returns you have already computed with [`Returns::new`].
 ///
 /// Before 0.3.0 this was `PortfolioAllocator`, which stays as a deprecated alias until 1.0.0.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Returns {
     returns: DMatrix<f64>,
     cov_matrix: DMatrix<f64>,
@@ -1027,6 +1096,7 @@ impl Returns {
         let n = self.returns.ncols();
         if labels.len() != n {
             return Err(CutupError::DimensionMismatch {
+                field: "labels",
                 expected: n,
                 actual: labels.len(),
             });
@@ -1082,21 +1152,43 @@ impl Returns {
         let n = self.returns.ncols();
         if weights.len() != n {
             return Err(CutupError::DimensionMismatch {
+                field: "weights",
                 expected: n,
                 actual: weights.len(),
             });
         }
-        if let Some(asset) = weights.iter().position(|w| !w.is_finite()) {
-            return Err(CutupError::NonFiniteWeight { asset });
+        if let Some(column) = weights.iter().position(|w| !w.is_finite()) {
+            return Err(CutupError::NonFiniteWeight {
+                column,
+                asset: self.labels[column].clone(),
+            });
         }
         Ok(self.weights(weights.values))
     }
 
-    /// `values`, given for every asset, in column order as a vector.
-    fn resolve(&self, values: Option<&PerAsset>) -> Result<Option<DVector<f64>>, CutupError> {
+    /// `values` of the setting `field`, given for every asset, in column order as a vector.
+    fn resolve(
+        &self,
+        field: &'static str,
+        values: Option<&PerAsset>,
+    ) -> Result<Option<DVector<f64>>, CutupError> {
         values
-            .map(|values| Ok(DVector::from_vec(values.resolve(&self.labels, None)?)))
+            .map(|values| {
+                Ok(DVector::from_vec(values.resolve(
+                    field,
+                    &self.labels,
+                    None,
+                )?))
+            })
             .transpose()
+    }
+
+    /// The error for the asset in `column` having zero variance.
+    fn zero_variance(&self, column: usize) -> CutupError {
+        CutupError::ZeroVariance {
+            column,
+            asset: self.labels[column].clone(),
+        }
     }
 
     /// `values`, one per asset in column order, as weights labeled with the data's labels.
@@ -1199,7 +1291,7 @@ impl Returns {
             config.shrinkage.unwrap_or(0.0) > 0.0 || config.regularization.unwrap_or(0.0) > 0.0;
         if !adjusted {
             if let Some(asset) = self.find_zero_variance() {
-                return Err(CutupError::ZeroVariance { asset });
+                return Err(self.zero_variance(asset));
             }
         }
 
@@ -1363,14 +1455,17 @@ impl Returns {
         let n = self.cov_matrix.ncols();
         match given {
             Some(mu) if mu.len() != n => Err(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: n,
                 actual: mu.len(),
             }),
-            Some(mu) => match mu.iter().find(|m| !m.is_finite()) {
-                Some(&value) => Err(CutupError::InvalidConfig {
-                    field: "expected_returns",
-                    value,
-                }),
+            Some(mu) => match mu.iter().position(|m| !m.is_finite()) {
+                Some(i) => Err(asset::invalid_value(
+                    "expected_returns",
+                    &self.labels,
+                    i,
+                    mu[i],
+                )),
                 None => Ok(mu.clone()),
             },
             None => Ok(self.returns.row_mean().transpose()),
@@ -1507,7 +1602,7 @@ impl Returns {
     /// Weights each asset in proportion to `f(σᵢ²)`, normalized to sum to 1.
     fn weight_by_variance(&self, f: impl Fn(f64) -> f64) -> Result<Weights, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
+            return Err(self.zero_variance(asset));
         }
         let raw: Vec<f64> = self.cov_matrix.diagonal().iter().map(|&v| f(v)).collect();
         let total: f64 = raw.iter().sum();
@@ -1524,16 +1619,14 @@ impl Returns {
         let budgets = match risk_budgets {
             Some(b) if b.len() != n => {
                 return Err(CutupError::DimensionMismatch {
+                    field: "risk_budgets",
                     expected: n,
                     actual: b.len(),
                 });
             }
-            Some(b) => match b.iter().find(|b| !(b.is_finite() && **b > 0.0)) {
-                Some(&value) => {
-                    return Err(CutupError::InvalidConfig {
-                        field: "risk_budgets",
-                        value,
-                    });
+            Some(b) => match b.iter().position(|b| !(b.is_finite() && *b > 0.0)) {
+                Some(i) => {
+                    return Err(asset::invalid_value("risk_budgets", &self.labels, i, b[i]));
                 }
                 None => b.clone(),
             },
@@ -1680,7 +1773,7 @@ impl Returns {
     /// The order HRP puts the assets in, for [`Hrp::cluster_order`].
     fn cluster_order(&self, linkage: Linkage) -> Result<Vec<usize>, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
+            return Err(self.zero_variance(asset));
         }
         let distance = self.correlation_distance()?;
         Ok(cluster::hierarchy(&distance, linkage).leaf_order())
@@ -1777,7 +1870,7 @@ impl Returns {
         // Shrinkage would give a constant asset a variance, but not a correlation to cluster
         // on, so this comes before adjusting the covariance.
         if let Some(asset) = self.find_zero_variance() {
-            return Err(CutupError::ZeroVariance { asset });
+            return Err(self.zero_variance(asset));
         }
         let cov = self.adjusted_covariance(covariance)?;
         let distance = self.correlation_distance()?;
@@ -2329,15 +2422,44 @@ mod tests {
             "input has 1 rows but at least 3 are required"
         );
         assert_eq!(
-            CutupError::ZeroVariance { asset: 2 }.to_string(),
-            "asset 2 has zero variance"
+            CutupError::ZeroVariance {
+                column: 2,
+                asset: "GLD".into()
+            }
+            .to_string(),
+            "asset `GLD` (column 2) has zero variance"
         );
         assert_eq!(
             CutupError::UnknownAsset {
                 asset: "QQQ".into()
             }
             .to_string(),
-            "the data has no asset `QQQ`"
+            "no asset is labeled `QQQ`"
+        );
+        assert_eq!(
+            CutupError::UnknownAsset {
+                asset: Asset::from(3)
+            }
+            .to_string(),
+            "there is no asset in column 3"
+        );
+        assert_eq!(
+            CutupError::InvalidAssetValue {
+                field: "lower_bound",
+                column: 0,
+                asset: "SPY".into(),
+                value: -0.1
+            }
+            .to_string(),
+            "`lower_bound` for asset `SPY` (column 0) is out of range: -0.1"
+        );
+        assert_eq!(
+            CutupError::NonFiniteWeight {
+                column: 1,
+                asset: "TLT".into()
+            }
+            .to_string(),
+            "weight for asset `TLT` (column 1) is NaN or infinite"
         );
         assert_eq!(
             CutupError::DuplicateAsset {
@@ -2365,11 +2487,12 @@ mod tests {
         );
         assert_eq!(
             CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 2
             }
             .to_string(),
-            "expected one value per asset (3) but got 2"
+            "`expected_returns` needs one value per asset (3) but got 2"
         );
         assert_eq!(
             CutupError::RiskFreeRateTooHigh {
@@ -2560,13 +2683,19 @@ mod tests {
         let allocator = Returns::prices_matrix(prices).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
-            Some(CutupError::ZeroVariance { asset: 1 })
+            Some(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
         assert_eq!(
             allocator
                 .allocate(&MinVariance::default().allow_short())
                 .err(),
-            Some(CutupError::ZeroVariance { asset: 1 })
+            Some(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
         assert_eq!(allocator.allocate(&EqualWeight).unwrap().len(), 3);
     }
@@ -2593,13 +2722,19 @@ mod tests {
             Returns::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
         assert_eq!(
             allocator
                 .allocate(&MinVariance::default().allow_short())
                 .err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
 
         // Prices growing at a constant 10% per period.
@@ -2607,7 +2742,10 @@ mod tests {
         let allocator = Returns::prices_matrix(prices).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default()).err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
     }
 
@@ -2926,7 +3064,9 @@ mod tests {
         let config = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_vec(vec![0.01, f64::NAN, 0.02]).as_slice());
         match allocator.allocate(&config.clone().allow_short()) {
-            Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "expected_returns"),
+            Err(CutupError::InvalidAssetValue { field, column, .. }) => {
+                assert_eq!((field, column), ("expected_returns", 1))
+            }
             other => panic!("NaN expected return gave {other:?}"),
         }
 
@@ -2935,6 +3075,7 @@ mod tests {
         assert_eq!(
             allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 2
             })
@@ -2949,7 +3090,10 @@ mod tests {
             allocator
                 .allocate(&MeanVariance::risk_aversion(1.0).allow_short())
                 .err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
     }
 
@@ -3231,7 +3375,10 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&MinVariance::default()),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
     }
 
@@ -3509,28 +3656,32 @@ mod tests {
         );
         assert_eq!(
             solve(WeightBounds::uniform(-0.1, 1.0)),
-            Err(CutupError::InvalidConfig {
+            Err(CutupError::InvalidAssetValue {
                 field: "lower_bound",
+                column: 0,
+                asset: "0".into(),
                 value: -0.1
             })
         );
         assert_eq!(
             solve(WeightBounds::uniform(0.3, 0.2)),
-            Err(CutupError::InvalidConfig {
+            Err(CutupError::InvalidAssetValue {
                 field: "upper_bound",
+                column: 0,
+                asset: "0".into(),
                 value: 0.2
             })
         );
         assert!(matches!(
             solve(WeightBounds::uniform(0.0, f64::NAN)),
-            Err(CutupError::InvalidConfig {
+            Err(CutupError::InvalidAssetValue {
                 field: "upper_bound",
                 ..
             })
         ));
         assert!(matches!(
             solve(WeightBounds::uniform(f64::INFINITY, f64::INFINITY)),
-            Err(CutupError::InvalidConfig {
+            Err(CutupError::InvalidAssetValue {
                 field: "lower_bound",
                 ..
             })
@@ -3538,6 +3689,7 @@ mod tests {
         assert_eq!(
             solve(WeightBounds::per_asset(vec![0.0; n + 1], vec![1.0; n + 1])),
             Err(CutupError::DimensionMismatch {
+                field: "lower_bound",
                 expected: n,
                 actual: n + 1
             })
@@ -3837,7 +3989,10 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&MaxDiversification::default()),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
     }
 
@@ -3871,6 +4026,7 @@ mod tests {
         assert_eq!(
             allocator.allocate(&config),
             Err(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 1
             })
@@ -3913,6 +4069,7 @@ mod tests {
         assert_eq!(
             allocator.allocate(&config),
             Err(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 1
             })
@@ -3972,7 +4129,10 @@ mod tests {
             allocator
                 .allocate(&MinVariance::default().allow_short())
                 .err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
 
         let shrunk = CovarianceConfig::default().shrinkage(1.0);
@@ -4316,11 +4476,17 @@ mod tests {
             Returns::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             allocator.allocate(&InverseVolatility).err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
         assert_eq!(
             allocator.allocate(&InverseVariance).err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
     }
 
@@ -4506,6 +4672,7 @@ mod tests {
         assert_eq!(
             allocator.allocate(&config.clone().allow_short()).err(),
             Some(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 1
             })
@@ -4514,7 +4681,10 @@ mod tests {
         let constant = Returns::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
         assert_eq!(
             constant.allocate(&MaxSharpe::default().allow_short()).err(),
-            Some(CutupError::ZeroVariance { asset: 0 })
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
     }
 
@@ -4735,6 +4905,7 @@ mod tests {
         assert_eq!(
             allocator.allocate(&budgets(&[1.0, 1.0])),
             Err(CutupError::DimensionMismatch {
+                field: "risk_budgets",
                 expected: 3,
                 actual: 2
             })
@@ -4742,16 +4913,19 @@ mod tests {
         for bad in [0.0, -1.0, f64::INFINITY] {
             assert_eq!(
                 allocator.allocate(&budgets(&[1.0, bad, 1.0])),
-                Err(CutupError::InvalidConfig {
+                Err(CutupError::InvalidAssetValue {
                     field: "risk_budgets",
+                    column: 1,
+                    asset: "1".into(),
                     value: bad
                 })
             );
         }
         assert!(matches!(
             allocator.allocate(&budgets(&[1.0, 1.0, f64::NAN])),
-            Err(CutupError::InvalidConfig {
+            Err(CutupError::InvalidAssetValue {
                 field: "risk_budgets",
+                column: 2,
                 ..
             })
         ));
@@ -4771,7 +4945,10 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&RiskParity::default()),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
         // Regularization gives the constant asset a variance, and nearly all the weight.
         let config =
@@ -4871,7 +5048,10 @@ mod tests {
             Returns::returns_matrix(returns)
                 .unwrap()
                 .allocate(&Herc::default()),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
     }
 
@@ -4883,21 +5063,33 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_eq!(
             allocator.allocate(&Hrp::default().shrinkage(0.5)),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
         assert_eq!(
             allocator.allocate(&Herc::default().regularization(1e-6)),
-            Err(CutupError::ZeroVariance { asset: 1 })
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            })
         );
         // Even when every asset is constant, which shrinkage alone can't fix.
         let constant = Returns::returns_matrix(dmatrix![0.0, 0.0; 0.0, 0.0]).unwrap();
         assert_eq!(
             constant.allocate(&Hrp::default().shrinkage(0.5)),
-            Err(CutupError::ZeroVariance { asset: 0 })
+            Err(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
         assert_eq!(
             constant.allocate(&Herc::default().shrinkage(0.5)),
-            Err(CutupError::ZeroVariance { asset: 0 })
+            Err(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
         );
 
         let allocator = Returns::returns_matrix(two_block_returns()).unwrap();
@@ -4983,6 +5175,7 @@ mod tests {
         assert_eq!(
             allocator().labeled(["SPY", "TLT"]).err(),
             Some(CutupError::DimensionMismatch {
+                field: "labels",
                 expected: 3,
                 actual: 2
             })
@@ -5198,7 +5391,9 @@ mod tests {
             allocator.allocate(
                 &MinVariance::default().bounds(WeightBounds::uniform(0.0, 1.0).asset(3, 0.0, 0.5))
             ),
-            Err(unknown("3"))
+            Err(CutupError::UnknownAsset {
+                asset: Asset::from(3)
+            })
         );
         assert_eq!(
             model()
@@ -5211,9 +5406,8 @@ mod tests {
             model()
                 .view(View::relative("SPY", 0, 0.001))
                 .expected_returns(&allocator),
-            Err(CutupError::InvalidConfig {
-                field: "view_asset",
-                value: 0.0
+            Err(CutupError::DuplicateAsset {
+                asset: "SPY".into()
             })
         );
         assert_eq!(
@@ -5233,8 +5427,54 @@ mod tests {
                     .expected_returns([("SPY", 0.001), ("TLT", 0.002)])
             ),
             Err(CutupError::DimensionMismatch {
+                field: "expected_returns",
                 expected: 3,
                 actual: 2
+            })
+        );
+    }
+
+    #[test]
+    fn test_errors_name_assets_by_label() {
+        let returns = dmatrix![
+            0.01, 0.0, -0.02;
+            -0.004, 0.0, 0.015;
+            0.007, 0.0, 0.003
+        ];
+        let allocator = Returns::returns_matrix(returns)
+            .unwrap()
+            .labeled(["SPY", "CASH", "TLT"])
+            .unwrap();
+        assert_eq!(
+            allocator.allocate(&InverseVariance),
+            Err(CutupError::ZeroVariance {
+                column: 1,
+                asset: "CASH".into()
+            })
+        );
+        let bad_current = MinVariance::default()
+            .shrinkage(0.5)
+            .current_weights([("SPY", 0.5), ("TLT", f64::INFINITY)])
+            .max_turnover(0.1);
+        assert_eq!(
+            allocator.allocate(&bad_current),
+            Err(CutupError::InvalidAssetValue {
+                field: "current_weights",
+                column: 2,
+                asset: "TLT".into(),
+                value: f64::INFINITY
+            })
+        );
+        let capped = MinVariance::default()
+            .shrinkage(0.5)
+            .bounds(WeightBounds::uniform(0.0, 1.0).asset("TLT", 0.5, 0.4));
+        assert_eq!(
+            allocator.allocate(&capped),
+            Err(CutupError::InvalidAssetValue {
+                field: "upper_bound",
+                column: 2,
+                asset: "TLT".into(),
+                value: 0.4
             })
         );
     }

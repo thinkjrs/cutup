@@ -43,8 +43,10 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// # Errors
 ///
-/// * [`CutupError::InvalidConfig`] if the confidence isn't in `(0, 1)`, the target return
-///   isn't finite, or the bounds are invalid.
+/// * [`CutupError::InvalidConfig`] if the confidence isn't in `(0, 1)`, or the target return
+///   isn't finite.
+/// * [`CutupError::InvalidAssetValue`] if a lower bound is negative or not finite, or an upper
+///   bound is below its lower bound or NaN.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
@@ -210,6 +212,7 @@ impl Returns {
         let cap = tail_weight(beta, t)?;
         if weights.len() != n {
             return Err(CutupError::DimensionMismatch {
+                field: "weights",
                 expected: n,
                 actual: weights.len(),
             });
@@ -407,6 +410,7 @@ mod tests {
         assert_eq!(
             allocator.cvar(&vec![1.0].into(), 0.5),
             Err(CutupError::DimensionMismatch {
+                field: "weights",
                 expected: 3,
                 actual: 1
             })

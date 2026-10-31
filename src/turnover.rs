@@ -1,6 +1,7 @@
 //! Turnover and transaction costs against current weights, for min variance and
 //! mean-variance.
 
+use crate::asset::invalid_value;
 use crate::{
     CutupError, PerAsset, ReturnRange, Returns, TargetProblem, WeightBounds, Weights,
     interior_start, lp, normalized, qp,
@@ -77,9 +78,9 @@ impl Trading {
                 DVector::from_element(n, *cost)
             }
             Some(Costs::PerAsset(costs)) => {
-                let costs = costs.resolve(labels, None)?;
-                for &cost in &costs {
-                    nonnegative("transaction_costs", cost)?;
+                let costs = costs.resolve("transaction_costs", labels, None)?;
+                if let Some(i) = costs.iter().position(|c| !(c.is_finite() && *c >= 0.0)) {
+                    return Err(invalid_value("transaction_costs", labels, i, costs[i]));
                 }
                 DVector::from_vec(costs)
             }
@@ -94,12 +95,9 @@ impl Trading {
                 }),
             };
         };
-        let current = current.resolve(labels, Some(0.0))?;
-        if let Some(&value) = current.iter().find(|w| !w.is_finite()) {
-            return Err(CutupError::InvalidConfig {
-                field: "current_weights",
-                value,
-            });
+        let current = current.resolve("current_weights", labels, Some(0.0))?;
+        if let Some(i) = current.iter().position(|w| !w.is_finite()) {
+            return Err(invalid_value("current_weights", labels, i, current[i]));
         }
         let total: f64 = current.iter().sum();
         if (total - 1.0).abs() > 1e-9 {
@@ -368,6 +366,7 @@ mod tests {
                 .max_turnover(0.1)
                 .allocate(&allocator),
             Err(CutupError::DimensionMismatch {
+                field: "current_weights",
                 expected: 3,
                 actual: 2
             })
@@ -403,6 +402,7 @@ mod tests {
                 .transaction_costs_per_asset([0.001, 0.002])
                 .allocate(&allocator),
             Err(CutupError::DimensionMismatch {
+                field: "transaction_costs",
                 expected: 3,
                 actual: 2
             })

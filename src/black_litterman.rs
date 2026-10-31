@@ -1,5 +1,6 @@
 //! Black-Litterman expected returns: the market's implied returns, blended with views.
 
+use crate::asset::invalid_value;
 use crate::{Asset, CovarianceConfig, CutupError, PerAsset, Returns};
 use nalgebra::{DMatrix, DVector};
 
@@ -101,9 +102,9 @@ impl BlackLitterman {
     /// * [`CutupError::DimensionMismatch`] if there isn't one market weight per asset.
     /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if the market weights
     ///   name an asset that isn't in the data, or name one twice.
-    /// * [`CutupError::InvalidConfig`] if a market weight is negative or not finite, the
-    ///   weights sum to 0, `δ` isn't positive and finite, the risk-free rate isn't finite, or
-    ///   the covariance config is invalid.
+    /// * [`CutupError::InvalidAssetValue`] if a market weight is negative or not finite.
+    /// * [`CutupError::InvalidConfig`] if the market weights sum to 0, `δ` isn't positive and
+    ///   finite, the risk-free rate isn't finite, or the covariance config is invalid.
     pub fn prior_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         Ok(self.prior(&cov, data.labels())?.as_slice().to_vec())
@@ -116,11 +117,12 @@ impl BlackLitterman {
     ///
     /// * Any error from [`BlackLitterman::prior_returns`].
     /// * [`CutupError::InvalidConfig`] if `τ` isn't positive and finite, or a view is invalid:
-    ///   a relative view of an asset against itself, a portfolio with no nonzero weight, a
-    ///   return that isn't finite, a variance that is negative or not finite, or a confidence
-    ///   outside `[0, 1]`.
-    /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a view names an
-    ///   asset that isn't in the data, or a portfolio names one twice.
+    ///   a portfolio with no nonzero weight, a return that isn't finite, a variance that is
+    ///   negative or not finite, or a confidence outside `[0, 1]`.
+    /// * [`CutupError::InvalidAssetValue`] if a view portfolio's weight isn't finite.
+    /// * [`CutupError::UnknownAsset`] if a view names an asset that isn't in the data.
+    /// * [`CutupError::DuplicateAsset`] for a relative view of an asset against itself, or a
+    ///   portfolio that names an asset twice.
     /// * [`CutupError::DimensionMismatch`] if a [`View::portfolio`] in column order doesn't
     ///   have one weight per asset.
     /// * [`CutupError::DegenerateViews`] if `τPΣPᵀ + Ω` is singular, or within rounding of it:
@@ -206,15 +208,19 @@ impl BlackLitterman {
 
     fn prior(&self, cov: &DMatrix<f64>, labels: &[String]) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
-        let market_weights = self.market_weights.resolve(labels, None)?;
-        if let Some(&value) = market_weights
+        let market_weights = self
+            .market_weights
+            .resolve("market_weights", labels, None)?;
+        if let Some(i) = market_weights
             .iter()
-            .find(|w| !(w.is_finite() && **w >= 0.0))
+            .position(|w| !(w.is_finite() && *w >= 0.0))
         {
-            return Err(CutupError::InvalidConfig {
-                field: "market_weights",
-                value,
-            });
+            return Err(invalid_value(
+                "market_weights",
+                labels,
+                i,
+                market_weights[i],
+            ));
         }
         let total: f64 = market_weights.iter().sum();
         if !(total.is_finite() && total > 0.0) {
@@ -344,18 +350,17 @@ impl View {
         let n = labels.len();
         match &self.assets {
             Assets::Absolute(asset) => {
-                let asset = asset.column(labels)?;
+                let asset = asset.resolve(labels)?;
                 Ok(DVector::from_fn(
                     n,
                     |i, _| if i == asset { 1.0 } else { 0.0 },
                 ))
             }
             Assets::Relative(long, short) => {
-                let (long, short) = (long.column(labels)?, short.column(labels)?);
+                let (long, short) = (long.resolve(labels)?, short.resolve(labels)?);
                 if long == short {
-                    return Err(CutupError::InvalidConfig {
-                        field: "view_asset",
-                        value: long as f64,
+                    return Err(CutupError::DuplicateAsset {
+                        asset: labels[long].clone(),
                     });
                 }
                 Ok(DVector::from_fn(n, |i, _| match i {
@@ -365,12 +370,9 @@ impl View {
                 }))
             }
             Assets::Portfolio(weights) => {
-                let weights = weights.resolve(labels, Some(0.0))?;
-                if let Some(&value) = weights.iter().find(|w| !w.is_finite()) {
-                    return Err(CutupError::InvalidConfig {
-                        field: "view_weights",
-                        value,
-                    });
+                let weights = weights.resolve("view_weights", labels, Some(0.0))?;
+                if let Some(i) = weights.iter().position(|w| !w.is_finite()) {
+                    return Err(invalid_value("view_weights", labels, i, weights[i]));
                 }
                 if weights.iter().all(|&w| w == 0.0) {
                     return Err(CutupError::InvalidConfig {
@@ -528,13 +530,19 @@ mod tests {
         assert_eq!(
             check(BlackLitterman::new([0.5, 0.5], 2.5)),
             Err(CutupError::DimensionMismatch {
+                field: "market_weights",
                 expected: 3,
                 actual: 2
             })
         );
         assert_eq!(
             check(BlackLitterman::new([0.5, -0.3, 0.2], 2.5)),
-            invalid("market_weights", -0.3)
+            Err(CutupError::InvalidAssetValue {
+                field: "market_weights",
+                column: 1,
+                asset: "1".into(),
+                value: -0.3
+            })
         );
         assert_eq!(
             check(BlackLitterman::new([0.0; 3], 2.5)),
@@ -555,11 +563,13 @@ mod tests {
         assert_eq!(check(model().tau(-1.0)), invalid("tau", -1.0));
         assert_eq!(
             check(model().view(View::absolute(3, 0.01))),
-            Err(CutupError::UnknownAsset { asset: "3".into() })
+            Err(CutupError::UnknownAsset {
+                asset: Asset::from(3)
+            })
         );
         assert_eq!(
             check(model().view(View::relative(1, 1, 0.01))),
-            invalid("view_asset", 1.0)
+            Err(CutupError::DuplicateAsset { asset: "1".into() })
         );
         assert_eq!(
             check(model().view(View::portfolio([0.0; 3], 0.01))),
@@ -568,6 +578,7 @@ mod tests {
         assert_eq!(
             check(model().view(View::portfolio([1.0, 0.0], 0.01))),
             Err(CutupError::DimensionMismatch {
+                field: "view_weights",
                 expected: 3,
                 actual: 2
             })
