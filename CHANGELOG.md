@@ -21,6 +21,21 @@ All notable changes to this project are documented here. The format follows
   the nalgebra version cutup depends on.
 - `CutupError::RaggedRows`, for rows of different lengths, or flat input whose length isn't
   a multiple of the number of assets.
+- Asset labels. `Returns::labeled([..])` names the assets, for example with their tickers,
+  and `Returns::labels` returns them; without labels, each asset's label is its column, `"0"`,
+  `"1"`, and so on. `Weights` carries them, with `weight(label)`, `weights[label]`, `labels()`
+  and `labeled()`, which iterates over `(label, weight)` pairs. `iter()`, indexing by column
+  and `as_slice()` are unchanged.
+- Settings can name assets by label. `View::absolute` and `View::relative` take an `Asset`, a
+  column or a label, and `WeightBounds::asset(asset, lower, upper)` bounds one asset. Every
+  setting with a value per asset takes `PerAsset` values: in column order, as before, or
+  pairs of an asset and its value, as an array, a `Vec`, a slice, a `HashMap` or a
+  `BTreeMap`. That's `WeightBounds::per_asset`, `BlackLitterman::new`'s market weights,
+  `View::portfolio`, `current_weights`, `expected_returns`, `risk_budgets` and
+  `transaction_costs_per_asset`. Pairs must give every asset a value, except current weights
+  and view portfolios, where an asset left out is 0.
+- `CutupError::UnknownAsset`, for a label that isn't in the data or a column out of range, and
+  `CutupError::DuplicateAsset`, for a label repeated in `labeled` or an asset given twice.
 
 ### Removed
 
@@ -52,6 +67,11 @@ All notable changes to this project are documented here. The format follows
 - `InverseVolatility` and `InverseVariance` are no longer `#[non_exhaustive]`, so they can be
   written as plain `InverseVolatility` and `InverseVariance`, as `EqualWeight` can.
   `default()` still works.
+- The per-asset setters take `impl Into<PerAsset>` instead of `impl Into<Vec<f64>>`. Arrays,
+  `Vec`s and slices of `f64` still work; other types that converted into a `Vec<f64>` need
+  `.to_vec()` or `Vec::from(..)`.
+- A `View` on an asset column out of range returns `CutupError::UnknownAsset` instead of
+  `CutupError::InvalidConfig` with the field `view_asset`.
 
 ### Deprecated
 

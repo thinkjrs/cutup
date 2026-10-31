@@ -98,14 +98,21 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
      rule rules out a `From<DVector<f64>> for Vec<f64>` in cutup.
    - Then a nalgebra major release never forces a cutup major after 1.0.
 6. **Asset labels.**
-   - `Returns::with_labels([..])` names the columns. Without labels, they're
-     named `"0"`, `"1"`, …, so there's one code path.
-   - `Weights` carries the labels, with `weight("SPY")` and iteration over
-     `(label, weight)` pairs.
-   - Bounds, Black-Litterman views and current weights can be given by label.
-   - This changes `Weights`' iteration type, so it can't be added later
-     without breaking it. The sample app returns weights keyed by campaign
-     name.
+   - `Returns::labeled([..])` names the columns, without `with_`, like every
+     other setter. Without labels, they're named `"0"`, `"1"`, …, so there's
+     one code path.
+   - `Weights` carries the labels, with `weight("SPY")`, `weights["SPY"]`,
+     `labels()` and `labeled()`, which iterates over `(label, weight)` pairs.
+     The sample app returns weights keyed by campaign name.
+   - `iter()`, indexing and `as_slice()` still go by column, as for a slice,
+     so labels were added without changing `Weights`' iteration type.
+   - Every setting that names an asset takes an `Asset`, a column or a
+     label: `View::absolute` and `View::relative`, and
+     `WeightBounds::asset(..)` for one asset's bounds. Every setting with a
+     value per asset takes `PerAsset` values, in column order or as pairs of
+     an asset and its value: bounds, market weights, view portfolios, current
+     weights, expected returns, risk budgets and transaction costs.
+   - New errors: `UnknownAsset` and `DuplicateAsset`.
 7. **Standard traits on every public type.**
    - `Debug`, `Clone` and `PartialEq` everywhere, `Default` on every method
      value, and `Copy` where it's free, such as `Linkage`.

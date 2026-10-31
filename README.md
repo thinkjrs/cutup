@@ -24,6 +24,7 @@ Here are some of the allocation methods included in this library:
 - **Minimum CVaR (expected shortfall)**, from historical scenarios
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 - **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
+- **Asset labels**, such as tickers, on the data and the weights, and in every per-asset setting
 
 Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `nalgebra` internally, and its optional `nalgebra` feature accepts `DMatrix` input directly.
 
@@ -96,7 +97,7 @@ For data in one flat, row-major slice, such as a JavaScript `Float64Array` or a 
 
 Build a method from `default()`, or for mean-variance from its objective, and chained settings, and pass it to `allocate`. Any type that implements the `Allocation` trait works, including your own. The `PortfolioAllocator` methods from 0.2, such as `min_variance_allocation`, were removed in 0.3.0: see [Upgrading from 0.2](#upgrading-from-02).
 
-Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input. Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
+Allocation methods return `Weights`: one weight per asset, in the same order as the columns of your input, and labeled with the assets: see [Labels](#labels). Bad input (no assets, too few rows, NaN or infinite values, non-positive prices) returns a `CutupError` instead of producing meaningless weights.
 
 ```rust
 use cutup::{
@@ -146,6 +147,41 @@ fn main() -> Result<(), CutupError> {
     Ok(())
 }
 ```
+
+### Labels
+
+Name the assets with `labeled`, for example with their tickers. The weights carry the labels, and every setting that takes an asset or a value per asset takes them too: bounds, Black-Litterman views and market weights, current weights, expected returns, risk budgets and transaction costs. Values per asset can be in column order, as before, or pairs of a label and a value, in any order, as an array, a `Vec` or a `HashMap`. Without labels, each asset's label is its column: `"0"`, `"1"`, and so on.
+
+```rust
+use cutup::{CutupError, MinVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+
+    let weights = data.allocate(
+        &MinVariance::default()
+            // No asset above 60%, and at most 10% in gold.
+            .bounds(WeightBounds::uniform(0.0, 0.6).asset("GLD", 0.0, 0.1))
+            // Current weights left out are 0.
+            .current_weights([("SPY", 0.6), ("TLT", 0.4)])
+            .max_turnover(0.2),
+    )?;
+    assert!(weights["GLD"] <= 0.1 + 1e-12);
+    for (ticker, weight) in weights.labeled() {
+        println!("{ticker}: {weight:.4}");
+    }
+    Ok(())
+}
+```
+
+`weights.iter()`, `weights[i]` and `as_slice()` still go by column. A label that isn't in the data returns `CutupError::UnknownAsset`, and one given twice `CutupError::DuplicateAsset`.
 
 ### Rebalancing
 
@@ -252,7 +288,7 @@ Seven other changes in 0.3.0:
 | 0.2 | 0.3 |
 | --- | --- |
 | `CovarianceConfig::default().with_shrinkage(λ).with_regularization(ε)` | `CovarianceConfig::default().shrinkage(λ).regularization(ε)`. Its fields are private: set them with these, and read them with `config.lambda()` and `config.epsilon()` instead of `config.shrinkage` and `config.regularization`. |
-| `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, or `weights.as_slice()` |
+| `weights.to_hashmap()` | `weights.iter().copied().enumerate().collect::<HashMap<_, _>>()`, `weights.labeled().collect::<HashMap<_, _>>()` by label, or `weights.as_slice()` |
 | `InverseVolatility::default()`, `InverseVariance::default()` | Unchanged, and now also plain `InverseVolatility` and `InverseVariance`, as with `EqualWeight` |
 | `PortfolioAllocator` | `Returns`, since it holds the data and the methods are values. `PortfolioAllocator` stays as a deprecated alias until 1.0.0, so code that names the type, such as an `Allocation` impl, still compiles, with a warning. |
 | `from_prices(dmatrix![..])`, `from_returns(dmatrix![..])` | `Returns::from_prices(&[[..], ..])` and `Returns::new(&[[..], ..])` with rows, or `from_prices_flat(&values, assets)` and `new_flat(&values, assets)` with one row-major slice. To keep passing a `DMatrix`, turn on the `nalgebra` feature and call `from_prices_matrix(m)` or `from_matrix(m)`. `from_returns` stays as a deprecated name for `new` until 1.0.0. |
