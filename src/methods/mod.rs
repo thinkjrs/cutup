@@ -117,22 +117,23 @@ pub(crate) fn in_null_space(c: &DMatrix<f64>, u: &DVector<f64>) -> Result<bool, 
 
 impl Returns {
     /// Returns the correlation distance `dᵢⱼ = sqrt((1 − ρᵢⱼ) / 2)` between every pair of
-    /// assets.
+    /// assets, with the correlations from [`correlation`], which can't underflow for tiny
+    /// variances.
     ///
-    /// Returns [`CutupError::NonFiniteCovariance`] if a correlation can't be computed, for
-    /// example when variances are so small that their product underflows to zero.
+    /// Returns [`CutupError::NonFiniteCovariance`] if a variance is subnormal, below
+    /// `f64::MIN_POSITIVE`: it keeps too few bits for an accurate correlation, and its inverse,
+    /// which HRP and HERC split weight by, overflows.
     pub(crate) fn correlation_distance(&self) -> Result<DMatrix<f64>, CutupError> {
         let cov = &self.cov_matrix;
+        if cov.diagonal().iter().any(|&v| v < f64::MIN_POSITIVE) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
+        let (rho, _) = correlation(cov).map_err(|_| CutupError::NonFiniteCovariance)?;
         let n = cov.ncols();
         let mut distance = DMatrix::zeros(n, n);
         for i in 0..n {
             for j in i + 1..n {
-                let rho = cov[(i, j)] / (cov[(i, i)] * cov[(j, j)]).sqrt();
-                // Clamping would hide an infinite correlation, so reject it first.
-                if !rho.is_finite() {
-                    return Err(CutupError::NonFiniteCovariance);
-                }
-                let d = ((1.0 - rho) / 2.0).clamp(0.0, 1.0).sqrt();
+                let d = ((1.0 - rho[(i, j)]) / 2.0).clamp(0.0, 1.0).sqrt();
                 distance[(i, j)] = d;
                 distance[(j, i)] = d;
             }
