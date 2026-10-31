@@ -85,6 +85,3 @@ pub use methods::{
 };
 pub use returns::Returns;
 pub use weights::Weights;
-
-use bounds::{ReturnRange, TargetProblem, interior_start};
-use methods::{correlation, in_null_space, long_only_max_ratio, long_only_weights, normalized};

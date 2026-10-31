@@ -1,9 +1,11 @@
 //! [`MeanVariance`]: Markowitz mean-variance optimization.
 
+use super::long_only_weights;
+use crate::bounds::{ReturnRange, interior_start};
 use crate::turnover::{Costs, Trading};
 use crate::{
-    Allocation, CovarianceConfig, CutupError, PerAsset, ReturnRange, Returns, WeightBounds,
-    Weights, interior_start, long_only_weights, qp, turnover,
+    Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
+    turnover,
 };
 use nalgebra::{DMatrix, DVector};
 

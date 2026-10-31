@@ -1,9 +1,7 @@
 //! [`RiskParity`]: equal or budgeted risk contributions.
 
-use crate::{
-    Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights, asset, correlation,
-    in_null_space,
-};
+use super::{correlation, in_null_space};
+use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights, asset};
 use nalgebra::{DMatrix, DVector};
 
 /// The risk parity (equal risk contribution) portfolio, or risk budgeting with

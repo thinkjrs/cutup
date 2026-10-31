@@ -1,6 +1,8 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
-use crate::{Allocation, CutupError, ReturnRange, Returns, WeightBounds, Weights, lp, normalized};
+use crate::bounds::ReturnRange;
+use crate::methods::normalized;
+use crate::{Allocation, CutupError, Returns, WeightBounds, Weights, lp};
 use nalgebra::{DMatrix, DVector};
 
 /// The long-only portfolio with the lowest conditional value at risk (CVaR, or expected

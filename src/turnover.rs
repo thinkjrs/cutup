@@ -2,10 +2,9 @@
 //! mean-variance.
 
 use crate::asset::check_values;
-use crate::{
-    CutupError, PerAsset, ReturnRange, Returns, TargetProblem, WeightBounds, Weights,
-    interior_start, lp, normalized, qp,
-};
+use crate::bounds::{ReturnRange, TargetProblem, interior_start};
+use crate::methods::normalized;
+use crate::{CutupError, PerAsset, Returns, WeightBounds, Weights, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
 /// The trading settings of [`MinVariance`](crate::MinVariance) and

@@ -1,6 +1,7 @@
 //! [`MaxDiversification`]: the maximum diversification portfolio.
 
-use crate::{Allocation, CovarianceConfig, CutupError, Returns, Weights, long_only_max_ratio};
+use super::long_only_max_ratio;
+use crate::{Allocation, CovarianceConfig, CutupError, Returns, Weights};
 
 /// The maximum diversification portfolio (Choueifaty and Coignard, 2008): maximize the
 /// diversification ratio `σᵀw / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and `w ≥ 0`, where `σ` holds

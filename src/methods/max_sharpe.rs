@@ -1,10 +1,8 @@
 //! [`MaxSharpe`]: the maximum Sharpe ratio portfolio.
 
+use super::{correlation, long_only_max_ratio};
 use crate::eigen::SymmetricEigen;
-use crate::{
-    Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights, correlation,
-    long_only_max_ratio,
-};
+use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights};
 use nalgebra::DVector;
 
 /// The maximum Sharpe ratio (tangency) portfolio: maximize `(μᵀw − r_f) / sqrt(wᵀΣw)` subject
