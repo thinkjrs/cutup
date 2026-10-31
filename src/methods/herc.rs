@@ -51,8 +51,8 @@ const HERC_MAX_CLUSTERS: usize = 10;
 ///   outside `[0, 1]` or the regularization is negative or not finite.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance, even with
 ///   shrinkage or regularization: a constant asset has no correlation to cluster on.
-/// * [`CutupError::NonFiniteCovariance`] if correlations can't be computed because the
-///   variances are too small.
+/// * [`CutupError::NonFiniteCovariance`] if a variance is below about 1e-292,
+///   `f64::MIN_POSITIVE / f64::EPSILON`, too small to compute correlations from accurately.
 ///
 /// # Example
 ///
@@ -161,8 +161,8 @@ impl Returns {
         if let Some(asset) = self.find_zero_variance() {
             return Err(self.zero_variance(asset));
         }
-        let cov = self.adjusted_covariance(covariance)?;
         let distance = self.correlation_distance()?;
+        let cov = self.adjusted_covariance(covariance)?;
         let hierarchy = cluster::hierarchy(&distance, linkage);
         let k = clusters.unwrap_or_else(|| hierarchy.cluster_count(&distance, max_clusters));
 
