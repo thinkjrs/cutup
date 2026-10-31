@@ -31,10 +31,11 @@ macro_rules! covariance_setters {
 /// field.
 macro_rules! turnover_setters {
     () => {
-        /// Sets your current weights, one per asset in column order: what turnover and
-        /// trading costs are measured against. They must sum to 1, within `1e-9`; to hold cash,
-        /// include it as an asset. On their own they change nothing.
-        pub fn current_weights(mut self, current: impl Into<Vec<f64>>) -> Self {
+        /// Sets your current weights, [one per asset](PerAsset) in column order or by asset:
+        /// what turnover and trading costs are measured against. By asset, those left out are
+        /// 0. They must sum to 1, within `1e-9`; to hold cash, include it as an asset. On their
+        /// own they change nothing.
+        pub fn current_weights(mut self, current: impl Into<PerAsset>) -> Self {
             self.trading.current = Some(current.into());
             self
         }
@@ -50,6 +51,7 @@ macro_rules! turnover_setters {
 }
 
 mod allocation;
+mod asset;
 mod black_litterman;
 mod cluster;
 mod cvar;
@@ -63,6 +65,7 @@ pub use allocation::{
     Allocation, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification,
     MaxSharpe, MeanVariance, MinVariance, RiskParity,
 };
+pub use asset::{Asset, PerAsset};
 pub use black_litterman::{BlackLitterman, View};
 pub use cluster::Linkage;
 pub use cvar::MinCvar;
@@ -74,6 +77,7 @@ use eigen::SymmetricEigen;
 use nalgebra::{DMatrix, DVector};
 use std::fmt;
 use std::ops::Index;
+use std::sync::Arc;
 
 /// Errors returned when building a `Returns` or computing an allocation.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +140,17 @@ pub enum CutupError {
         expected: usize,
         /// Length supplied.
         actual: usize,
+    },
+    /// An [`Asset`] isn't in the data: no asset has its label, or its column is out of range.
+    UnknownAsset {
+        /// The label, or the column.
+        asset: String,
+    },
+    /// An asset is given more than once: a label repeated in [`Returns::labeled`], or an asset
+    /// named twice in the pairs of a [`PerAsset`].
+    DuplicateAsset {
+        /// The asset's label.
+        asset: String,
     },
     /// Every asset has the same expected return, so no portfolio can target a different one.
     DegenerateExpectedReturns,
@@ -251,6 +266,10 @@ impl fmt::Display for CutupError {
                 f,
                 "expected one value per asset ({expected}) but got {actual}"
             ),
+            CutupError::UnknownAsset { asset } => write!(f, "the data has no asset `{asset}`"),
+            CutupError::DuplicateAsset { asset } => {
+                write!(f, "asset `{asset}` is given more than once")
+            }
             CutupError::DegenerateExpectedReturns => write!(
                 f,
                 "every asset has the same expected return, so no other target return can be reached"
@@ -321,7 +340,12 @@ impl fmt::Display for CutupError {
 
 impl std::error::Error for CutupError {}
 
-/// Portfolio weights, one per asset, in the same order as the columns of the input matrix.
+/// Portfolio weights, one per asset, in the order of the columns of the [`Returns`], and labeled
+/// with their assets.
+///
+/// Like a slice, it indexes and iterates by column. [`Weights::weight`] and [`Weights::labeled`]
+/// go by label, which is the asset's column unless the data was
+/// [labeled](Returns::labeled).
 ///
 /// # Example
 ///
@@ -340,40 +364,72 @@ impl std::error::Error for CutupError {}
 /// assert_eq!(weights[0], 0.5);
 /// assert_eq!(weights.get(1), Some(0.5));
 /// assert_eq!(weights.iter().sum::<f64>(), 1.0);
+///
+/// let labeled = Returns::from_prices(&prices)?.labeled(["SPY", "TLT"])?.allocate(&EqualWeight)?;
+/// assert_eq!(labeled.weight("TLT"), Some(0.5));
+/// assert_eq!(labeled["SPY"], 0.5);
+/// for (label, weight) in labeled.labeled() {
+///     println!("{label}: {weight}");
+/// }
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct Weights(Vec<f64>);
+pub struct Weights {
+    values: Vec<f64>,
+    labels: Arc<[String]>,
+}
 
 impl Weights {
     /// Returns the weight of the asset in column `asset`, or `None` if out of range.
     pub fn get(&self, asset: usize) -> Option<f64> {
-        self.0.get(asset).copied()
+        self.values.get(asset).copied()
+    }
+
+    /// Returns the weight of the asset labeled `label`, or `None` if no asset has that label.
+    pub fn weight(&self, label: &str) -> Option<f64> {
+        self.position(label).map(|i| self.values[i])
     }
 
     /// Returns the number of assets.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.values.len()
     }
 
     /// Returns `true` if there are no weights.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.values.is_empty()
     }
 
     /// Iterates over the weights in column order.
     pub fn iter(&self) -> std::slice::Iter<'_, f64> {
-        self.0.iter()
+        self.values.iter()
+    }
+
+    /// Iterates over each asset's label and weight, in column order.
+    pub fn labeled(&self) -> impl DoubleEndedIterator<Item = (&str, f64)> + ExactSizeIterator {
+        self.labels
+            .iter()
+            .map(String::as_str)
+            .zip(self.values.iter().copied())
+    }
+
+    /// Returns the assets' labels, in column order.
+    pub fn labels(&self) -> &[String] {
+        &self.labels
     }
 
     /// Returns the weights as a slice, in column order.
     pub fn as_slice(&self) -> &[f64] {
-        &self.0
+        &self.values
     }
 
     /// Consumes the weights and returns them as a `Vec`, in column order.
     pub fn into_vec(self) -> Vec<f64> {
-        self.0
+        self.values
+    }
+
+    fn position(&self, label: &str) -> Option<usize> {
+        self.labels.iter().position(|l| l == label)
     }
 }
 
@@ -381,7 +437,23 @@ impl Index<usize> for Weights {
     type Output = f64;
 
     fn index(&self, asset: usize) -> &f64 {
-        &self.0[asset]
+        &self.values[asset]
+    }
+}
+
+/// The weight of the asset labeled with the index.
+///
+/// # Panics
+///
+/// If no asset has that label. [`Weights::weight`] returns `None` instead.
+impl Index<&str> for Weights {
+    type Output = f64;
+
+    fn index(&self, label: &str) -> &f64 {
+        match self.position(label) {
+            Some(i) => &self.values[i],
+            None => panic!("no asset is labeled `{label}`"),
+        }
     }
 }
 
@@ -390,13 +462,13 @@ impl<'a> IntoIterator for &'a Weights {
     type IntoIter = std::slice::Iter<'a, f64>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.values.iter()
     }
 }
 
 impl From<Weights> for Vec<f64> {
     fn from(weights: Weights) -> Self {
-        weights.0
+        weights.values
     }
 }
 
@@ -405,16 +477,18 @@ impl From<Weights> for Vec<f64> {
 #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
 impl From<Weights> for DVector<f64> {
     fn from(weights: Weights) -> Self {
-        DVector::from_vec(weights.0)
+        DVector::from_vec(weights.values)
     }
 }
 
 /// Weights in column order, for an [`Allocation`] of your own. [`Returns::allocate`]
 /// checks there's one finite weight per asset, but not the sum, so make them sum to 1, as every
-/// method in this crate does.
+/// method in this crate does. It labels them with the data's labels; until then each is labeled
+/// with its column.
 impl From<Vec<f64>> for Weights {
-    fn from(weights: Vec<f64>) -> Self {
-        Weights(weights)
+    fn from(values: Vec<f64>) -> Self {
+        let labels = asset::column_labels(values.len());
+        Weights { values, labels }
     }
 }
 
@@ -536,29 +610,39 @@ enum Objective {
 ///
 /// // At least 5% in each of three assets, and at most 50% in the first.
 /// let mixed = WeightBounds::per_asset(vec![0.05; 3], vec![0.5, 1.0, 1.0]);
+///
+/// // No asset above 40%, except between 10% and 60% in TLT.
+/// let labeled = WeightBounds::uniform(0.0, 0.4).asset("TLT", 0.1, 0.6);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeightBounds {
     lower: Limit,
     upper: Limit,
+    assets: Vec<(Asset, f64, f64)>,
 }
 
 /// One side of [`WeightBounds`].
 #[derive(Debug, Clone, PartialEq)]
 enum Limit {
     Uniform(f64),
-    PerAsset(Vec<f64>),
+    PerAsset(PerAsset),
 }
 
 impl Limit {
-    fn resolve(&self, n: usize) -> Result<DVector<f64>, CutupError> {
+    fn resolve(&self, labels: &[String]) -> Result<DVector<f64>, CutupError> {
+        let n = labels.len();
         match self {
             Limit::Uniform(value) => Ok(DVector::from_element(n, *value)),
-            Limit::PerAsset(values) if values.len() != n => Err(CutupError::DimensionMismatch {
-                expected: n,
-                actual: values.len(),
-            }),
-            Limit::PerAsset(values) => Ok(DVector::from_column_slice(values)),
+            Limit::PerAsset(values) => {
+                let values = values.resolve(labels, None)?;
+                if values.len() != n {
+                    return Err(CutupError::DimensionMismatch {
+                        expected: n,
+                        actual: values.len(),
+                    });
+                }
+                Ok(DVector::from_vec(values))
+            }
         }
     }
 }
@@ -575,23 +659,39 @@ impl WeightBounds {
         Self {
             lower: Limit::Uniform(lower),
             upper: Limit::Uniform(upper),
+            assets: Vec::new(),
         }
     }
 
-    /// Bounds `lower[i] ≤ wᵢ ≤ upper[i]` for each asset `i`, in column order.
-    pub fn per_asset(lower: Vec<f64>, upper: Vec<f64>) -> Self {
+    /// Bounds `lower[i] ≤ wᵢ ≤ upper[i]` for each asset `i`: [`PerAsset`] values, in column
+    /// order or by asset, with a value for every asset.
+    pub fn per_asset(lower: impl Into<PerAsset>, upper: impl Into<PerAsset>) -> Self {
         Self {
-            lower: Limit::PerAsset(lower),
-            upper: Limit::PerAsset(upper),
+            lower: Limit::PerAsset(lower.into()),
+            upper: Limit::PerAsset(upper.into()),
+            assets: Vec::new(),
         }
     }
 
-    /// Checks the bounds for `n` assets, and returns them with each upper bound lowered to
-    /// what the other assets' lower bounds leave room for, `1 − Σⱼ≠ᵢ lⱼ`. That doesn't change
-    /// which portfolios are feasible, and makes every upper bound finite.
-    fn resolve(&self, n: usize) -> Result<qp::Bounds, CutupError> {
-        let lower = self.lower.resolve(n)?;
-        let upper = self.upper.resolve(n)?;
+    /// Bounds `lower ≤ w ≤ upper` for `asset`, by label or by column, in place of its other
+    /// bounds. Setting the same asset again replaces them.
+    pub fn asset(mut self, asset: impl Into<Asset>, lower: f64, upper: f64) -> Self {
+        self.assets.push((asset.into(), lower, upper));
+        self
+    }
+
+    /// Checks the bounds for the assets `labels`, and returns them with each upper bound
+    /// lowered to what the other assets' lower bounds leave room for, `1 − Σⱼ≠ᵢ lⱼ`. That
+    /// doesn't change which portfolios are feasible, and makes every upper bound finite.
+    fn resolve(&self, labels: &[String]) -> Result<qp::Bounds, CutupError> {
+        let n = labels.len();
+        let mut lower = self.lower.resolve(labels)?;
+        let mut upper = self.upper.resolve(labels)?;
+        for (asset, l, u) in &self.assets {
+            let i = asset.column(labels)?;
+            lower[i] = *l;
+            upper[i] = *u;
+        }
         if let Some(&value) = lower.iter().find(|&&l| !(l.is_finite() && l >= 0.0)) {
             return Err(CutupError::InvalidConfig {
                 field: "lower_bound",
@@ -648,6 +748,7 @@ impl WeightBounds {
 pub struct Returns {
     returns: DMatrix<f64>,
     cov_matrix: DMatrix<f64>,
+    labels: Arc<[String]>,
 }
 
 impl Returns {
@@ -878,8 +979,65 @@ impl Returns {
         Returns::build(returns)
     }
 
+    /// Labels the assets, in column order, for example with their tickers. The [`Weights`]
+    /// carry the labels, and every setting that takes an [`Asset`] or [`PerAsset`] values can
+    /// name assets by them. Without labels, each asset's label is its column: `"0"`, `"1"`, and
+    /// so on.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::DimensionMismatch`] if there isn't one label per asset.
+    /// * [`CutupError::DuplicateAsset`] if a label is repeated.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{InverseVariance, Returns};
+    ///
+    /// let returns = [
+    ///    [0.010, -0.020, 0.005],
+    ///    [-0.004, 0.015, 0.002],
+    ///    [0.007, 0.003, -0.006],
+    /// ];
+    ///
+    /// let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+    /// assert_eq!(data.labels(), ["SPY", "TLT", "GLD"]);
+    ///
+    /// let weights = data.allocate(&InverseVariance)?;
+    /// assert_eq!(weights.weight("TLT"), Some(weights[1]));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn labeled<L: Into<String>>(
+        mut self,
+        labels: impl IntoIterator<Item = L>,
+    ) -> Result<Self, CutupError> {
+        let labels: Vec<String> = labels.into_iter().map(Into::into).collect();
+        let n = self.returns.ncols();
+        if labels.len() != n {
+            return Err(CutupError::DimensionMismatch {
+                expected: n,
+                actual: labels.len(),
+            });
+        }
+        let mut seen = std::collections::HashSet::with_capacity(n);
+        if let Some(label) = labels.iter().find(|label| !seen.insert(label.as_str())) {
+            return Err(CutupError::DuplicateAsset {
+                asset: label.clone(),
+            });
+        }
+        self.labels = labels.into();
+        Ok(self)
+    }
+
+    /// Returns the assets' labels, in column order: those set with [`Returns::labeled`], or
+    /// each asset's column.
+    pub fn labels(&self) -> &[String] {
+        &self.labels
+    }
+
     /// Computes weights with `method`, any [`Allocation`]: one of this crate's methods, such as
-    /// [`MinVariance`] or [`Hrp`], or one of your own.
+    /// [`MinVariance`] or [`Hrp`], or one of your own. The weights carry the data's
+    /// [labels](Returns::labels).
     ///
     /// # Errors
     ///
@@ -919,7 +1077,22 @@ impl Returns {
         if let Some(asset) = weights.iter().position(|w| !w.is_finite()) {
             return Err(CutupError::NonFiniteWeight { asset });
         }
-        Ok(weights)
+        Ok(self.weights(weights.values))
+    }
+
+    /// `values`, given for every asset, in column order as a vector.
+    fn resolve(&self, values: Option<&PerAsset>) -> Result<Option<DVector<f64>>, CutupError> {
+        values
+            .map(|values| Ok(DVector::from_vec(values.resolve(&self.labels, None)?)))
+            .transpose()
+    }
+
+    /// `values`, one per asset in column order, as weights labeled with the data's labels.
+    fn weights(&self, values: Vec<f64>) -> Weights {
+        Weights {
+            values,
+            labels: Arc::clone(&self.labels),
+        }
     }
 
     /// Builds a `Returns` from returns that have already been validated, rejecting a
@@ -929,9 +1102,11 @@ impl Returns {
         if cov_matrix.iter().any(|x| !x.is_finite()) {
             return Err(CutupError::NonFiniteCovariance);
         }
+        let labels = asset::column_labels(returns.ncols());
         Ok(Returns {
             returns,
             cov_matrix,
+            labels,
         })
     }
 
@@ -1059,7 +1234,7 @@ impl Returns {
         )?
         .ok_or(CutupError::SingularCovariance)?
         .0;
-        Ok(Weights(weights.iter().copied().collect()))
+        Ok(self.weights(weights.iter().copied().collect()))
     }
 
     /// The minimum variance portfolio within `bounds`, for [`MinVariance`].
@@ -1068,7 +1243,7 @@ impl Returns {
         covariance: &CovarianceConfig,
         bounds: &WeightBounds,
     ) -> Result<Weights, CutupError> {
-        let bounds = bounds.resolve(self.cov_matrix.ncols())?;
+        let bounds = bounds.resolve(&self.labels)?;
         let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         // From a point strictly inside the bounds, the solver's first step is to the
@@ -1082,6 +1257,7 @@ impl Returns {
             &bounds,
             start,
         )
+        .map(|w| self.weights(w))
     }
 
     /// The mean-variance portfolio with short positions allowed, for [`MeanVariance`].
@@ -1120,7 +1296,7 @@ impl Returns {
                 .0
             }
         };
-        Ok(Weights(weights.iter().copied().collect()))
+        Ok(self.weights(weights.iter().copied().collect()))
     }
 
     /// The mean-variance portfolio within `bounds`, for [`MeanVariance`].
@@ -1133,7 +1309,7 @@ impl Returns {
     ) -> Result<Weights, CutupError> {
         check_objective(objective)?;
         let mu = self.expected_returns(expected_returns)?;
-        let bounds = bounds.resolve(mu.len())?;
+        let bounds = bounds.resolve(&self.labels)?;
         let budget = |n: usize| {
             (
                 DMatrix::from_element(n, 1, 1.0),
@@ -1151,7 +1327,8 @@ impl Returns {
                     &b,
                     &bounds,
                     interior_start(&bounds),
-                );
+                )
+                .map(|w| self.weights(w));
             }
             Objective::TargetReturn(target) => target,
         };
@@ -1166,6 +1343,7 @@ impl Returns {
             &problem.bounds,
             problem.start,
         )
+        .map(|w| self.weights(w))
     }
 
     /// Returns `given` after checking it, or the sample mean of the returns when it's `None`.
@@ -1265,7 +1443,7 @@ impl Returns {
         if weights.iter().any(|w| !w.is_finite()) {
             return Err(CutupError::SingularCovariance);
         }
-        Ok(Weights(weights.iter().copied().collect()))
+        Ok(self.weights(weights.iter().copied().collect()))
     }
 
     /// The long-only maximum Sharpe ratio portfolio, for [`MaxSharpe`].
@@ -1299,7 +1477,9 @@ impl Returns {
         }
         let cov = self.adjusted_covariance(covariance)?;
         // Scaled so that the best asset's excess return is 1.
-        long_only_max_ratio(&cov, &(&excess / excess[best]), best)?.ok_or(CutupError::Unbounded)
+        long_only_max_ratio(&cov, &(&excess / excess[best]), best)?
+            .map(|w| self.weights(w))
+            .ok_or(CutupError::Unbounded)
     }
 
     /// The maximum diversification portfolio, for [`MaxDiversification`].
@@ -1308,6 +1488,7 @@ impl Returns {
         let volatilities = cov.diagonal().map(f64::sqrt);
         let (best, highest) = volatilities.argmax();
         long_only_max_ratio(&cov, &(volatilities / highest), best)?
+            .map(|w| self.weights(w))
             .ok_or(CutupError::SingularCovariance)
     }
 
@@ -1318,7 +1499,7 @@ impl Returns {
         }
         let raw: Vec<f64> = self.cov_matrix.diagonal().iter().map(|&v| f(v)).collect();
         let total: f64 = raw.iter().sum();
-        Ok(Weights(raw.iter().map(|w| w / total).collect()))
+        Ok(self.weights(raw.iter().map(|w| w / total).collect()))
     }
 
     /// The risk budgeting portfolio, for [`RiskParity`].
@@ -1347,7 +1528,8 @@ impl Returns {
             None => DVector::from_element(n, 1.0),
         };
         let cov = self.adjusted_covariance(covariance)?;
-        Returns::risk_budget_weights(&cov, &budgets).map(|w| Weights(w.iter().copied().collect()))
+        Returns::risk_budget_weights(&cov, &budgets)
+            .map(|w| self.weights(w.iter().copied().collect()))
     }
 
     /// Minimizes `f(y) = ½ yᵀΣy − bᵀ ln y` over `y > 0` and returns `y / 1ᵀy`.
@@ -1554,7 +1736,7 @@ impl Returns {
             }
         }
 
-        Ok(Weights(weights))
+        Ok(self.weights(weights))
     }
 
     /// The HERC weights, for [`Herc`]. The hierarchy and the cut are built on the sample
@@ -1624,7 +1806,7 @@ impl Returns {
                 weights[i] = branch_weight[*node] * w;
             }
         }
-        Ok(Weights(weights))
+        Ok(self.weights(weights))
     }
 }
 
@@ -1660,15 +1842,15 @@ fn long_only_weights(
     b: &DVector<f64>,
     bounds: &qp::Bounds,
     start: DVector<f64>,
-) -> Result<Weights, CutupError> {
+) -> Result<Vec<f64>, CutupError> {
     Ok(normalized(qp::solve_bounded(q, c, e, b, bounds, start)?))
 }
 
 /// `x` rescaled to sum to 1. With a budget constraint `1ᵀx = 1`, that only removes the
 /// rounding left by clamping to the bounds; for max Sharpe it maps `y` back to `w`.
-fn normalized(x: DVector<f64>) -> Weights {
+fn normalized(x: DVector<f64>) -> Vec<f64> {
     let total = x.sum();
-    Weights(x.iter().map(|w| w / total).collect())
+    x.iter().map(|w| w / total).collect()
 }
 
 /// Maximizes `aᵀw / sqrt(wᵀΣw)` over long-only portfolios summing to 1, for `a` with its
@@ -1682,7 +1864,7 @@ fn long_only_max_ratio(
     cov: &DMatrix<f64>,
     a: &DVector<f64>,
     best: usize,
-) -> Result<Option<Weights>, CutupError> {
+) -> Result<Option<Vec<f64>>, CutupError> {
     let n = cov.ncols();
     // Before the solve, so that correlations that can't be computed are reported as such.
     let (correlation, volatilities) = correlation(cov)?;
@@ -2139,6 +2321,20 @@ mod tests {
             "asset 2 has zero variance"
         );
         assert_eq!(
+            CutupError::UnknownAsset {
+                asset: "QQQ".into()
+            }
+            .to_string(),
+            "the data has no asset `QQQ`"
+        );
+        assert_eq!(
+            CutupError::DuplicateAsset {
+                asset: "SPY".into()
+            }
+            .to_string(),
+            "asset `SPY` is given more than once"
+        );
+        assert_eq!(
             CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 1.5
@@ -2205,7 +2401,7 @@ mod tests {
 
     #[test]
     fn test_weights_accessors() {
-        let weights = Weights(vec![0.2, 0.3, 0.5]);
+        let weights = Weights::from(vec![0.2, 0.3, 0.5]);
         assert_eq!(weights.len(), 3);
         assert!(!weights.is_empty());
         assert_eq!(weights[1], 0.3);
@@ -2521,7 +2717,7 @@ mod tests {
 
         let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
         let total: f64 = inverse.iter().sum();
-        let expected = Weights(inverse.iter().map(|x| x / total).collect());
+        let expected = Weights::from(inverse.iter().map(|x| x / total).collect::<Vec<_>>());
         assert_weights_close(&weights, &expected, 1e-12);
     }
 
@@ -2536,7 +2732,7 @@ mod tests {
         let cov = &allocator.cov_matrix;
         let (s11, s22, s12) = (cov[(0, 0)], cov[(1, 1)], cov[(0, 1)]);
         let w1 = (s22 - s12) / (s11 + s22 - 2.0 * s12);
-        assert_weights_close(&weights, &Weights(vec![w1, 1.0 - w1]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![w1, 1.0 - w1]), 1e-12);
     }
 
     #[test]
@@ -2763,7 +2959,7 @@ mod tests {
         let weights = allocator
             .allocate(&MinVariance::default().allow_short())
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![0.5, 0.5]), 1e-12);
     }
 
     #[test]
@@ -2900,7 +3096,7 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         // numpy.linalg.pinv's minimum-norm solution of the same KKT system, in correlation
         // units u = diag(σ)w.
-        let expected = Weights(vec![0.275093649, 0.331571165, 0.219203116, 0.174132070]);
+        let expected = Weights::from(vec![0.275093649, 0.331571165, 0.219203116, 0.174132070]);
         assert_weights_close(
             &allocator
                 .allocate(&MinVariance::default().allow_short())
@@ -2946,7 +3142,7 @@ mod tests {
         );
         assert_eq!(
             allocator.allocate(&MinVariance::default()).unwrap(),
-            Weights(vec![1.0, 0.0])
+            Weights::from(vec![1.0, 0.0])
         );
     }
 
@@ -2963,7 +3159,7 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_weights_close(
             &allocator.allocate(&MinVariance::default()).unwrap(),
-            &Weights(vec![0.5, 0.5]),
+            &Weights::from(vec![0.5, 0.5]),
             1e-12,
         );
     }
@@ -3051,7 +3247,7 @@ mod tests {
         let config = MeanVariance::risk_aversion(1e-9).expected_returns(expected.as_slice());
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
-            &Weights(vec![0.0, 1.0, 0.0]),
+            &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
@@ -3059,7 +3255,7 @@ mod tests {
         let config = MeanVariance::target_return(0.003).expected_returns(expected.as_slice());
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
-            &Weights(vec![0.0, 1.0, 0.0]),
+            &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
     }
@@ -3090,7 +3286,7 @@ mod tests {
             .expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0].as_slice());
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
-            &Weights(vec![0.0, 1.0, 0.0]),
+            &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-15,
         );
     }
@@ -3144,7 +3340,7 @@ mod tests {
             &allocator
                 .allocate(&MinVariance::default().covariance(config.clone()))
                 .unwrap(),
-            &Weights(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
+            &Weights::from(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
             1e-12,
         );
 
@@ -3158,7 +3354,11 @@ mod tests {
                     .bounds(capped.clone()),
             )
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.5, 1.0 / 3.0, 1.0 / 6.0]), 1e-12);
+        assert_weights_close(
+            &weights,
+            &Weights::from(vec![0.5, 1.0 / 3.0, 1.0 / 6.0]),
+            1e-12,
+        );
 
         // A floor of 25% on the last asset leaves 75% to split 2 : 1.
         let floored = WeightBounds::per_asset(vec![0.0, 0.0, 0.25], vec![0.5, 1.0, 1.0]);
@@ -3169,7 +3369,7 @@ mod tests {
                     .bounds(floored.clone()),
             )
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.5, 0.25, 0.25]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![0.5, 0.25, 0.25]), 1e-12);
 
         // Floors and caps of 1/3 leave equal weights as the only portfolio.
         let pinned = WeightBounds::uniform(1.0 / 3.0, 1.0 / 3.0);
@@ -3180,7 +3380,7 @@ mod tests {
                     .bounds(pinned.clone()),
             )
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![1.0 / 3.0; 3]), 1e-15);
+        assert_weights_close(&weights, &Weights::from(vec![1.0 / 3.0; 3]), 1e-15);
     }
 
     #[test]
@@ -3241,7 +3441,7 @@ mod tests {
         let weights = allocator
             .allocate(&config.clone().bounds(bounds.clone()))
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.6, 0.4, 0.0]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![0.6, 0.4, 0.0]), 1e-12);
 
         // In between, the target holds and the weights stay within the bounds.
         let config = MeanVariance::target_return(0.0025).expected_returns(mu.as_slice());
@@ -3330,7 +3530,7 @@ mod tests {
             ((1.0 + 9e-13) / n as f64, 1.0),
         ] {
             let weights = solve(WeightBounds::uniform(lower, upper)).unwrap();
-            assert_weights_close(&weights, &Weights(vec![1.0 / n as f64; n]), 1e-15);
+            assert_weights_close(&weights, &Weights::from(vec![1.0 / n as f64; n]), 1e-15);
             for &w in &weights {
                 assert!(
                     w >= lower * (1.0 - 1e-12) && w <= upper * (1.0 + 1e-12),
@@ -3351,7 +3551,7 @@ mod tests {
                     .bounds(WeightBounds::uniform(0.0, 0.1)),
             )
             .unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.1; 10]), 1e-15);
+        assert_weights_close(&weights, &Weights::from(vec![0.1; 10]), 1e-15);
     }
 
     #[test]
@@ -3364,7 +3564,7 @@ mod tests {
             .expected_returns(expected.as_slice());
         assert_weights_close(
             &allocator.allocate(&config).unwrap(),
-            &Weights(vec![0.0, 1.0, 0.0]),
+            &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
@@ -3430,7 +3630,11 @@ mod tests {
             unconstrained,
             Err(CutupError::RiskFreeRateTooHigh { .. })
         ));
-        assert_weights_close(&long_only.unwrap(), &Weights(vec![0.0, 1.0, 0.0]), 1e-9);
+        assert_weights_close(
+            &long_only.unwrap(),
+            &Weights::from(vec![0.0, 1.0, 0.0]),
+            1e-9,
+        );
 
         for rate in [0.003, 0.003 * (1.0 + 1e-12), 0.01] {
             assert!(matches!(
@@ -3494,13 +3698,13 @@ mod tests {
             .unwrap();
         assert!(v.iter().all(|&v| v > 0.0), "{v}");
         let w = v.component_div(&sigma);
-        let expected = Weights((&w / w.sum()).iter().copied().collect());
+        let expected = Weights::from((&w / w.sum()).iter().copied().collect::<Vec<_>>());
 
         let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
         assert_weights_close(&weights, &expected, 1e-12);
         assert_weights_close(
             &weights,
-            &Weights(vec![0.29228043, 0.23774194, 0.46997763]),
+            &Weights::from(vec![0.29228043, 0.23774194, 0.46997763]),
             1e-8,
         );
     }
@@ -3794,7 +3998,7 @@ mod tests {
         // HRPOpt(returns).optimize() on the returns of full_rank_prices, with PyPortfolioOpt
         // 1.6.0 and SciPy 1.17.1.
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
-        let expected = Weights(vec![
+        let expected = Weights::from(vec![
             0.43205598172341897,
             0.23653580200415913,
             0.3314082162724219,
@@ -3814,7 +4018,7 @@ mod tests {
         let w1 = (1.0 / v1) / (1.0 / v1 + 1.0 / v2);
         assert_weights_close(
             &allocator.allocate(&Hrp::default()).unwrap(),
-            &Weights(vec![w1, 1.0 - w1]),
+            &Weights::from(vec![w1, 1.0 - w1]),
             1e-12,
         );
     }
@@ -3833,7 +4037,7 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         let inverse = [1.0 / (s1 * s1), 1.0 / (s2 * s2), 1.0 / (s3 * s3)];
         let total: f64 = inverse.iter().sum();
-        let expected = Weights(inverse.iter().map(|x| x / total).collect());
+        let expected = Weights::from(inverse.iter().map(|x| x / total).collect::<Vec<_>>());
         assert_weights_close(
             &allocator.allocate(&Hrp::default()).unwrap(),
             &expected,
@@ -3984,7 +4188,7 @@ mod tests {
         let allocator = Returns::returns_matrix(returns).unwrap();
         assert_weights_close(
             &allocator.allocate(&Hrp::default()).unwrap(),
-            &Weights(vec![0.5, 0.5]),
+            &Weights::from(vec![0.5, 0.5]),
             1e-12,
         );
     }
@@ -4003,7 +4207,7 @@ mod tests {
 
         let normalize = |raw: [f64; 3]| {
             let total: f64 = raw.iter().sum();
-            Weights(raw.iter().map(|x| x / total).collect())
+            Weights::from(raw.iter().map(|x| x / total).collect::<Vec<_>>())
         };
         assert_weights_close(
             &allocator.allocate(&InverseVolatility).unwrap(),
@@ -4124,7 +4328,7 @@ mod tests {
 
         let excess = sample_mean(&allocator).add_scalar(-risk_free_rate);
         let z = allocator.cov_matrix.clone().try_inverse().unwrap() * excess;
-        let expected = Weights((&z / z.sum()).iter().copied().collect());
+        let expected = Weights::from((&z / z.sum()).iter().copied().collect::<Vec<_>>());
         assert_weights_close(&weights, &expected, 1e-10);
     }
 
@@ -4235,7 +4439,7 @@ mod tests {
             &allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),
-            &Weights(vec![2.0, -1.0]),
+            &Weights::from(vec![2.0, -1.0]),
             1e-9,
         );
 
@@ -4474,7 +4678,7 @@ mod tests {
         // Positively collinear assets have a singular Σ, but every long-only portfolio is risky.
         let allocator = Returns::returns_matrix(collinear_returns()).unwrap();
         let weights = allocator.allocate(&RiskParity::default()).unwrap();
-        assert_weights_close(&weights, &Weights(vec![2.0 / 3.0, 1.0 / 3.0]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![2.0 / 3.0, 1.0 / 3.0]), 1e-12);
 
         // Here the long-only portfolio (1, 1, 1) / 3 has zero variance.
         let allocator = Returns::returns_matrix(rank_one_returns()).unwrap();
@@ -4499,7 +4703,7 @@ mod tests {
         let config =
             RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-6));
         let weights = allocator.allocate(&config).unwrap();
-        assert_weights_close(&weights, &Weights(vec![0.5, 0.5]), 1e-12);
+        assert_weights_close(&weights, &Weights::from(vec![0.5, 0.5]), 1e-12);
     }
 
     #[test]
@@ -4732,6 +4936,285 @@ mod tests {
         assert_ne!(
             weights,
             allocator.allocate(&Herc::default().clusters(2)).unwrap()
+        );
+    }
+
+    fn labeled() -> Returns {
+        Returns::prices_matrix(full_rank_prices())
+            .unwrap()
+            .labeled(["SPY", "TLT", "GLD"])
+            .unwrap()
+    }
+
+    #[test]
+    fn test_labels_default_to_columns() {
+        let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
+        assert_eq!(allocator.labels(), ["0", "1", "2"]);
+        let weights = allocator.allocate(&InverseVariance).unwrap();
+        assert_eq!(weights.labels(), ["0", "1", "2"]);
+        assert_eq!(weights.weight("1"), Some(weights[1]));
+        assert_eq!(weights, Weights::from(weights.as_slice().to_vec()));
+    }
+
+    #[test]
+    fn test_labeled_rejects_a_wrong_count_and_repeats() {
+        let allocator = || Returns::prices_matrix(full_rank_prices()).unwrap();
+        assert_eq!(
+            allocator().labeled(["SPY", "TLT"]).err(),
+            Some(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
+        );
+        assert_eq!(
+            allocator().labeled(["SPY", "TLT", "SPY"]).err(),
+            Some(CutupError::DuplicateAsset {
+                asset: "SPY".into()
+            })
+        );
+        let labels: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        assert_eq!(
+            allocator().labeled(labels).unwrap().labels(),
+            ["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn test_every_method_labels_its_weights() {
+        let allocator = labeled();
+        let current = [0.4, 0.3, 0.3];
+        let methods: Vec<Box<dyn Allocation>> = vec![
+            Box::new(EqualWeight),
+            Box::new(InverseVolatility),
+            Box::new(InverseVariance),
+            Box::new(MinVariance::default()),
+            Box::new(MinVariance::default().allow_short()),
+            Box::new(
+                MinVariance::default()
+                    .current_weights(current)
+                    .max_turnover(0.1),
+            ),
+            Box::new(MeanVariance::risk_aversion(2.0)),
+            Box::new(MeanVariance::risk_aversion(2.0).allow_short()),
+            Box::new(
+                MeanVariance::risk_aversion(2.0)
+                    .current_weights(current)
+                    .transaction_costs(0.001),
+            ),
+            Box::new(MaxSharpe::default()),
+            Box::new(MaxDiversification::default()),
+            Box::new(RiskParity::default()),
+            Box::new(Hrp::default()),
+            Box::new(Herc::default()),
+            Box::new(MinCvar::default()),
+        ];
+        for (i, method) in methods.iter().enumerate() {
+            let weights = allocator.allocate(method).unwrap();
+            assert_eq!(weights.labels(), ["SPY", "TLT", "GLD"], "method {i}");
+            // Called directly, not through `Returns::allocate`, too.
+            assert_eq!(method.allocate(&allocator).unwrap(), weights);
+        }
+    }
+
+    #[test]
+    fn test_own_allocations_get_the_labels() {
+        struct Fixed;
+        impl Allocation for Fixed {
+            fn allocate(&self, _data: &Returns) -> Result<Weights, CutupError> {
+                Ok(vec![0.2, 0.3, 0.5].into())
+            }
+        }
+        let weights = labeled().allocate(&Fixed).unwrap();
+        assert_eq!(weights.labels(), ["SPY", "TLT", "GLD"]);
+        assert_eq!(weights.weight("GLD"), Some(0.5));
+    }
+
+    #[test]
+    fn test_weights_by_label() {
+        let weights = labeled().allocate(&InverseVariance).unwrap();
+        assert_eq!(weights.weight("TLT"), Some(weights[1]));
+        assert_eq!(weights.weight("QQQ"), None);
+        assert_eq!(weights["GLD"], weights[2]);
+        let pairs: Vec<(&str, f64)> = weights.labeled().collect();
+        assert_eq!(
+            pairs,
+            [
+                ("SPY", weights[0]),
+                ("TLT", weights[1]),
+                ("GLD", weights[2])
+            ]
+        );
+        assert_eq!(weights.labeled().len(), 3);
+        assert_eq!(weights.labeled().next_back(), Some(("GLD", weights[2])));
+    }
+
+    #[test]
+    #[should_panic(expected = "no asset is labeled `QQQ`")]
+    fn test_weights_index_by_unknown_label_panics() {
+        let _ = labeled().allocate(&EqualWeight).unwrap()["QQQ"];
+    }
+
+    #[test]
+    fn test_assets_by_label_match_by_column() {
+        let allocator = labeled();
+        let same = |a: &dyn Allocation, b: &dyn Allocation| {
+            assert_eq!(
+                allocator.allocate(a).unwrap(),
+                allocator.allocate(b).unwrap()
+            );
+        };
+
+        let in_order = WeightBounds::per_asset(vec![0.1, 0.0, 0.0], vec![0.5, 0.6, 0.4]);
+        let by_label = WeightBounds::per_asset(
+            [("GLD", 0.0), ("SPY", 0.1), ("TLT", 0.0)],
+            [("TLT", 0.6), ("SPY", 0.5), ("GLD", 0.4)],
+        );
+        // Each asset's bounds replace the uniform ones, and the last for an asset wins.
+        let overridden = WeightBounds::uniform(0.0, 0.6)
+            .asset("SPY", 0.0, 0.2)
+            .asset("SPY", 0.1, 0.5)
+            .asset(2, 0.0, 0.4);
+        for bounds in [by_label, overridden] {
+            same(
+                &MinVariance::default().bounds(in_order.clone()),
+                &MinVariance::default().bounds(bounds.clone()),
+            );
+            same(
+                &MinCvar::default().bounds(in_order.clone()),
+                &MinCvar::default().bounds(bounds.clone()),
+            );
+            same(
+                &MeanVariance::risk_aversion(2.0)
+                    .bounds(in_order.clone())
+                    .current_weights([0.4, 0.3, 0.3])
+                    .max_turnover(0.3),
+                &MeanVariance::risk_aversion(2.0)
+                    .bounds(bounds)
+                    .current_weights([0.4, 0.3, 0.3])
+                    .max_turnover(0.3),
+            );
+        }
+
+        // Current weights left out are 0.
+        let current = [("TLT", 0.4), ("SPY", 0.6)];
+        same(
+            &MinVariance::default()
+                .current_weights([0.6, 0.4, 0.0])
+                .max_turnover(0.2),
+            &MinVariance::default()
+                .current_weights(current)
+                .max_turnover(0.2),
+        );
+        same(
+            &MeanVariance::target_return(0.01)
+                .current_weights([0.6, 0.4, 0.0])
+                .max_turnover(0.5),
+            &MeanVariance::target_return(0.01)
+                .current_weights(current)
+                .max_turnover(0.5),
+        );
+
+        let mu = [0.001, 0.002, 0.0015];
+        let mu_by_label = [("GLD", 0.0015), ("TLT", 0.002), ("SPY", 0.001)];
+        same(
+            &MeanVariance::risk_aversion(2.0).expected_returns(mu),
+            &MeanVariance::risk_aversion(2.0).expected_returns(mu_by_label),
+        );
+        same(
+            &MaxSharpe::default().expected_returns(mu),
+            &MaxSharpe::default().expected_returns(mu_by_label),
+        );
+        same(
+            &MeanVariance::risk_aversion(2.0)
+                .current_weights([0.4, 0.3, 0.3])
+                .transaction_costs_per_asset([0.001, 0.002, 0.003]),
+            &MeanVariance::risk_aversion(2.0)
+                .current_weights([("GLD", 0.3), ("SPY", 0.4), ("TLT", 0.3)])
+                .transaction_costs_per_asset([(2, 0.003), (0, 0.001), (1, 0.002)]),
+        );
+        same(
+            &RiskParity::default().risk_budgets([1.0, 2.0, 3.0]),
+            &RiskParity::default().risk_budgets([("TLT", 2.0), ("GLD", 3.0), ("SPY", 1.0)]),
+        );
+    }
+
+    #[test]
+    fn test_views_by_label_match_by_column() {
+        let allocator = labeled();
+        let in_order = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+            .view(View::absolute(0, 0.001))
+            .view(View::relative(1, 2, 0.0005))
+            .view(View::portfolio([0.5, 0.0, -0.5], 0.0002));
+        let by_label = BlackLitterman::new([("TLT", 0.3), ("GLD", 0.2), ("SPY", 0.5)], 2.5)
+            .view(View::absolute("SPY", 0.001))
+            .view(View::relative("TLT", "GLD", 0.0005))
+            .view(View::portfolio([("GLD", -0.5), ("SPY", 0.5)], 0.0002));
+        assert_eq!(
+            in_order.expected_returns(&allocator).unwrap(),
+            by_label.expected_returns(&allocator).unwrap()
+        );
+        assert_eq!(
+            in_order.prior_returns(&allocator).unwrap(),
+            by_label.prior_returns(&allocator).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_assets_not_in_the_data_or_given_twice() {
+        let allocator = labeled();
+        let model = || BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+        let unknown = |asset: &str| CutupError::UnknownAsset {
+            asset: asset.into(),
+        };
+        assert_eq!(
+            allocator.allocate(
+                &MinVariance::default()
+                    .bounds(WeightBounds::uniform(0.0, 1.0).asset("QQQ", 0.0, 0.5))
+            ),
+            Err(unknown("QQQ"))
+        );
+        assert_eq!(
+            allocator.allocate(
+                &MinVariance::default().bounds(WeightBounds::uniform(0.0, 1.0).asset(3, 0.0, 0.5))
+            ),
+            Err(unknown("3"))
+        );
+        assert_eq!(
+            model()
+                .view(View::absolute("QQQ", 0.001))
+                .expected_returns(&allocator),
+            Err(unknown("QQQ"))
+        );
+        // The same asset by label and by column.
+        assert_eq!(
+            model()
+                .view(View::relative("SPY", 0, 0.001))
+                .expected_returns(&allocator),
+            Err(CutupError::InvalidConfig {
+                field: "view_asset",
+                value: 0.0
+            })
+        );
+        assert_eq!(
+            allocator.allocate(
+                &MinVariance::default()
+                    .current_weights([("SPY", 0.5), ("SPY", 0.5)])
+                    .max_turnover(0.1)
+            ),
+            Err(CutupError::DuplicateAsset {
+                asset: "SPY".into()
+            })
+        );
+        // Every asset needs an expected return.
+        assert_eq!(
+            allocator.allocate(
+                &MeanVariance::risk_aversion(2.0)
+                    .expected_returns([("SPY", 0.001), ("TLT", 0.002)])
+            ),
+            Err(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
         );
     }
 }

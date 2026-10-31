@@ -46,6 +46,8 @@ use nalgebra::{DMatrix, DVector};
 /// * [`CutupError::InvalidConfig`] if the confidence isn't in `(0, 1)`, the target return
 ///   isn't finite, or the bounds are invalid.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
+/// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
+///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::InfeasibleBounds`] if the bounds can't sum to 1.
 /// * [`CutupError::TargetReturnOutOfRange`] if no portfolio within the bounds has the target
 ///   return, by the sample mean of the returns.
@@ -105,7 +107,7 @@ impl Allocation for MinCvar {
         let returns = &data.returns;
         let (t, n) = returns.shape();
         let cap = tail_weight(self.confidence, t)?;
-        let bounds = self.bounds.resolve(n)?;
+        let bounds = self.bounds.resolve(data.labels())?;
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
                 return Err(CutupError::InvalidConfig {
@@ -170,7 +172,7 @@ impl Allocation for MinCvar {
         let weights = DVector::from_fn(n, |i, _| {
             solution.y[i].clamp(bounds.lower[i], bounds.upper[i])
         });
-        Ok(normalized(weights))
+        Ok(data.weights(normalized(weights)))
     }
 }
 

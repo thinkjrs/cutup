@@ -2,7 +2,7 @@
 
 use crate::turnover::{self, Costs, Trading};
 use crate::{
-    CovarianceConfig, CutupError, Linkage, Objective, Returns, WeightBounds, Weights,
+    CovarianceConfig, CutupError, Linkage, Objective, PerAsset, Returns, WeightBounds, Weights,
     check_objective,
 };
 use nalgebra::DVector;
@@ -54,7 +54,8 @@ use nalgebra::DVector;
 /// ```
 ///
 /// Implement it to add a method of your own, returning one weight per asset that sum to 1, as
-/// every method in this crate does. Build the [`Weights`] from a `Vec<f64>`.
+/// every method in this crate does. Build the [`Weights`] from a `Vec<f64>`, in column order;
+/// [`Returns::allocate`] labels them.
 pub trait Allocation {
     /// Computes the weights for the returns in `data`.
     ///
@@ -97,7 +98,7 @@ pub struct EqualWeight;
 impl Allocation for EqualWeight {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let n = data.returns.ncols();
-        Ok(Weights(vec![1.0 / n as f64; n]))
+        Ok(data.weights(vec![1.0 / n as f64; n]))
     }
 }
 
@@ -229,6 +230,8 @@ impl Allocation for InverseVariance {
 ///   is outside `[0, 1]`, or a lower bound is negative or not finite, or an upper bound is
 ///   below its lower bound or NaN.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
+/// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
+///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
 ///   bounds to less, by more than `1e-12`.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
@@ -334,6 +337,7 @@ impl Allocation for MinVariance {
             let cov = data.adjusted_covariance(&self.covariance)?;
             let n = cov.ncols();
             return turnover::rebalance(
+                data,
                 cov,
                 DVector::zeros(n),
                 self.bounds.as_ref(),
@@ -341,7 +345,7 @@ impl Allocation for MinVariance {
                 1.0,
             );
         }
-        self.trading.check(data.cov_matrix.ncols())?;
+        self.trading.check(data.labels())?;
         match &self.bounds {
             Some(bounds) => data.bounded_min_variance(&self.covariance, bounds),
             None => data.min_variance(&self.covariance),
@@ -408,6 +412,8 @@ impl Allocation for MinVariance {
 ///   invalid.
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds or the expected returns don't have
 ///   one entry per asset.
+/// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
+///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
 ///   bounds to less, by more than `1e-12`.
 /// * [`CutupError::TargetReturnOutOfRange`], long-only, for a target return below the lowest
@@ -483,7 +489,7 @@ impl Allocation for MinVariance {
 #[non_exhaustive]
 pub struct MeanVariance {
     objective: Objective,
-    expected_returns: Option<Vec<f64>>,
+    expected_returns: Option<PerAsset>,
     covariance: CovarianceConfig,
     /// `None` when short positions are allowed.
     bounds: Option<WeightBounds>,
@@ -512,9 +518,9 @@ impl MeanVariance {
         }
     }
 
-    /// Uses `expected_returns`, one per asset in column order, instead of the sample mean of
-    /// the returns. They're in the same units and period as the returns.
-    pub fn expected_returns(mut self, expected_returns: impl Into<Vec<f64>>) -> Self {
+    /// Uses `expected_returns`, [one per asset](PerAsset) in column order or by asset, instead
+    /// of the sample mean of the returns. They're in the same units and period as the returns.
+    pub fn expected_returns(mut self, expected_returns: impl Into<PerAsset>) -> Self {
         self.expected_returns = Some(expected_returns.into());
         self
     }
@@ -537,9 +543,9 @@ impl MeanVariance {
         self
     }
 
-    /// Charges `costs[i]` per unit of asset `i`'s weight traded, one per asset in column order.
-    /// See [`MeanVariance::transaction_costs`].
-    pub fn transaction_costs_per_asset(mut self, costs: impl Into<Vec<f64>>) -> Self {
+    /// Charges `costs[i]` per unit of asset `i`'s weight traded, [one per asset](PerAsset) in
+    /// column order or by asset. See [`MeanVariance::transaction_costs`].
+    pub fn transaction_costs_per_asset(mut self, costs: impl Into<PerAsset>) -> Self {
         self.trading.costs = Some(Costs::PerAsset(costs.into()));
         self
     }
@@ -561,7 +567,7 @@ impl MeanVariance {
 
 impl Allocation for MeanVariance {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let expected_returns = self.expected_returns.clone().map(DVector::from_vec);
+        let expected_returns = data.resolve(self.expected_returns.as_ref())?;
         if self.trading.first_setting().is_some() {
             check_objective(self.objective)?;
             let covariance = || data.adjusted_covariance(&self.covariance);
@@ -569,7 +575,7 @@ impl Allocation for MeanVariance {
                 (Objective::RiskAversion(gamma), _) => {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
                     let cov = covariance()? * gamma;
-                    turnover::rebalance(cov, mu, self.bounds.as_ref(), &self.trading, 2.0)
+                    turnover::rebalance(data, cov, mu, self.bounds.as_ref(), &self.trading, 2.0)
                 }
                 (Objective::TargetReturn(_), Some(setting)) => Err(CutupError::NotSupported {
                     setting,
@@ -580,6 +586,7 @@ impl Allocation for MeanVariance {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
                     let cap = self.trading.max_turnover.unwrap_or(f64::INFINITY);
                     turnover::rebalance_to_target(
+                        data,
                         covariance,
                         mu,
                         target,
@@ -590,7 +597,7 @@ impl Allocation for MeanVariance {
                 }
             };
         }
-        self.trading.check(data.cov_matrix.ncols())?;
+        self.trading.check(data.labels())?;
         let mu = expected_returns.as_ref();
         match &self.bounds {
             Some(bounds) => {
@@ -654,6 +661,8 @@ impl Allocation for MeanVariance {
 /// * [`CutupError::InvalidConfig`] if the risk-free rate or an expected return is not finite,
 ///   or the covariance settings are invalid.
 /// * [`CutupError::DimensionMismatch`] if the expected returns don't have one entry per asset.
+/// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
+///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::NoPositiveExcessReturn`], long-only, if the risk-free rate is at or above
 ///   the highest expected return.
 /// * [`CutupError::RiskFreeRateTooHigh`], long-short, if the risk-free rate is at or above the
@@ -703,7 +712,7 @@ impl Allocation for MeanVariance {
 #[non_exhaustive]
 pub struct MaxSharpe {
     risk_free_rate: f64,
-    expected_returns: Option<Vec<f64>>,
+    expected_returns: Option<PerAsset>,
     covariance: CovarianceConfig,
     long_only: bool,
 }
@@ -727,9 +736,9 @@ impl MaxSharpe {
         self
     }
 
-    /// Uses `expected_returns`, one per asset in column order, instead of the sample mean of
-    /// the returns. They're in the same units and period as the returns.
-    pub fn expected_returns(mut self, expected_returns: impl Into<Vec<f64>>) -> Self {
+    /// Uses `expected_returns`, [one per asset](PerAsset) in column order or by asset, instead
+    /// of the sample mean of the returns. They're in the same units and period as the returns.
+    pub fn expected_returns(mut self, expected_returns: impl Into<PerAsset>) -> Self {
         self.expected_returns = Some(expected_returns.into());
         self
     }
@@ -745,7 +754,7 @@ impl MaxSharpe {
 
 impl Allocation for MaxSharpe {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let mu = self.expected_returns.clone().map(DVector::from_vec);
+        let mu = data.resolve(self.expected_returns.as_ref())?;
         if self.long_only {
             data.long_only_max_sharpe(self.risk_free_rate, mu.as_ref(), &self.covariance)
         } else {
@@ -854,6 +863,8 @@ impl Allocation for MaxDiversification {
 /// * [`CutupError::InvalidConfig`] if a risk budget isn't positive and finite, or the
 ///   covariance settings are invalid.
 /// * [`CutupError::DimensionMismatch`] if the risk budgets don't have one entry per asset.
+/// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
+///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
 ///   shrinkage nor regularization is applied.
 /// * [`CutupError::SingularCovariance`] if some long-only portfolio has zero variance.
@@ -886,14 +897,15 @@ impl Allocation for MaxDiversification {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RiskParity {
-    risk_budgets: Option<Vec<f64>>,
+    risk_budgets: Option<PerAsset>,
     covariance: CovarianceConfig,
 }
 
 impl RiskParity {
-    /// Sets each asset's share of the portfolio's risk, in column order. Only the ratios
-    /// matter, so they needn't sum to 1. Defaults to the same share for every asset.
-    pub fn risk_budgets(mut self, risk_budgets: impl Into<Vec<f64>>) -> Self {
+    /// Sets each asset's share of the portfolio's risk, [one per asset](PerAsset) in column
+    /// order or by asset. Only the ratios matter, so they needn't sum to 1. Defaults to the same
+    /// share for every asset.
+    pub fn risk_budgets(mut self, risk_budgets: impl Into<PerAsset>) -> Self {
         self.risk_budgets = Some(risk_budgets.into());
         self
     }
@@ -903,7 +915,7 @@ impl RiskParity {
 
 impl Allocation for RiskParity {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
-        let budgets = self.risk_budgets.clone().map(DVector::from_vec);
+        let budgets = data.resolve(self.risk_budgets.as_ref())?;
         data.risk_parity(budgets.as_ref(), &self.covariance)
     }
 }

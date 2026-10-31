@@ -1,6 +1,6 @@
 //! Black-Litterman expected returns: the market's implied returns, blended with views.
 
-use crate::{CovarianceConfig, CutupError, Returns};
+use crate::{Asset, CovarianceConfig, CutupError, PerAsset, Returns};
 use nalgebra::{DMatrix, DVector};
 
 /// Expected returns from the Black-Litterman model (Black and Litterman, 1992): the returns
@@ -50,7 +50,7 @@ use nalgebra::{DMatrix, DVector};
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BlackLitterman {
-    market_weights: Vec<f64>,
+    market_weights: PerAsset,
     risk_aversion: f64,
     risk_free_rate: f64,
     tau: f64,
@@ -59,9 +59,10 @@ pub struct BlackLitterman {
 }
 
 impl BlackLitterman {
-    /// A model with the market weights `market_weights`, in column order, and the market's
-    /// risk aversion `delta`. Market capitalizations work too: they're divided by their sum.
-    pub fn new(market_weights: impl Into<Vec<f64>>, delta: f64) -> Self {
+    /// A model with the market weights `market_weights`, in column order or by asset, and the
+    /// market's risk aversion `delta`. Market capitalizations work too: they're divided by
+    /// their sum.
+    pub fn new(market_weights: impl Into<PerAsset>, delta: f64) -> Self {
         Self {
             market_weights: market_weights.into(),
             risk_aversion: delta,
@@ -98,12 +99,14 @@ impl BlackLitterman {
     /// # Errors
     ///
     /// * [`CutupError::DimensionMismatch`] if there isn't one market weight per asset.
+    /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if the market weights
+    ///   name an asset that isn't in the data, or name one twice.
     /// * [`CutupError::InvalidConfig`] if a market weight is negative or not finite, the
     ///   weights sum to 0, `δ` isn't positive and finite, the risk-free rate isn't finite, or
     ///   the covariance config is invalid.
     pub fn prior_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
-        Ok(self.prior(&cov)?.as_slice().to_vec())
+        Ok(self.prior(&cov, data.labels())?.as_slice().to_vec())
     }
 
     /// The posterior expected returns, one per asset in column order. With no views, these are
@@ -113,18 +116,20 @@ impl BlackLitterman {
     ///
     /// * Any error from [`BlackLitterman::prior_returns`].
     /// * [`CutupError::InvalidConfig`] if `τ` isn't positive and finite, or a view is invalid:
-    ///   an asset index out of range, a relative view of an asset against itself, a portfolio
-    ///   with no nonzero weight, a return that isn't finite, a variance that is negative or
-    ///   not finite, or a confidence outside `[0, 1]`.
-    /// * [`CutupError::DimensionMismatch`] if a [`View::portfolio`] doesn't have one weight
-    ///   per asset.
+    ///   a relative view of an asset against itself, a portfolio with no nonzero weight, a
+    ///   return that isn't finite, a variance that is negative or not finite, or a confidence
+    ///   outside `[0, 1]`.
+    /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a view names an
+    ///   asset that isn't in the data, or a portfolio names one twice.
+    /// * [`CutupError::DimensionMismatch`] if a [`View::portfolio`] in column order doesn't
+    ///   have one weight per asset.
     /// * [`CutupError::DegenerateViews`] if `τPΣPᵀ + Ω` is singular, or within rounding of it:
     ///   certain views that repeat or contradict each other, or a view with the default
     ///   variance or a confidence on a portfolio with no variance, which would make it
     ///   certain. Give such a view an explicit [`View::variance`].
     pub fn expected_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
-        let pi = self.prior(&cov)?;
+        let pi = self.prior(&cov, data.labels())?;
         if !(self.tau.is_finite() && self.tau > 0.0) {
             return Err(CutupError::InvalidConfig {
                 field: "tau",
@@ -136,7 +141,7 @@ impl BlackLitterman {
         // confidence c, or 0 with a given variance.
         let mut views = Vec::with_capacity(self.views.len());
         for view in &self.views {
-            let p = view.weights(n)?;
+            let p = view.weights(data.labels())?;
             if !view.q.is_finite() {
                 return Err(CutupError::InvalidConfig {
                     field: "view_return",
@@ -199,16 +204,16 @@ impl BlackLitterman {
         Ok(posterior.as_slice().to_vec())
     }
 
-    fn prior(&self, cov: &DMatrix<f64>) -> Result<DVector<f64>, CutupError> {
+    fn prior(&self, cov: &DMatrix<f64>, labels: &[String]) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
-        if self.market_weights.len() != n {
+        let market_weights = self.market_weights.resolve(labels, None)?;
+        if market_weights.len() != n {
             return Err(CutupError::DimensionMismatch {
                 expected: n,
-                actual: self.market_weights.len(),
+                actual: market_weights.len(),
             });
         }
-        if let Some(&value) = self
-            .market_weights
+        if let Some(&value) = market_weights
             .iter()
             .find(|w| !(w.is_finite() && **w >= 0.0))
         {
@@ -217,7 +222,7 @@ impl BlackLitterman {
                 value,
             });
         }
-        let total: f64 = self.market_weights.iter().sum();
+        let total: f64 = market_weights.iter().sum();
         if !(total.is_finite() && total > 0.0) {
             return Err(CutupError::InvalidConfig {
                 field: "market_weights",
@@ -236,7 +241,7 @@ impl BlackLitterman {
                 value: self.risk_free_rate,
             });
         }
-        let w = DVector::from_iterator(n, self.market_weights.iter().map(|w| w / total));
+        let w = DVector::from_iterator(n, market_weights.iter().map(|w| w / total));
         Ok((cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate))
     }
 }
@@ -270,6 +275,10 @@ fn solve_views(a: DMatrix<f64>, b: DVector<f64>) -> Result<DVector<f64>, CutupEr
 /// let absolute = View::absolute(0, 0.001).confidence(0.6);
 /// let relative = View::relative(1, 2, 0.0005).variance(1e-7);
 /// let basket = View::portfolio([0.5, 0.5, -1.0], 0.0002);
+///
+/// // By label, once the data is labeled.
+/// let labeled = View::relative("SPY", "TLT", 0.0005);
+/// let labeled_basket = View::portfolio([("SPY", 0.5), ("QQQ", 0.5), ("TLT", -1.0)], 0.0002);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -281,9 +290,9 @@ pub struct View {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Assets {
-    Absolute(usize),
-    Relative(usize, usize),
-    Portfolio(Vec<f64>),
+    Absolute(Asset),
+    Relative(Asset, Asset),
+    Portfolio(PerAsset),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -294,20 +303,20 @@ enum Uncertainty {
 }
 
 impl View {
-    /// Asset `asset` has an expected return of `q`.
-    pub fn absolute(asset: usize, q: f64) -> Self {
-        Self::new(Assets::Absolute(asset), q)
+    /// `asset`, by label or by column, has an expected return of `q`.
+    pub fn absolute(asset: impl Into<Asset>, q: f64) -> Self {
+        Self::new(Assets::Absolute(asset.into()), q)
     }
 
-    /// Asset `long` has an expected return `q` above asset `short`'s.
-    pub fn relative(long: usize, short: usize, q: f64) -> Self {
-        Self::new(Assets::Relative(long, short), q)
+    /// `long` has an expected return `q` above `short`'s, each by label or by column.
+    pub fn relative(long: impl Into<Asset>, short: impl Into<Asset>, q: f64) -> Self {
+        Self::new(Assets::Relative(long.into(), short.into()), q)
     }
 
-    /// The portfolio with `weights`, one per asset in column order, has an expected return
-    /// of `q`. The weights needn't sum to anything: `[0.5, 0.5, -1.0]` says the first two
-    /// assets together beat the third by `q`.
-    pub fn portfolio(weights: impl Into<Vec<f64>>, q: f64) -> Self {
+    /// The portfolio with `weights`, in column order or by asset, has an expected return of
+    /// `q`. The weights needn't sum to anything: `[0.5, 0.5, -1.0]` says the first two assets
+    /// together beat the third by `q`. By asset, the assets left out have a weight of 0.
+    pub fn portfolio(weights: impl Into<PerAsset>, q: f64) -> Self {
         Self::new(Assets::Portfolio(weights.into()), q)
     }
 
@@ -336,45 +345,39 @@ impl View {
         self
     }
 
-    /// The view's portfolio as a vector over `n` assets.
-    fn weights(&self, n: usize) -> Result<DVector<f64>, CutupError> {
-        let index = |asset: usize| {
-            if asset < n {
-                Ok(asset)
-            } else {
-                Err(CutupError::InvalidConfig {
-                    field: "view_asset",
-                    value: asset as f64,
-                })
-            }
-        };
+    /// The view's portfolio as a vector over the assets `labels`.
+    fn weights(&self, labels: &[String]) -> Result<DVector<f64>, CutupError> {
+        let n = labels.len();
         match &self.assets {
             Assets::Absolute(asset) => {
-                let asset = index(*asset)?;
+                let asset = asset.column(labels)?;
                 Ok(DVector::from_fn(
                     n,
                     |i, _| if i == asset { 1.0 } else { 0.0 },
                 ))
             }
-            Assets::Relative(long, short) if long == short => Err(CutupError::InvalidConfig {
-                field: "view_asset",
-                value: *long as f64,
-            }),
             Assets::Relative(long, short) => {
-                let (long, short) = (index(*long)?, index(*short)?);
+                let (long, short) = (long.column(labels)?, short.column(labels)?);
+                if long == short {
+                    return Err(CutupError::InvalidConfig {
+                        field: "view_asset",
+                        value: long as f64,
+                    });
+                }
                 Ok(DVector::from_fn(n, |i, _| match i {
                     i if i == long => 1.0,
                     i if i == short => -1.0,
                     _ => 0.0,
                 }))
             }
-            Assets::Portfolio(weights) if weights.len() != n => {
-                Err(CutupError::DimensionMismatch {
-                    expected: n,
-                    actual: weights.len(),
-                })
-            }
             Assets::Portfolio(weights) => {
+                let weights = weights.resolve(labels, Some(0.0))?;
+                if weights.len() != n {
+                    return Err(CutupError::DimensionMismatch {
+                        expected: n,
+                        actual: weights.len(),
+                    });
+                }
                 if let Some(&value) = weights.iter().find(|w| !w.is_finite()) {
                     return Err(CutupError::InvalidConfig {
                         field: "view_weights",
@@ -387,7 +390,7 @@ impl View {
                         value: 0.0,
                     });
                 }
-                Ok(DVector::from_column_slice(weights))
+                Ok(DVector::from_vec(weights))
             }
         }
     }
@@ -564,7 +567,7 @@ mod tests {
         assert_eq!(check(model().tau(-1.0)), invalid("tau", -1.0));
         assert_eq!(
             check(model().view(View::absolute(3, 0.01))),
-            invalid("view_asset", 3.0)
+            Err(CutupError::UnknownAsset { asset: "3".into() })
         );
         assert_eq!(
             check(model().view(View::relative(1, 1, 0.01))),

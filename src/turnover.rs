@@ -2,8 +2,8 @@
 //! mean-variance.
 
 use crate::{
-    CutupError, ReturnRange, TargetProblem, WeightBounds, Weights, interior_start, lp, normalized,
-    qp,
+    CutupError, PerAsset, ReturnRange, Returns, TargetProblem, WeightBounds, Weights,
+    interior_start, lp, normalized, qp,
 };
 use nalgebra::{DMatrix, DVector};
 
@@ -12,7 +12,7 @@ use nalgebra::{DMatrix, DVector};
 /// costs or is allowed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Trading {
-    pub(crate) current: Option<Vec<f64>>,
+    pub(crate) current: Option<PerAsset>,
     pub(crate) penalty: Option<f64>,
     pub(crate) max_turnover: Option<f64>,
     pub(crate) costs: Option<Costs>,
@@ -22,7 +22,7 @@ pub(crate) struct Trading {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Costs {
     Uniform(f64),
-    PerAsset(Vec<f64>),
+    PerAsset(PerAsset),
 }
 
 impl Trading {
@@ -52,10 +52,12 @@ impl Trading {
         }
     }
 
-    /// Checks the settings for `n` assets, returning the current weights, if any, rescaled to
-    /// sum to exactly 1: within `1e-9` of it counts as rounding, but a turnover cap of 0 could
-    /// never be met from weights that sum to anything else.
-    pub(crate) fn check(&self, n: usize) -> Result<Option<DVector<f64>>, CutupError> {
+    /// Checks the settings for the assets `labels`, returning the current weights, if any,
+    /// rescaled to sum to exactly 1: within `1e-9` of it counts as rounding, but a turnover cap
+    /// of 0 could never be met from weights that sum to anything else. Current weights by asset
+    /// are 0 for the assets they leave out.
+    pub(crate) fn check(&self, labels: &[String]) -> Result<Option<DVector<f64>>, CutupError> {
+        let n = labels.len();
         let nonnegative = |field: &'static str, value: f64| {
             if value.is_finite() && value >= 0.0 {
                 Ok(())
@@ -71,14 +73,15 @@ impl Trading {
         }
         match &self.costs {
             Some(Costs::Uniform(cost)) => nonnegative("transaction_costs", *cost)?,
-            Some(Costs::PerAsset(costs)) if costs.len() != n => {
-                return Err(CutupError::DimensionMismatch {
-                    expected: n,
-                    actual: costs.len(),
-                });
-            }
             Some(Costs::PerAsset(costs)) => {
-                for &cost in costs {
+                let costs = costs.resolve(labels, None)?;
+                if costs.len() != n {
+                    return Err(CutupError::DimensionMismatch {
+                        expected: n,
+                        actual: costs.len(),
+                    });
+                }
+                for cost in costs {
                     nonnegative("transaction_costs", cost)?;
                 }
             }
@@ -90,6 +93,7 @@ impl Trading {
                 None => Ok(None),
             };
         };
+        let current = current.resolve(labels, Some(0.0))?;
         if current.len() != n {
             return Err(CutupError::DimensionMismatch {
                 expected: n,
@@ -109,15 +113,17 @@ impl Trading {
                 value: total,
             });
         }
-        Ok(Some(DVector::from_column_slice(current) / total))
+        Ok(Some(DVector::from_vec(current) / total))
     }
 
-    fn costs(&self, n: usize) -> DVector<f64> {
-        match &self.costs {
+    /// The transaction costs for the assets `labels`, once [`Trading::check`] has checked them.
+    fn costs(&self, labels: &[String]) -> Result<DVector<f64>, CutupError> {
+        let n = labels.len();
+        Ok(match &self.costs {
             Some(Costs::Uniform(cost)) => DVector::from_element(n, *cost),
-            Some(Costs::PerAsset(costs)) => DVector::from_column_slice(costs),
+            Some(Costs::PerAsset(costs)) => DVector::from_vec(costs.resolve(labels, None)?),
             None => DVector::zeros(n),
-        }
+        })
     }
 }
 
@@ -127,16 +133,19 @@ impl Trading {
 /// variance's `wᵀΣw + κ‖w − w₀‖²`, which is twice `½ wᵀΣw + ½κ‖w − w₀‖²`, and 2 for
 /// mean-variance's `−μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖²`.
 pub(crate) fn rebalance(
+    data: &Returns,
     q: DMatrix<f64>,
     c: DVector<f64>,
     bounds: Option<&WeightBounds>,
     trading: &Trading,
     curvature: f64,
 ) -> Result<Weights, CutupError> {
-    let n = q.ncols();
-    let current = trading.check(n)?.ok_or(CutupError::MissingCurrentWeights)?;
+    let (n, labels) = (q.ncols(), data.labels());
+    let current = trading
+        .check(labels)?
+        .ok_or(CutupError::MissingCurrentWeights)?;
     let bounds = match bounds {
-        Some(bounds) => bounds.resolve(n)?,
+        Some(bounds) => bounds.resolve(labels)?,
         None => qp::Bounds {
             lower: DVector::from_element(n, f64::NEG_INFINITY),
             upper: DVector::from_element(n, f64::INFINITY),
@@ -151,7 +160,7 @@ pub(crate) fn rebalance(
     );
     let kinks = qp::Kinks {
         at: current.clone(),
-        slopes: trading.costs(n),
+        slopes: trading.costs(labels)?,
     };
     // Long-short, the optimum without the kinks is a feasible start that, unlike the current
     // weights, isn't at every kink at once. Where there's none, as when a singular covariance
@@ -172,7 +181,7 @@ pub(crate) fn rebalance(
         }
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
     };
-    Ok(normalized(weights))
+    Ok(data.weights(normalized(weights)))
 }
 
 /// Minimizes `wᵀΣw` over portfolios summing to 1 with expected return `μᵀw = target`, within
@@ -180,6 +189,7 @@ pub(crate) fn rebalance(
 /// The caller rejects a penalty or costs, which a variance can't be traded off against.
 /// `cov` builds the covariance, once an unreachable target has been rejected.
 pub(crate) fn rebalance_to_target(
+    data: &Returns,
     cov: impl FnOnce() -> Result<DMatrix<f64>, CutupError>,
     mu: DVector<f64>,
     target: f64,
@@ -187,8 +197,10 @@ pub(crate) fn rebalance_to_target(
     trading: &Trading,
     cap: f64,
 ) -> Result<Weights, CutupError> {
-    let n = mu.len();
-    let current = trading.check(n)?.ok_or(CutupError::MissingCurrentWeights)?;
+    let (n, labels) = (mu.len(), data.labels());
+    let current = trading
+        .check(labels)?
+        .ok_or(CutupError::MissingCurrentWeights)?;
     let (
         cov,
         TargetProblem {
@@ -199,7 +211,7 @@ pub(crate) fn rebalance_to_target(
         },
     ) = match bounds {
         Some(bounds) => {
-            let problem = ReturnRange::target_problem(&mu, bounds.resolve(n)?, target)?;
+            let problem = ReturnRange::target_problem(&mu, bounds.resolve(labels)?, target)?;
             (cov()?, problem)
         }
         None => {
@@ -250,7 +262,7 @@ pub(crate) fn rebalance_to_target(
         (&kinks, cap.max(minimum + rounding)),
         start,
     )?;
-    Ok(normalized(weights))
+    Ok(data.weights(normalized(weights)))
 }
 
 /// The least turnover `Σᵢ|wᵢ − w₀ᵢ|` from `current` to a portfolio with `eᵀw = b` within
