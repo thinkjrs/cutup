@@ -251,6 +251,10 @@ moves, with no logic or API changes, so the review checks only that.
 - **`allocation.rs`** keeps the `Allocation` trait and its impls for `&A` and
   `Box<A>`.
 - **`lib.rs`** keeps the crate docs, the module list and the re-exports.
+- **Also needed:** `returns.rs` for `Returns`, its constructors and validation,
+  and `methods/mod.rs` for the solver code several methods share, such as
+  `long_only_weights` and `correlation`. Unit test fixtures are in a
+  test-only `test_support.rs`.
 
 ## 0.3.2: tidying and tooling
 
