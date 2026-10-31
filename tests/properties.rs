@@ -1,9 +1,9 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
 
 use cutup::{
-    BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    Returns, RiskParity, View, WeightBounds, Weights,
+    Allocation, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
+    InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
+    MinCvar, MinVariance, Returns, RiskParity, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -1507,5 +1507,77 @@ proptest! {
         let other = returns_via_flat(reversed).unwrap();
         let again = other.cvar(&other.allocate(&MinCvar::default().confidence(beta)).unwrap(), beta).unwrap();
         prop_assert!((best - again).abs() <= 1e-12 * best.abs().max(1e-3), "{best} vs {again}");
+    }
+
+    #[test]
+    fn labeled_pairs_in_any_order_match_column_order(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        caps in bounds(),
+        mu in prop::collection::vec(-0.002f64..0.004, 6),
+        order in Just((0..6).collect::<Vec<usize>>()).prop_shuffle(),
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let labels: Vec<String> = (0..n).map(|i| format!("asset {i}")).collect();
+        let allocator = returns_via_flat(returns).unwrap().labeled(&labels).unwrap();
+        let order: Vec<usize> = order.into_iter().filter(|&i| i < n).collect();
+        let pairs = |values: &[f64]| -> Vec<(String, f64)> {
+            order.iter().map(|&i| (labels[i].clone(), values[i])).collect()
+        };
+        let current = current_weights(&fractions, n);
+        let (lower, upper) = weight_bounds(&caps, n);
+        let (fractions, mu) = (&fractions[..n], &mu[..n]);
+        let costs: Vec<f64> = fractions.iter().map(|f| f * 1e-3).collect();
+
+        let in_order: Vec<Box<dyn Allocation>> = vec![
+            Box::new(
+                MinVariance::default()
+                    .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()))
+                    .current_weights(current.clone())
+                    .max_turnover(0.5),
+            ),
+            Box::new(
+                MeanVariance::risk_aversion(50.0)
+                    .expected_returns(mu)
+                    .current_weights(current.clone())
+                    .transaction_costs_per_asset(costs.clone()),
+            ),
+            Box::new(MaxSharpe::default().expected_returns(mu)),
+            Box::new(RiskParity::default().risk_budgets(fractions)),
+        ];
+        let by_label: Vec<Box<dyn Allocation>> = vec![
+            Box::new(
+                MinVariance::default()
+                    .bounds(WeightBounds::per_asset(pairs(&lower), pairs(&upper)))
+                    .current_weights(pairs(&current))
+                    .max_turnover(0.5),
+            ),
+            Box::new(
+                MeanVariance::risk_aversion(50.0)
+                    .expected_returns(pairs(mu))
+                    .current_weights(pairs(&current))
+                    .transaction_costs_per_asset(pairs(&costs)),
+            ),
+            Box::new(MaxSharpe::default().expected_returns(pairs(mu))),
+            Box::new(RiskParity::default().risk_budgets(pairs(fractions))),
+        ];
+        for (a, b) in in_order.iter().zip(&by_label) {
+            prop_assert_eq!(allocator.allocate(a), allocator.allocate(b));
+        }
+
+        let views = |model: BlackLitterman, p: Vec<(String, f64)>| {
+            model
+                .view(View::absolute(labels[order[0]].as_str(), mu[order[0]]))
+                .view(View::portfolio(p, 0.001))
+        };
+        let portfolio: Vec<f64> = mu.iter().map(|m| m * 100.0).collect();
+        prop_assert_eq!(
+            views(BlackLitterman::new(fractions, 2.5), pairs(&portfolio)).expected_returns(&allocator),
+            BlackLitterman::new(pairs(fractions), 2.5)
+                .view(View::absolute(order[0], mu[order[0]]))
+                .view(View::portfolio(portfolio.clone(), 0.001))
+                .expected_returns(&allocator)
+        );
     }
 }
