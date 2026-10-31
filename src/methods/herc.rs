@@ -161,8 +161,8 @@ impl Returns {
         if let Some(asset) = self.find_zero_variance() {
             return Err(self.zero_variance(asset));
         }
-        let cov = self.adjusted_covariance(covariance)?;
         let distance = self.correlation_distance()?;
+        let cov = self.adjusted_covariance(covariance)?;
         let hierarchy = cluster::hierarchy(&distance, linkage);
         let k = clusters.unwrap_or_else(|| hierarchy.cluster_count(&distance, max_clusters));
 
