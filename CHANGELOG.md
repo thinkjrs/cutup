@@ -37,6 +37,9 @@ All notable changes to this project are documented here. The format follows
   and view portfolios, where an asset left out is 0.
 - `CutupError::UnknownAsset`, for a label that isn't in the data or a column out of range, and
   `CutupError::DuplicateAsset`, for a label repeated in `labeled` or an asset given twice.
+- `CutupError::LabelMismatch`, which `Returns::cvar` returns for weights labeled with other
+  assets than the data, or in another order. Weights labeled by column, such as
+  `Weights::from(vec)`, are still taken in column order.
 
 ### Removed
 
