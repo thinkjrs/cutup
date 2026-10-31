@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-10-29 · Current release: 0.2.8
+Status: draft · Last updated: 2026-10-31 · Current release: 0.3.0
 
 This plans the releases from 0.3.0 to 1.0.0. The history before 0.2.8, and the
 first version of the plan for these releases, are in `docs/PLAN.md`.
@@ -27,8 +27,8 @@ first version of the plan for these releases, are in `docs/PLAN.md`.
 | Release | Theme | Breaking |
 | --- | --- | --- |
 | 0.3.0 | Remove the deprecated API, make every breaking change planned before 1.0, add `.covariance(..)` to `Hrp` and `Herc`, and move to MSRV 1.85 with edition 2024 | Yes |
-| 0.3.1 | Split `lib.rs` into modules | No |
-| 0.3.2 | Tidying and tooling: tests, docs, packaging, CI checks, benchmarks | No |
+| 0.3.1 | Structure and tooling: split `lib.rs` into modules, a correlation underflow fix, tidying, and CI checks | No |
+| 0.3.2 | Measurement: benchmarks, mutation testing and fuzzing | No |
 | 0.3.3 | Portfolio statistics and `Weights::clean` | No |
 | 0.3.4 | Covariance input and estimators | No |
 | 0.3.5 | Efficient frontier and target volatility | No |
@@ -233,11 +233,18 @@ the removed methods, `with_` setters, `Returns`, plain inputs, labels and the
 MSRV, and
 the CHANGELOG a table from each 0.2 form to its 0.3 form.
 
-## 0.3.1: split `lib.rs`
+## 0.3.1: structure and tooling
 
-`lib.rs` is 4,400 lines. Each method's code lives there while its type lives in
-`allocation.rs`. Once 0.3.0 has removed the deprecated items, the split is pure
-moves, with no logic or API changes, so the review checks only that.
+No API changes and no new features: the code is reorganized, checked more
+strictly in CI, and one bug that makes HRP and HERC fail on tiny variances is
+fixed. The old 0.3.2 tidying and CI tooling moved here, since they're the same
+kind of release as the split.
+
+### Split `lib.rs` (#34)
+
+`lib.rs` was 5,500 lines. Each method's code lived there while its type lived
+in `allocation.rs`. The split is pure moves, with no logic or API changes, so
+the review checks only that.
 
 - **Shared types:** `error.rs` (`CutupError`), `weights.rs` (`Weights`),
   `covariance.rs` (`CovarianceConfig` and the adjusted covariance), and
@@ -253,12 +260,19 @@ moves, with no logic or API changes, so the review checks only that.
 - **`lib.rs`** keeps the crate docs, the module list and the re-exports.
 - **Also needed:** `returns.rs` for `Returns`, its constructors and validation,
   and `methods/mod.rs` for the solver code several methods share, such as
-  `long_only_weights` and `correlation`. Unit test fixtures are in a
-  test-only `test_support.rs`.
+  `long_only_weights`, `correlation` and HRP and HERC's cluster helpers. Unit
+  test fixtures are in a test-only `test_support.rs`.
 
-## 0.3.2: tidying and tooling
+### Correlation underflow in HRP and HERC
 
-No API changes.
+- **The bug:** `correlation_distance` divides each covariance by
+  `sqrt(σᵢᵢ·σⱼⱼ)`, and for variances near 1e-160 that product underflows to
+  zero, so HRP and HERC fail with `NonFiniteCovariance`.
+- **The fix:** use `methods::correlation`, which divides by each volatility in
+  turn, as the other methods already do.
+- **Weights:** inputs that fail today get weights instead, with a test at
+  that scale. Other inputs can move only by rounding, since each correlation
+  is divided in a different order, and the reference cases must still match.
 
 ### Tidying
 
@@ -285,6 +299,25 @@ No API changes.
     changes as of 0.2.8;
   - the test suite run under wasm with `wasm-bindgen-test`, so anything that
     breaks only on wasm shows up here rather than in the sample app.
+- **`cargo-deny`** for dependency licenses and security advisories.
+
+### PRs
+
+Each is its own PR into `develop`, in this order:
+
+- **#34:** the split (merged).
+- **The correlation fix**, first, so it's reviewed apart from the tooling.
+- **Tidying:** the conversion leftovers, `docs/PLAN.md` and `Cargo.toml`.
+- **Lint jobs** and `#![forbid(unsafe_code)]`.
+- **`cargo-semver-checks`.**
+- **WebAssembly:** the CI build and the tests under `wasm-bindgen-test`.
+- **`cargo-deny`.**
+
+## 0.3.2: measurement
+
+No API changes. These measure the code rather than change it, and each is
+larger than the 0.3.1 tooling.
+
 - **Benchmarks** with `criterion`, for the active-set solver, the LP, the
   clustering methods and risk parity, at 10, 100 and 500 assets. Moved here
   from the 1.0.0 list so 0.3.6's solver work is measured before and after.
@@ -294,7 +327,6 @@ No API changes.
 - **Fuzzing** of the constructors and setters with `cargo-fuzz`, to show no
   input panics. The `MinCvar` clamp panic from the #23 review is the kind of
   bug it finds.
-- **`cargo-deny`** for dependency licenses and security advisories.
 
 ## 0.3.3: portfolio statistics and `Weights::clean`
 
@@ -492,8 +524,8 @@ apps/campaigns/
 ## 1.0.0: API freeze
 
 Worked through during 0.3.x. Nothing new lands in 1.0.0 itself.
-`cargo-semver-checks` and the benchmarks moved to 0.3.2, and `serde` to
-0.3.8.
+`cargo-semver-checks` moved to 0.3.1, the benchmarks to 0.3.2, and `serde`
+to 0.3.8.
 
 - **An MSRV policy in the README:**
   - the MSRV is 1.85 from 0.3.0, and stays there through 0.3.x and 1.0.0;
