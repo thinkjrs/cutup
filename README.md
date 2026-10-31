@@ -181,7 +181,7 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
-`weights.iter()`, `weights[i]` and `as_slice()` still go by column. A label that isn't in the data returns `CutupError::UnknownAsset`, and one given twice `CutupError::DuplicateAsset`.
+`println!("{weights}")` prints the same labels and weights as a table, with 4 decimals, or `{weights:.2}` for 2. `weights.iter()`, `weights[i]` and `as_slice()` still go by column. A label that isn't in the data returns `CutupError::UnknownAsset`, and one given twice `CutupError::DuplicateAsset`. Errors about one asset, such as `ZeroVariance`, give both its label and its column.
 
 ### Rebalancing
 

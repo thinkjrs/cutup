@@ -114,17 +114,25 @@ breaking, so 0.3.0 is the only release before 2.0 that can make it.
      weights, expected returns, risk budgets and transaction costs.
    - New errors: `UnknownAsset` and `DuplicateAsset`.
 7. **Standard traits on every public type.**
-   - `Debug`, `Clone` and `PartialEq` everywhere, `Default` on every method
-     value, and `Copy` where it's free, such as `Linkage`.
-   - `Send + Sync`, asserted by a compile-time test.
-   - `Display` for `Weights`, as a labeled table.
+   - `Debug`, `Clone` and `PartialEq` everywhere, including `Returns`, `Default`
+     on every method value with a sensible default, and `Copy` where it's free,
+     such as `Linkage`. `MeanVariance`, `BlackLitterman` and `View` have no
+     `Default`: they need an objective, market weights or a view.
+   - `Send + Sync`, asserted by a compile-time test in `tests/integration.rs`.
+   - `Display` for `Weights`, as a labeled table, and `IntoIterator` by value.
    - Checked against the Rust API guidelines: C-COMMON-TRAITS, C-GETTER,
      C-CONV, C-ITER, C-SEND-SYNC and C-GOOD-ERR.
 8. **Settled `CutupError` payloads.**
-   - Each variant's fields are fixed before 0.3.0, for example naming the
-     asset in `ZeroVariance` and `InfeasibleBounds` by label.
+   - Each variant's fields are fixed before 0.3.0. Errors about one asset at
+     allocation time name it by column and label: `ZeroVariance`,
+     `NonFiniteWeight` and the new `InvalidAssetValue`. `DimensionMismatch`
+     names its setting, and `UnknownAsset` carries the `Asset` as given.
+     `InfeasibleBounds` stays as sums, since it's about every asset at once,
+     and `NonFiniteValue` and `NonPositivePrice` keep their row and column,
+     since they're found before any labels exist.
    - The enum stays `#[non_exhaustive]`, so 1.x can add variants; changing a
-     payload after 0.3.0 would be breaking.
+     payload after 0.3.0 would be breaking. Variants aren't
+     `#[non_exhaustive]`, so an `Allocation` of your own can build them.
 
 ### Added in this release
 

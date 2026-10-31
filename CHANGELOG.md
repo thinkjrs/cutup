@@ -35,8 +35,19 @@ All notable changes to this project are documented here. The format follows
   `View::portfolio`, `current_weights`, `expected_returns`, `risk_budgets` and
   `transaction_costs_per_asset`. Pairs must give every asset a value, except current weights
   and view portfolios, where an asset left out is 0.
-- `CutupError::UnknownAsset`, for a label that isn't in the data or a column out of range, and
-  `CutupError::DuplicateAsset`, for a label repeated in `labeled` or an asset given twice.
+- `CutupError::UnknownAsset`, with the `Asset` as given, for a label that isn't in the data
+  or a column out of range, and `CutupError::DuplicateAsset`, for a label repeated in
+  `labeled`, an asset given twice, or a relative view of an asset against itself. `Asset`
+  has `label()` and `column()`, and displays as its label or as `column 3`.
+- `CutupError::InvalidAssetValue { field, column, asset, value }`, for one asset's value out
+  of range in a per-asset setting: a bound, market weight, view portfolio weight, current
+  weight, expected return, risk budget or transaction cost. Settings that aren't per asset
+  still return `InvalidConfig`.
+- `Display` for `Weights`: a table of each asset's label and weight, with 4 decimals or the
+  precision given, as in `{weights:.2}`.
+- `IntoIterator` for `Weights` by value, yielding each weight in column order.
+- `Debug`, `Clone` and `PartialEq` for `Returns`, and `Hash` for `Linkage`. A test checks
+  that every public type is `Send + Sync`.
 - `CutupError::LabelMismatch`, which `Returns::cvar` returns for weights labeled with other
   assets than the data, or in another order. Weights labeled by column, such as
   `Weights::from(vec)`, are still taken in column order.
@@ -75,8 +86,15 @@ All notable changes to this project are documented here. The format follows
   type of `f64`s that converted into a `Vec<f64>` still works: arrays, `Vec`s, slices,
   `Box<[f64]>`, `VecDeque<f64>` and `Cow<[f64]>`. `WeightBounds::per_asset` took `Vec<f64>`s,
   so a bare `.collect()` passed to it no longer infers its type; collect into a `Vec<f64>`.
-- A `View` on an asset column out of range returns `CutupError::UnknownAsset` instead of
+- A `View` on an asset column out of range returns `CutupError::UnknownAsset`, and a relative
+  view of an asset against itself `CutupError::DuplicateAsset`, instead of
   `CutupError::InvalidConfig` with the field `view_asset`.
+- Errors name assets by label as well as column, so their payloads can stay fixed through
+  1.x. `ZeroVariance` and `NonFiniteWeight` are `{ column, asset }`, with `asset` the label,
+  instead of `{ asset }` with the column, and their messages give both. A per-asset value out
+  of range is an `InvalidAssetValue` rather than an `InvalidConfig`.
+- `CutupError::DimensionMismatch` has a `field` naming the setting, or `weights` or `labels`,
+  and its message names it.
 - `Weights` compare their labels as well as their values, so weights from labeled data
   aren't equal to `Weights::from(vec)` with the same values, which are labeled by column.
 
