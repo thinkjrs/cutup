@@ -207,12 +207,6 @@ impl BlackLitterman {
     fn prior(&self, cov: &DMatrix<f64>, labels: &[String]) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
         let market_weights = self.market_weights.resolve(labels, None)?;
-        if market_weights.len() != n {
-            return Err(CutupError::DimensionMismatch {
-                expected: n,
-                actual: market_weights.len(),
-            });
-        }
         if let Some(&value) = market_weights
             .iter()
             .find(|w| !(w.is_finite() && **w >= 0.0))
@@ -372,12 +366,6 @@ impl View {
             }
             Assets::Portfolio(weights) => {
                 let weights = weights.resolve(labels, Some(0.0))?;
-                if weights.len() != n {
-                    return Err(CutupError::DimensionMismatch {
-                        expected: n,
-                        actual: weights.len(),
-                    });
-                }
                 if let Some(&value) = weights.iter().find(|w| !w.is_finite()) {
                     return Err(CutupError::InvalidConfig {
                         field: "view_weights",

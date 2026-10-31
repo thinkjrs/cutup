@@ -55,8 +55,8 @@ impl Trading {
     /// Checks the settings for the assets `labels`, returning the current weights, if any,
     /// rescaled to sum to exactly 1: within `1e-9` of it counts as rounding, but a turnover cap
     /// of 0 could never be met from weights that sum to anything else. Current weights by asset
-    /// are 0 for the assets they leave out.
-    pub(crate) fn check(&self, labels: &[String]) -> Result<Option<DVector<f64>>, CutupError> {
+    /// are 0 for the assets they leave out. Returns the transaction costs per asset too.
+    pub(crate) fn check(&self, labels: &[String]) -> Result<Checked, CutupError> {
         let n = labels.len();
         let nonnegative = |field: &'static str, value: f64| {
             if value.is_finite() && value >= 0.0 {
@@ -71,35 +71,30 @@ impl Trading {
         if let Some(cap) = self.max_turnover {
             nonnegative("max_turnover", cap)?;
         }
-        match &self.costs {
-            Some(Costs::Uniform(cost)) => nonnegative("transaction_costs", *cost)?,
+        let costs = match &self.costs {
+            Some(Costs::Uniform(cost)) => {
+                nonnegative("transaction_costs", *cost)?;
+                DVector::from_element(n, *cost)
+            }
             Some(Costs::PerAsset(costs)) => {
                 let costs = costs.resolve(labels, None)?;
-                if costs.len() != n {
-                    return Err(CutupError::DimensionMismatch {
-                        expected: n,
-                        actual: costs.len(),
-                    });
-                }
-                for cost in costs {
+                for &cost in &costs {
                     nonnegative("transaction_costs", cost)?;
                 }
+                DVector::from_vec(costs)
             }
-            None => {}
-        }
+            None => DVector::zeros(n),
+        };
         let Some(current) = &self.current else {
             return match self.first_setting() {
                 Some(_) => Err(CutupError::MissingCurrentWeights),
-                None => Ok(None),
+                None => Ok(Checked {
+                    current: None,
+                    costs,
+                }),
             };
         };
         let current = current.resolve(labels, Some(0.0))?;
-        if current.len() != n {
-            return Err(CutupError::DimensionMismatch {
-                expected: n,
-                actual: current.len(),
-            });
-        }
         if let Some(&value) = current.iter().find(|w| !w.is_finite()) {
             return Err(CutupError::InvalidConfig {
                 field: "current_weights",
@@ -113,18 +108,19 @@ impl Trading {
                 value: total,
             });
         }
-        Ok(Some(DVector::from_vec(current) / total))
-    }
-
-    /// The transaction costs for the assets `labels`, once [`Trading::check`] has checked them.
-    fn costs(&self, labels: &[String]) -> Result<DVector<f64>, CutupError> {
-        let n = labels.len();
-        Ok(match &self.costs {
-            Some(Costs::Uniform(cost)) => DVector::from_element(n, *cost),
-            Some(Costs::PerAsset(costs)) => DVector::from_vec(costs.resolve(labels, None)?),
-            None => DVector::zeros(n),
+        Ok(Checked {
+            current: Some(DVector::from_vec(current) / total),
+            costs,
         })
     }
+}
+
+/// The settings [`Trading::check`] has checked, in column order.
+pub(crate) struct Checked {
+    /// The current weights, if any, summing to exactly 1.
+    pub(crate) current: Option<DVector<f64>>,
+    /// The transaction costs per asset, 0 without any.
+    pub(crate) costs: DVector<f64>,
 }
 
 /// Minimizes `½ wᵀQw − cᵀw + (h/2)κ‖w − w₀‖² + Σᵢ cᵢ|wᵢ − w₀ᵢ|` over portfolios summing to 1,
@@ -141,9 +137,8 @@ pub(crate) fn rebalance(
     curvature: f64,
 ) -> Result<Weights, CutupError> {
     let (n, labels) = (q.ncols(), data.labels());
-    let current = trading
-        .check(labels)?
-        .ok_or(CutupError::MissingCurrentWeights)?;
+    let checked = trading.check(labels)?;
+    let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
     let bounds = match bounds {
         Some(bounds) => bounds.resolve(labels)?,
         None => qp::Bounds {
@@ -160,7 +155,7 @@ pub(crate) fn rebalance(
     );
     let kinks = qp::Kinks {
         at: current.clone(),
-        slopes: trading.costs(labels)?,
+        slopes: checked.costs,
     };
     // Long-short, the optimum without the kinks is a feasible start that, unlike the current
     // weights, isn't at every kink at once. Where there's none, as when a singular covariance
@@ -200,6 +195,7 @@ pub(crate) fn rebalance_to_target(
     let (n, labels) = (mu.len(), data.labels());
     let current = trading
         .check(labels)?
+        .current
         .ok_or(CutupError::MissingCurrentWeights)?;
     let (
         cov,

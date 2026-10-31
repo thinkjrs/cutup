@@ -635,12 +635,6 @@ impl Limit {
             Limit::Uniform(value) => Ok(DVector::from_element(n, *value)),
             Limit::PerAsset(values) => {
                 let values = values.resolve(labels, None)?;
-                if values.len() != n {
-                    return Err(CutupError::DimensionMismatch {
-                        expected: n,
-                        actual: values.len(),
-                    });
-                }
                 Ok(DVector::from_vec(values))
             }
         }

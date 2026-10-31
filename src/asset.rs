@@ -1,7 +1,8 @@
 //! Assets by column or by label, and values given for each asset.
 
-use crate::CutupError;
-use std::collections::{BTreeMap, HashMap};
+use crate::{CutupError, Weights};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
@@ -18,10 +19,10 @@ use std::sync::Arc;
 /// let by_column = View::relative(0, 1, 0.0005);
 /// let capped = WeightBounds::uniform(0.0, 0.4).asset("GLD", 0.0, 0.1);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Asset(Key);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Key {
     Column(usize),
     Label(String),
@@ -82,6 +83,8 @@ impl Asset {
 /// * **By asset:** pairs of an [`Asset`] and its value, as a `Vec`, an array, a slice, a
 ///   `HashMap` or a `BTreeMap`. They can be in any order, and each asset can appear only once.
 ///   Unless the setter says otherwise, every asset needs a value.
+/// * **From [`Weights`]:** by their labels, so last period's weights can be the current weights
+///   even if the assets have changed order.
 ///
 /// ```
 /// use cutup::{MinVariance, Returns};
@@ -119,19 +122,25 @@ impl PerAsset {
         ))
     }
 
-    /// The values in column order for the assets `labels`. In column order they're as given,
-    /// for the caller to check their number. Pairs that leave out an asset give it `missing`,
-    /// or without it are a [`CutupError::DimensionMismatch`].
+    /// The values in column order for the assets `labels`. In column order there must be one
+    /// per asset, or it's a [`CutupError::DimensionMismatch`]. Pairs that leave out an asset
+    /// give it `missing`, or without it are a [`CutupError::DimensionMismatch`] too.
     pub(crate) fn resolve(
         &self,
         labels: &[String],
         missing: Option<f64>,
     ) -> Result<Vec<f64>, CutupError> {
+        let n = labels.len();
         let pairs = match &self.0 {
+            Values::Ordered(values) if values.len() != n => {
+                return Err(CutupError::DimensionMismatch {
+                    expected: n,
+                    actual: values.len(),
+                });
+            }
             Values::Ordered(values) => return Ok(values.clone()),
             Values::Keyed(pairs) => pairs,
         };
-        let n = labels.len();
         let columns: HashMap<&str, usize> = labels
             .iter()
             .enumerate()
@@ -188,6 +197,36 @@ impl<const N: usize> From<&[f64; N]> for PerAsset {
     }
 }
 
+impl From<&mut [f64]> for PerAsset {
+    fn from(values: &mut [f64]) -> Self {
+        values.to_vec().into()
+    }
+}
+
+impl<const N: usize> From<&mut [f64; N]> for PerAsset {
+    fn from(values: &mut [f64; N]) -> Self {
+        values.to_vec().into()
+    }
+}
+
+impl From<Box<[f64]>> for PerAsset {
+    fn from(values: Box<[f64]>) -> Self {
+        Vec::from(values).into()
+    }
+}
+
+impl From<VecDeque<f64>> for PerAsset {
+    fn from(values: VecDeque<f64>) -> Self {
+        Vec::from(values).into()
+    }
+}
+
+impl From<Cow<'_, [f64]>> for PerAsset {
+    fn from(values: Cow<'_, [f64]>) -> Self {
+        values.into_owned().into()
+    }
+}
+
 impl<K: Into<Asset>> From<Vec<(K, f64)>> for PerAsset {
     fn from(pairs: Vec<(K, f64)>) -> Self {
         PerAsset::keyed(pairs)
@@ -213,8 +252,26 @@ impl<K: Into<Asset> + Clone, const N: usize> From<&[(K, f64); N]> for PerAsset {
 }
 
 impl<K: Into<Asset>, S: BuildHasher> From<HashMap<K, f64, S>> for PerAsset {
+    /// Sorted, so that the error for a map naming two assets that aren't in the data doesn't
+    /// depend on its iteration order.
     fn from(pairs: HashMap<K, f64, S>) -> Self {
-        PerAsset::keyed(pairs)
+        let mut per_asset = PerAsset::keyed(pairs);
+        if let Values::Keyed(pairs) = &mut per_asset.0 {
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        }
+        per_asset
+    }
+}
+
+impl From<&Weights> for PerAsset {
+    fn from(weights: &Weights) -> Self {
+        PerAsset::keyed(weights.labeled())
+    }
+}
+
+impl From<Weights> for PerAsset {
+    fn from(weights: Weights) -> Self {
+        (&weights).into()
     }
 }
 
@@ -258,15 +315,32 @@ mod tests {
     #[test]
     fn values_in_column_order_are_as_given() {
         let labels = labels();
-        // Their number is the caller's to check.
+        // One per asset, even where pairs could leave some out.
         assert_eq!(
-            PerAsset::from([1.0, 2.0]).resolve(&labels, None),
-            Ok(vec![1.0, 2.0])
+            PerAsset::from([1.0, 2.0]).resolve(&labels, Some(0.0)),
+            Err(CutupError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
         );
         assert_eq!(
             PerAsset::from(vec![1.0, 2.0, 3.0]).resolve(&labels, Some(0.0)),
             Ok(vec![1.0, 2.0, 3.0])
         );
+        // Everything that converted into the `Vec<f64>` these setters used to take.
+        let mut values = [1.0, 2.0, 3.0];
+        let expected = Ok(values.to_vec());
+        assert_eq!(PerAsset::from(&mut values).resolve(&labels, None), expected);
+        assert_eq!(
+            PerAsset::from(&mut values[..]).resolve(&labels, None),
+            expected
+        );
+        let boxed: Box<[f64]> = Box::new(values);
+        assert_eq!(PerAsset::from(boxed).resolve(&labels, None), expected);
+        let deque = VecDeque::from(values.to_vec());
+        assert_eq!(PerAsset::from(deque).resolve(&labels, None), expected);
+        let cow = Cow::Borrowed(&values[..]);
+        assert_eq!(PerAsset::from(cow).resolve(&labels, None), expected);
     }
 
     #[test]
@@ -323,6 +397,34 @@ mod tests {
             PerAsset::from([(5, 1.0)]).resolve(&labels, Some(0.0)),
             Err(CutupError::UnknownAsset { asset: "5".into() })
         );
+    }
+
+    #[test]
+    fn weights_resolve_by_label() {
+        let weights = Weights::from(vec![0.2, 0.3, 0.5]);
+        let reordered = ["2", "0", "1"].map(String::from);
+        assert_eq!(
+            PerAsset::from(&weights).resolve(&reordered, None),
+            Ok(vec![0.5, 0.2, 0.3])
+        );
+        assert_eq!(
+            PerAsset::from(weights),
+            PerAsset::from([("0", 0.2), ("1", 0.3), ("2", 0.5)])
+        );
+    }
+
+    #[test]
+    fn maps_report_the_same_unknown_asset_every_time() {
+        let labels = labels();
+        for _ in 0..20 {
+            let map: HashMap<&str, f64> = [("XLE", 0.5), ("QQQ", 0.5)].into_iter().collect();
+            assert_eq!(
+                PerAsset::from(map).resolve(&labels, Some(0.0)),
+                Err(CutupError::UnknownAsset {
+                    asset: "QQQ".into()
+                })
+            );
+        }
     }
 
     #[test]
