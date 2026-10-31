@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
 ### Added
 
 - `.covariance(..)` on `Hrp` and `Herc`, with the `shrinkage(λ)` and `regularization(ε)`
@@ -498,7 +500,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.2.8...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/thinkjrs/cutup/compare/0.2.8...0.3.0
 [0.2.8]: https://github.com/thinkjrs/cutup/compare/0.2.7...0.2.8
 [0.2.7]: https://github.com/thinkjrs/cutup/compare/0.2.6...0.2.7
 [0.2.6]: https://github.com/thinkjrs/cutup/compare/0.2.5...0.2.6
