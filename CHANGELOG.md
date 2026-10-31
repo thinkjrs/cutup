@@ -8,11 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- `Hrp` and `Herc` no longer fail with `NonFiniteCovariance` on returns of about 1e-80 or
-  smaller, where the product of two variances underflows to zero. Correlations are divided by
-  each volatility in turn, as the other methods already do, so the weights match the same
-  returns at any larger scale. Variances that are subnormal, below `f64::MIN_POSITIVE`, still
-  return `NonFiniteCovariance`: they keep too few bits for a correlation.
+- `Hrp` and `Herc` no longer fail with `NonFiniteCovariance` on returns between about 1e-81
+  and 1e-146, where the product of two variances underflows to zero. Correlations are divided
+  by each volatility in turn, as the other methods already do, so the weights match the same
+  returns at any larger scale. Variances below about 1e-292, `f64::MIN_POSITIVE / f64::EPSILON`,
+  still return `NonFiniteCovariance`: below it, covariances between assets are subnormal and
+  lose precision, and a cluster's inverse variances can sum past `f64::MAX`.
 
 ### Changed
 
