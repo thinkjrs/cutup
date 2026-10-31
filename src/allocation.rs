@@ -228,8 +228,9 @@ impl Allocation for InverseVariance {
 ///
 /// * [`CutupError::InvalidConfig`] if `regularization` is negative or not finite, or
 ///   `shrinkage` is outside `[0, 1]`.
-/// * [`CutupError::InvalidAssetValue`] if a lower bound is negative or not finite, or an upper
-///   bound is below its lower bound or NaN.
+/// * [`CutupError::InvalidAssetValue`] if an asset's lower bound is negative or not finite, or
+///   its upper bound is below its lower bound or NaN. For [uniform](WeightBounds::uniform)
+///   bounds, it's [`CutupError::InvalidConfig`].
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
@@ -410,8 +411,9 @@ impl Allocation for MinVariance {
 ///
 /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
 ///   target return is not finite, or the covariance settings are invalid.
-/// * [`CutupError::InvalidAssetValue`] if an expected return is not finite, a lower bound is
-///   negative or not finite, or an upper bound is below its lower bound or NaN.
+/// * [`CutupError::InvalidAssetValue`] if an expected return is not finite, or an asset's
+///   lower bound is negative or not finite, or its upper bound is below its lower bound or NaN.
+///   For [uniform](WeightBounds::uniform) bounds, it's [`CutupError::InvalidConfig`].
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds or the expected returns don't have
 ///   one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an

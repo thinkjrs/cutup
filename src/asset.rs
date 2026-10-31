@@ -181,6 +181,7 @@ impl PerAsset {
             let column = asset.find(n, |label| columns.get(label).copied())?;
             if values[column].replace(*value).is_some() {
                 return Err(CutupError::DuplicateAsset {
+                    column,
                     asset: labels[column].clone(),
                 });
             }
@@ -328,6 +329,21 @@ pub(crate) fn invalid_value(
     }
 }
 
+/// Checks that each value of the setting `field`, one per asset among the assets `labels` in
+/// column order, is `valid`, or returns a [`CutupError::InvalidAssetValue`] for the first
+/// that isn't.
+pub(crate) fn check_values(
+    field: &'static str,
+    labels: &[String],
+    values: &[f64],
+    valid: impl Fn(f64) -> bool,
+) -> Result<(), CutupError> {
+    match values.iter().position(|&v| !valid(v)) {
+        Some(i) => Err(invalid_value(field, labels, i, values[i])),
+        None => Ok(()),
+    }
+}
+
 /// The labels of `n` assets without labels of their own: their columns.
 pub(crate) fn column_labels(n: usize) -> Arc<[String]> {
     (0..n).map(|i| i.to_string()).collect()
@@ -468,6 +484,7 @@ mod tests {
         assert_eq!(
             twice.resolve("values", &labels, Some(0.0)),
             Err(CutupError::DuplicateAsset {
+                column: 0,
                 asset: "SPY".into()
             })
         );

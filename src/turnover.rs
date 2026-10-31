@@ -1,7 +1,7 @@
 //! Turnover and transaction costs against current weights, for min variance and
 //! mean-variance.
 
-use crate::asset::invalid_value;
+use crate::asset::check_values;
 use crate::{
     CutupError, PerAsset, ReturnRange, Returns, TargetProblem, WeightBounds, Weights,
     interior_start, lp, normalized, qp,
@@ -79,9 +79,9 @@ impl Trading {
             }
             Some(Costs::PerAsset(costs)) => {
                 let costs = costs.resolve("transaction_costs", labels, None)?;
-                if let Some(i) = costs.iter().position(|c| !(c.is_finite() && *c >= 0.0)) {
-                    return Err(invalid_value("transaction_costs", labels, i, costs[i]));
-                }
+                check_values("transaction_costs", labels, &costs, |c| {
+                    c.is_finite() && c >= 0.0
+                })?;
                 DVector::from_vec(costs)
             }
             None => DVector::zeros(n),
@@ -96,9 +96,7 @@ impl Trading {
             };
         };
         let current = current.resolve("current_weights", labels, Some(0.0))?;
-        if let Some(i) = current.iter().position(|w| !w.is_finite()) {
-            return Err(invalid_value("current_weights", labels, i, current[i]));
-        }
+        check_values("current_weights", labels, &current, f64::is_finite)?;
         let total: f64 = current.iter().sum();
         if (total - 1.0).abs() > 1e-9 {
             return Err(CutupError::InvalidConfig {

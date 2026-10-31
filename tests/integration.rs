@@ -153,4 +153,7 @@ fn weights_display_as_a_labeled_table() {
     assert_eq!(format!("{weights:.2}"), "SPY    0.50\nGOOGL  0.50");
     let values: Vec<f64> = weights.into_iter().collect();
     assert_eq!(values, [0.5, 0.5]);
+    // Short positions line up with long ones.
+    let long_short = Weights::from(vec![1.25, -0.25]);
+    assert_eq!(long_short.to_string(), "0   1.2500\n1  -0.2500");
 }

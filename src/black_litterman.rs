@@ -1,6 +1,6 @@
 //! Black-Litterman expected returns: the market's implied returns, blended with views.
 
-use crate::asset::invalid_value;
+use crate::asset::check_values;
 use crate::{Asset, CovarianceConfig, CutupError, PerAsset, Returns};
 use nalgebra::{DMatrix, DVector};
 
@@ -211,17 +211,9 @@ impl BlackLitterman {
         let market_weights = self
             .market_weights
             .resolve("market_weights", labels, None)?;
-        if let Some(i) = market_weights
-            .iter()
-            .position(|w| !(w.is_finite() && *w >= 0.0))
-        {
-            return Err(invalid_value(
-                "market_weights",
-                labels,
-                i,
-                market_weights[i],
-            ));
-        }
+        check_values("market_weights", labels, &market_weights, |w| {
+            w.is_finite() && w >= 0.0
+        })?;
         let total: f64 = market_weights.iter().sum();
         if !(total.is_finite() && total > 0.0) {
             return Err(CutupError::InvalidConfig {
@@ -360,6 +352,7 @@ impl View {
                 let (long, short) = (long.resolve(labels)?, short.resolve(labels)?);
                 if long == short {
                     return Err(CutupError::DuplicateAsset {
+                        column: long,
                         asset: labels[long].clone(),
                     });
                 }
@@ -371,9 +364,7 @@ impl View {
             }
             Assets::Portfolio(weights) => {
                 let weights = weights.resolve("view_weights", labels, Some(0.0))?;
-                if let Some(i) = weights.iter().position(|w| !w.is_finite()) {
-                    return Err(invalid_value("view_weights", labels, i, weights[i]));
-                }
+                check_values("view_weights", labels, &weights, f64::is_finite)?;
                 if weights.iter().all(|&w| w == 0.0) {
                     return Err(CutupError::InvalidConfig {
                         field: "view_weights",
@@ -569,7 +560,10 @@ mod tests {
         );
         assert_eq!(
             check(model().view(View::relative(1, 1, 0.01))),
-            Err(CutupError::DuplicateAsset { asset: "1".into() })
+            Err(CutupError::DuplicateAsset {
+                column: 1,
+                asset: "1".into()
+            })
         );
         assert_eq!(
             check(model().view(View::portfolio([0.0; 3], 0.01))),

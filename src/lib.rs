@@ -162,9 +162,12 @@ pub enum CutupError {
         /// The asset, by label or by column, as given.
         asset: Asset,
     },
-    /// An asset is given more than once: a label repeated in [`Returns::labeled`], or an asset
-    /// named twice in the pairs of a [`PerAsset`].
+    /// An asset is given more than once: a label repeated in [`Returns::labeled`], an asset
+    /// named twice in the pairs of a [`PerAsset`], or a relative [`View`] of an asset against
+    /// itself.
     DuplicateAsset {
+        /// The asset's column: for a repeated label, the column it's repeated in.
+        column: usize,
         /// The asset's label.
         asset: String,
     },
@@ -269,7 +272,7 @@ impl fmt::Display for CutupError {
                 write!(f, "price at row {row}, column {col} is zero or negative")
             }
             CutupError::ZeroVariance { column, asset } => {
-                write!(f, "asset `{asset}` (column {column}) has zero variance")
+                write!(f, "{} has zero variance", AssetName(*column, asset))
             }
             CutupError::NonFiniteCovariance => {
                 write!(
@@ -291,7 +294,8 @@ impl fmt::Display for CutupError {
                 value,
             } => write!(
                 f,
-                "`{field}` for asset `{asset}` (column {column}) is out of range: {value}"
+                "`{field}` for {} is out of range: {value}",
+                AssetName(*column, asset)
             ),
             CutupError::RaggedRows {
                 row,
@@ -313,8 +317,8 @@ impl fmt::Display for CutupError {
                 Some(label) => write!(f, "no asset is labeled `{label}`"),
                 None => write!(f, "there is no asset in {asset}"),
             },
-            CutupError::DuplicateAsset { asset } => {
-                write!(f, "asset `{asset}` is given more than once")
+            CutupError::DuplicateAsset { column, asset } => {
+                write!(f, "{} is given more than once", AssetName(*column, asset))
             }
             CutupError::LabelMismatch {
                 column,
@@ -371,7 +375,8 @@ impl fmt::Display for CutupError {
             CutupError::NonFiniteWeight { column, asset } => {
                 write!(
                     f,
-                    "weight for asset `{asset}` (column {column}) is NaN or infinite"
+                    "weight for {} is NaN or infinite",
+                    AssetName(*column, asset)
                 )
             }
             CutupError::MissingCurrentWeights => write!(
@@ -396,6 +401,21 @@ impl fmt::Display for CutupError {
 }
 
 impl std::error::Error for CutupError {}
+
+/// An asset in an error message: by label and column, or by column alone when its label is
+/// its column, as without [`Returns::labeled`].
+struct AssetName<'a>(usize, &'a str);
+
+impl fmt::Display for AssetName<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let AssetName(column, label) = *self;
+        if label == column.to_string() {
+            write!(f, "the asset in column {column}")
+        } else {
+            write!(f, "asset `{label}` (column {column})")
+        }
+    }
+}
 
 /// Portfolio weights, one per asset, in the order of the columns of the [`Returns`], and labeled
 /// with their assets.
@@ -534,7 +554,8 @@ impl IntoIterator for Weights {
 }
 
 /// A table of each asset's label and weight, one per line in column order, with the labels
-/// padded to the same width. Weights have 4 decimals, or the precision given, as in `{:.2}`.
+/// padded to the same width and the weights right-aligned, so negative weights line up too.
+/// Weights have 4 decimals, or the precision given, as in `{:.2}`.
 ///
 /// ```
 /// use cutup::Weights;
@@ -552,11 +573,17 @@ impl fmt::Display for Weights {
             .map(|l| l.chars().count())
             .max()
             .unwrap_or(0);
-        for (i, (label, weight)) in self.labeled().enumerate() {
+        let values: Vec<String> = self
+            .values
+            .iter()
+            .map(|w| format!("{w:.precision$}"))
+            .collect();
+        let value_width = values.iter().map(String::len).max().unwrap_or(0);
+        for (i, (label, value)) in self.labels.iter().zip(&values).enumerate() {
             if i > 0 {
                 writeln!(f)?;
             }
-            write!(f, "{label:<width$}  {weight:.precision$}")?;
+            write!(f, "{label:<width$}  {value:>value_width$}")?;
         }
         Ok(())
     }
@@ -775,6 +802,24 @@ impl WeightBounds {
     /// doesn't change which portfolios are feasible, and makes every upper bound finite.
     fn resolve(&self, labels: &[String]) -> Result<qp::Bounds, CutupError> {
         let n = labels.len();
+        // Uniform bounds aren't any one asset's, so they're checked as settings.
+        if let Limit::Uniform(l) = self.lower {
+            if !(l.is_finite() && l >= 0.0) {
+                return Err(CutupError::InvalidConfig {
+                    field: "lower_bound",
+                    value: l,
+                });
+            }
+        }
+        if let Limit::Uniform(u) = self.upper {
+            let below = matches!(self.lower, Limit::Uniform(l) if u < l);
+            if u.is_nan() || below {
+                return Err(CutupError::InvalidConfig {
+                    field: "upper_bound",
+                    value: u,
+                });
+            }
+        }
         let mut lower = self.lower.resolve("lower_bound", labels)?;
         let mut upper = self.upper.resolve("upper_bound", labels)?;
         for (asset, l, u) in &self.assets {
@@ -782,9 +827,9 @@ impl WeightBounds {
             lower[i] = *l;
             upper[i] = *u;
         }
-        if let Some(i) = (0..n).find(|&i| !(lower[i].is_finite() && lower[i] >= 0.0)) {
-            return Err(asset::invalid_value("lower_bound", labels, i, lower[i]));
-        }
+        asset::check_values("lower_bound", labels, lower.as_slice(), |l| {
+            l.is_finite() && l >= 0.0
+        })?;
         if let Some(i) = (0..n).find(|&i| upper[i].is_nan() || upper[i] < lower[i]) {
             return Err(asset::invalid_value("upper_bound", labels, i, upper[i]));
         }
@@ -825,11 +870,18 @@ impl WeightBounds {
 /// returns you have already computed with [`Returns::new`].
 ///
 /// Before 0.3.0 this was `PortfolioAllocator`, which stays as a deprecated alias until 1.0.0.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Returns {
     returns: DMatrix<f64>,
     cov_matrix: DMatrix<f64>,
     labels: Arc<[String]>,
+}
+
+/// Equal when the returns and labels are: the covariance follows from the returns.
+impl PartialEq for Returns {
+    fn eq(&self, other: &Self) -> bool {
+        self.labels == other.labels && self.returns == other.returns
+    }
 }
 
 impl Returns {
@@ -1102,8 +1154,13 @@ impl Returns {
             });
         }
         let mut seen = std::collections::HashSet::with_capacity(n);
-        if let Some(label) = labels.iter().find(|label| !seen.insert(label.as_str())) {
+        if let Some((column, label)) = labels
+            .iter()
+            .enumerate()
+            .find(|(_, label)| !seen.insert(label.as_str()))
+        {
             return Err(CutupError::DuplicateAsset {
+                column,
                 asset: label.clone(),
             });
         }
@@ -1459,15 +1516,15 @@ impl Returns {
                 expected: n,
                 actual: mu.len(),
             }),
-            Some(mu) => match mu.iter().position(|m| !m.is_finite()) {
-                Some(i) => Err(asset::invalid_value(
+            Some(mu) => {
+                asset::check_values(
                     "expected_returns",
                     &self.labels,
-                    i,
-                    mu[i],
-                )),
-                None => Ok(mu.clone()),
-            },
+                    mu.as_slice(),
+                    f64::is_finite,
+                )?;
+                Ok(mu.clone())
+            }
             None => Ok(self.returns.row_mean().transpose()),
         }
     }
@@ -1624,12 +1681,12 @@ impl Returns {
                     actual: b.len(),
                 });
             }
-            Some(b) => match b.iter().position(|b| !(b.is_finite() && *b > 0.0)) {
-                Some(i) => {
-                    return Err(asset::invalid_value("risk_budgets", &self.labels, i, b[i]));
-                }
-                None => b.clone(),
-            },
+            Some(b) => {
+                asset::check_values("risk_budgets", &self.labels, b.as_slice(), |b| {
+                    b.is_finite() && b > 0.0
+                })?;
+                b.clone()
+            }
             None => DVector::from_element(n, 1.0),
         };
         let cov = self.adjusted_covariance(covariance)?;
@@ -2463,10 +2520,20 @@ mod tests {
         );
         assert_eq!(
             CutupError::DuplicateAsset {
+                column: 0,
                 asset: "SPY".into()
             }
             .to_string(),
-            "asset `SPY` is given more than once"
+            "asset `SPY` (column 0) is given more than once"
+        );
+        // Without labels, the column alone.
+        assert_eq!(
+            CutupError::ZeroVariance {
+                column: 1,
+                asset: "1".into()
+            }
+            .to_string(),
+            "the asset in column 1 has zero variance"
         );
         assert_eq!(
             CutupError::LabelMismatch {
@@ -3656,32 +3723,28 @@ mod tests {
         );
         assert_eq!(
             solve(WeightBounds::uniform(-0.1, 1.0)),
-            Err(CutupError::InvalidAssetValue {
+            Err(CutupError::InvalidConfig {
                 field: "lower_bound",
-                column: 0,
-                asset: "0".into(),
                 value: -0.1
             })
         );
         assert_eq!(
             solve(WeightBounds::uniform(0.3, 0.2)),
-            Err(CutupError::InvalidAssetValue {
+            Err(CutupError::InvalidConfig {
                 field: "upper_bound",
-                column: 0,
-                asset: "0".into(),
                 value: 0.2
             })
         );
         assert!(matches!(
             solve(WeightBounds::uniform(0.0, f64::NAN)),
-            Err(CutupError::InvalidAssetValue {
+            Err(CutupError::InvalidConfig {
                 field: "upper_bound",
                 ..
             })
         ));
         assert!(matches!(
             solve(WeightBounds::uniform(f64::INFINITY, f64::INFINITY)),
-            Err(CutupError::InvalidAssetValue {
+            Err(CutupError::InvalidConfig {
                 field: "lower_bound",
                 ..
             })
@@ -5183,6 +5246,7 @@ mod tests {
         assert_eq!(
             allocator().labeled(["SPY", "TLT", "SPY"]).err(),
             Some(CutupError::DuplicateAsset {
+                column: 2,
                 asset: "SPY".into()
             })
         );
@@ -5407,6 +5471,7 @@ mod tests {
                 .view(View::relative("SPY", 0, 0.001))
                 .expected_returns(&allocator),
             Err(CutupError::DuplicateAsset {
+                column: 0,
                 asset: "SPY".into()
             })
         );
@@ -5417,6 +5482,7 @@ mod tests {
                     .max_turnover(0.1)
             ),
             Err(CutupError::DuplicateAsset {
+                column: 0,
                 asset: "SPY".into()
             })
         );

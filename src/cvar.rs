@@ -45,8 +45,9 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// * [`CutupError::InvalidConfig`] if the confidence isn't in `(0, 1)`, or the target return
 ///   isn't finite.
-/// * [`CutupError::InvalidAssetValue`] if a lower bound is negative or not finite, or an upper
-///   bound is below its lower bound or NaN.
+/// * [`CutupError::InvalidAssetValue`] if an asset's lower bound is negative or not finite, or
+///   its upper bound is below its lower bound or NaN. For [uniform](WeightBounds::uniform)
+///   bounds, it's [`CutupError::InvalidConfig`].
 /// * [`CutupError::DimensionMismatch`] if per-asset bounds don't have one entry per asset.
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
