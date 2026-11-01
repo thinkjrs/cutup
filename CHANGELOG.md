@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   `covariance`, `bounds` and `returns` for the shared types. `lib.rs` keeps the crate docs,
   the module list and the re-exports. Nothing public moved: every item is still at the crate
   root, and no weights change.
+- The crate is `#![forbid(unsafe_code)]`. It had no `unsafe` code before either; now it can't
+  gain any.
 - The crates.io description lists cutup's allocation methods, where it described a general
   library for dividing resources, and the keywords are `portfolio`, `allocation`,
   `optimization`, `finance` and `quant`.
