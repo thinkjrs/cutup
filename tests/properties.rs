@@ -62,10 +62,10 @@ fn hrp_methods(allocator: &Returns) -> Vec<(String, Weights)> {
     LINKAGES
         .iter()
         .map(|&linkage| {
-            let config = Hrp::default().linkage(linkage);
+            let hrp = Hrp::default().linkage(linkage);
             (
                 format!("hrp ({linkage:?})"),
-                allocator.allocate(&config).unwrap(),
+                allocator.allocate(&hrp).unwrap(),
             )
         })
         .collect()
@@ -76,10 +76,10 @@ fn herc_methods(allocator: &Returns) -> Vec<(String, Weights)> {
     LINKAGES
         .iter()
         .map(|&linkage| {
-            let config = Herc::default().linkage(linkage);
+            let herc = Herc::default().linkage(linkage);
             (
                 format!("herc ({linkage:?})"),
-                allocator.allocate(&config).unwrap(),
+                allocator.allocate(&herc).unwrap(),
             )
         })
         .collect()
@@ -563,11 +563,11 @@ proptest! {
             covariance_config = covariance_config.shrinkage(lambda);
         }
         let budgets = DVector::from_column_slice(&budgets[..n]);
-        let config = RiskParity::default()
+        let risk_parity = RiskParity::default()
             .risk_budgets(budgets.as_slice())
             .covariance(covariance_config);
         let allocator = returns_via_flat(returns.clone()).unwrap();
-        let weights = allocator.allocate(&config).unwrap();
+        let weights = allocator.allocate(&risk_parity).unwrap();
         prop_assert!(weights.iter().all(|&w| w > 0.0), "{weights:?}");
 
         // The same shrinkage, applied here: Σ' = λ·(tr Σ / n)·I + (1 − λ)·Σ.
@@ -688,12 +688,12 @@ proptest! {
         let mu = returns.row_mean().transpose();
         let target = mu.min() + fraction * (mu.max() - mu.min());
         let allocator = returns_via_flat(returns).unwrap();
-        for config in [
+        for mean_variance in [
             MeanVariance::risk_aversion(gamma),
             MeanVariance::target_return(target),
         ] {
-            let unconstrained = allocator.allocate(&config.clone().allow_short()).unwrap();
-            let long_only = allocator.allocate(&config).unwrap();
+            let unconstrained = allocator.allocate(&mean_variance.clone().allow_short()).unwrap();
+            let long_only = allocator.allocate(&mean_variance).unwrap();
             if unconstrained.iter().all(|&w| w >= 0.0) {
                 for (a, b) in unconstrained.iter().zip(&long_only) {
                     prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
@@ -713,8 +713,8 @@ proptest! {
         let rate = mu.min() + fraction * (mu.max() - mu.min());
         let cov = covariance(&returns);
         let allocator = returns_via_flat(returns).unwrap();
-        let config = MaxSharpe::default().risk_free_rate(rate);
-        let weights = allocator.allocate(&config).unwrap();
+        let max_sharpe = MaxSharpe::default().risk_free_rate(rate);
+        let weights = allocator.allocate(&max_sharpe).unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
         prop_assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
         prop_assert!((w.sum() - 1.0).abs() < 1e-12);
@@ -743,8 +743,8 @@ proptest! {
         let excess = mu.add_scalar(-rate);
         let cov = covariance(&returns);
         let allocator = returns_via_flat(returns).unwrap();
-        let config = MaxSharpe::default().risk_free_rate(rate);
-        let best = sharpe(&cov, &excess, &allocator.allocate(&config).unwrap());
+        let max_sharpe = MaxSharpe::default().risk_free_rate(rate);
+        let best = sharpe(&cov, &excess, &allocator.allocate(&max_sharpe).unwrap());
 
         for weights in long_only_methods(&allocator) {
             let other = sharpe(&cov, &excess, &weights);
@@ -752,9 +752,9 @@ proptest! {
         }
 
         // When the tangency portfolio is long-only, it is the long-only maximum too.
-        if let Ok(unconstrained) = allocator.allocate(&config.clone().allow_short()) {
+        if let Ok(unconstrained) = allocator.allocate(&max_sharpe.clone().allow_short()) {
             if unconstrained.iter().all(|&w| w >= 0.0) {
-                let long_only = allocator.allocate(&config).unwrap();
+                let long_only = allocator.allocate(&max_sharpe).unwrap();
                 for (a, b) in unconstrained.iter().zip(&long_only) {
                     prop_assert!((a - b).abs() < 1e-9, "{unconstrained:?} vs {long_only:?}");
                 }
@@ -870,8 +870,8 @@ proptest! {
             (mu.dot(&w) - risk_free_rate) / variance(&cov, weights).sqrt()
         };
 
-        let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
-        let best = sharpe(&allocator.allocate(&config.clone().allow_short()).unwrap());
+        let max_sharpe = MaxSharpe::default().risk_free_rate(risk_free_rate);
+        let best = sharpe(&allocator.allocate(&max_sharpe.clone().allow_short()).unwrap());
         for (name, weights) in all_methods(&allocator, mean) {
             let other = sharpe(&weights);
             prop_assert!(other <= best + 1e-9 * (1.0 + best.abs()), "{name}: {other} > {best}");
@@ -898,25 +898,25 @@ proptest! {
         let long_short = MinVariance::default().allow_short().covariance(covariance.clone());
         let min_variance = allocator.allocate(&long_short).unwrap();
         let rate = mu.dot(&DVector::from_column_slice(min_variance.as_slice())) - margin;
-        let config = |mu: DVector<f64>, rate: f64| {
+        let max_sharpe = |mu: DVector<f64>, rate: f64| {
             MaxSharpe::default()
                 .risk_free_rate(rate)
                 .expected_returns(mu.as_slice())
                 .covariance(covariance.clone())
         };
-        let base = allocator.allocate(&config(mu.clone(), rate).allow_short()).unwrap();
+        let base = allocator.allocate(&max_sharpe(mu.clone(), rate).allow_short()).unwrap();
 
         let reversed = DMatrix::from_fn(returns.nrows(), n, |t, j| returns[(t, n - 1 - j)]);
         let mu_reversed = DVector::from_fn(n, |j, _| mu[n - 1 - j]);
         let flipped = returns_via_flat(reversed)
             .unwrap()
-            .allocate(&config(mu_reversed, rate).allow_short())
+            .allocate(&max_sharpe(mu_reversed, rate).allow_short())
             .unwrap();
 
         let s = 2f64.powi(exponent);
         let scaled = returns_via_flat(returns * s)
             .unwrap()
-            .allocate(&config(mu.clone() * s, rate * s).allow_short())
+            .allocate(&max_sharpe(mu.clone() * s, rate * s).allow_short())
             .unwrap();
 
         let tolerance = 1e-9 * (1.0 + base.iter().fold(0.0f64, |m, w| m.max(w.abs())));
@@ -1060,10 +1060,10 @@ proptest! {
             allocator.allocate(&MinVariance::default().bounds(loose.clone())).unwrap(),
             allocator.allocate(&MinVariance::default()).unwrap()
         );
-        let config = MeanVariance::risk_aversion(gamma);
+        let mean_variance = MeanVariance::risk_aversion(gamma);
         prop_assert_eq!(
-            allocator.allocate(&config.clone().bounds(loose.clone())).unwrap(),
-            allocator.allocate(&config).unwrap()
+            allocator.allocate(&mean_variance.clone().bounds(loose.clone())).unwrap(),
+            allocator.allocate(&mean_variance).unwrap()
         );
     }
 
