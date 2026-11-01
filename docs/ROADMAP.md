@@ -1,9 +1,8 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-10-31 · Current release: 0.3.0
+Status: draft · Last updated: 2026-11-01 · Current release: 0.3.0
 
-This plans the releases from 0.3.0 to 1.0.0. The history before 0.2.8, and the
-first version of the plan for these releases, are in `docs/PLAN.md`.
+This plans the releases from 0.3.0 to 1.0.0.
 
 ## Release rules
 
@@ -75,7 +74,7 @@ as each keeps one theme.
 
 ### Carried over from the earlier plan
 
-`docs/PLAN.md` planned these for 0.3.0 too, and they're agreed. Each is
+The earlier plan had these for 0.3.0 too, and they're agreed. Each is
 breaking, so 0.3.0 is the only release before 2.0 that can make it.
 
 4. **`PortfolioAllocator` becomes `Returns`.** It holds the data, not a
