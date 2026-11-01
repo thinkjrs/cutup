@@ -595,6 +595,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest::proptest! {
         #[test]
         fn optima_satisfy_the_optimality_conditions(

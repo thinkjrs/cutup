@@ -144,6 +144,7 @@ fn rotate(a: &mut DMatrix<f64>, v: &mut DMatrix<f64>, p: usize, q: usize) {
 mod tests {
     use super::*;
     use nalgebra::dmatrix;
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
 
     /// Checks that the decomposition reconstructs `a` and that `V` is orthonormal, both to
@@ -241,6 +242,7 @@ mod tests {
         ]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #[test]
         fn decomposes_random_symmetric_matrices(

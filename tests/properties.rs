@@ -1,4 +1,8 @@
 //! Property tests: invariants every allocation method must satisfy on random returns.
+//!
+//! They run natively only, since proptest's default features don't build for wasm.
+
+#![cfg(not(target_arch = "wasm32"))]
 
 use cutup::{
     Allocation, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
