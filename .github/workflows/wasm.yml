@@ -45,6 +45,7 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
+          components: clippy
 
       # The key includes the rustc version, so a new stable starts a fresh cache
       # rather than restoring artifacts the new compiler can't reuse.
@@ -77,6 +78,10 @@ jobs:
 
       - name: Build without features
         run: cargo build --target wasm32-unknown-unknown
+
+      # lint.yml lints native builds, so it never sees code gated on wasm.
+      - name: Run clippy
+        run: cargo clippy --target wasm32-unknown-unknown --all-features --tests -- -D warnings
 
       - name: Run tests
         run: cargo test --target wasm32-unknown-unknown --all-features --lib --tests
