@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   `covariance`, `bounds` and `returns` for the shared types. `lib.rs` keeps the crate docs,
   the module list and the re-exports. Nothing public moved: every item is still at the crate
   root, and no weights change.
+- The crates.io description and keywords name the portfolio methods cutup provides, rather
+  than describing a general allocation library.
 
 ## [0.3.0] - 2026-10-30
 
