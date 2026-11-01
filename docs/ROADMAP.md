@@ -300,9 +300,11 @@ the review checks only that.
 - **`#![forbid(unsafe_code)]`.** cutup has no `unsafe` code; this makes that
   a guarantee.
 - **`cargo-semver-checks` in CI**, in `semver.yml`, against the newest
-  release on crates.io, so 0.3.x stays additive. It runs on every PR and every
-  push to `main` and `develop`, since releases reach `main` without a PR.
-  Moved here from the 1.0.0 list.
+  release on crates.io, with and without features, so 0.3.x stays additive.
+  It runs on every PR and every push to `main`, `develop` and release
+  branches, since releases reach `main` without a PR. `tgrf` pushes only
+  after tagging, so a change made on a release branch is checked before its
+  tag only if the branch is pushed first. Moved here from the 1.0.0 list.
 - **WebAssembly as a supported target:**
   - a CI build for `wasm32-unknown-unknown`, which already succeeds with no
     changes as of 0.2.8;
