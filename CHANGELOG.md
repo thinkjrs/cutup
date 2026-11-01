@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `wasm32-unknown-unknown` is a tested target. CI builds for it with and without features, and
+  runs the unit, integration and reference tests there, so weights match the reference
+  implementations on wasm too.
+
 ### Fixed
 
 - `Hrp` and `Herc` no longer fail with `NonFiniteCovariance` on returns between about 1e-81
