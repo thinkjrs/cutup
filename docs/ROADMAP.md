@@ -299,8 +299,10 @@ the review checks only that.
   doesn't fail a PR.
 - **`#![forbid(unsafe_code)]`.** cutup has no `unsafe` code; this makes that
   a guarantee.
-- **`cargo-semver-checks` in CI** on every PR to `main`, so 0.3.x stays
-  additive. Moved here from the 1.0.0 list.
+- **`cargo-semver-checks` in CI**, in `semver.yml`, against the newest
+  release on crates.io, so 0.3.x stays additive. It runs on every PR and every
+  push to `main` and `develop`, since releases reach `main` without a PR.
+  Moved here from the 1.0.0 list.
 - **WebAssembly as a supported target:**
   - a CI build for `wasm32-unknown-unknown`, which already succeeds with no
     changes as of 0.2.8;
@@ -315,7 +317,7 @@ Each is its own PR into `develop`, in this order:
 - **#34:** the split (merged).
 - **#35:** the correlation fix (merged).
 - **#36:** tidying the conversion leftovers, `docs/PLAN.md` and `Cargo.toml` (merged).
-- **Lint jobs** and `#![forbid(unsafe_code)]`.
+- **#37:** lint jobs and `#![forbid(unsafe_code)]` (merged).
 - **`cargo-semver-checks`.**
 - **WebAssembly:** the CI build and the tests under `wasm-bindgen-test`.
 - **`cargo-deny`.**
