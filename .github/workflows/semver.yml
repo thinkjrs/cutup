@@ -2,15 +2,17 @@ name: Semver
 
 # Checks the public API against the newest release on crates.io, so a breaking
 # change fails the PR that makes it. Releases merge into main without a PR, so
-# this runs on every PR and on pushes to main and develop. The release type is
-# minor, the level a 0.3.x release must meet under Cargo's rules: additions are
-# allowed, breaking changes aren't. The version in Cargo.toml usually still
-# names the last release, so the tool can't infer it.
+# this runs on every PR and on pushes to main, develop and release branches. tgrf
+# pushes only after tagging, so a release branch is checked before its tag only
+# if it's pushed first.
+# The release type is minor, the level a 0.3.x release must meet under Cargo's
+# rules: additions are allowed, breaking changes aren't. The version in
+# Cargo.toml usually still names the last release, so the tool can't infer it.
 
 on:
   pull_request:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "release/**"]
 
 permissions:
   contents: read
