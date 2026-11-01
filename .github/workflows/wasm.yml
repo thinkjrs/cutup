@@ -1,0 +1,69 @@
+name: Wasm
+
+# Builds for wasm32-unknown-unknown with and without features, and runs the unit,
+# integration and reference tests there under Node. The property tests run
+# natively in tests.yml, since proptest's default features don't build for wasm.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        id: toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      # The key includes the rustc version, so a new stable starts a fresh cache
+      # rather than restoring artifacts the new compiler can't reuse.
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-wasm-${{ steps.toolchain.outputs.cachekey }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-wasm-${{ steps.toolchain.outputs.cachekey }}-${{ runner.os }}-
+
+      # The test runner has to match the wasm-bindgen version in Cargo.lock exactly.
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        run: |
+          version=$(cargo metadata --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen-test-runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - name: Build
+        run: cargo build --target wasm32-unknown-unknown --all-features
+
+      - name: Build without features
+        run: cargo build --target wasm32-unknown-unknown
+
+      - name: Run tests
+        run: cargo test --target wasm32-unknown-unknown --all-features --lib --tests
