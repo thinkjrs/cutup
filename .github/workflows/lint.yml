@@ -21,22 +21,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust ${{ matrix.rust }}
+        id: toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
 
+      # The key includes the rustc version, so a new stable starts a fresh cache
+      # rather than restoring artifacts the new compiler can't reuse.
       - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-lint-${{ matrix.rust }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-lint-${{ steps.toolchain.outputs.cachekey }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-lint-${{ matrix.rust }}-${{ runner.os }}-
+            cargo-lint-${{ steps.toolchain.outputs.cachekey }}-${{ runner.os }}-
 
       - name: Run clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
