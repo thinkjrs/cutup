@@ -308,8 +308,11 @@ the review checks only that.
 - **WebAssembly as a supported target:**
   - a CI build for `wasm32-unknown-unknown`, which already succeeds with no
     changes as of 0.2.8;
-  - the test suite run under wasm with `wasm-bindgen-test`, so anything that
-    breaks only on wasm shows up here rather than in the sample app.
+  - the unit, integration and reference tests run under wasm with
+    `wasm-bindgen-test`, so anything that breaks only on wasm shows up here
+    rather than in the sample app;
+  - the property tests stay native, since `proptest`'s default features don't
+    build for wasm.
 - **`cargo-deny`** for dependency licenses and security advisories.
 
 ### PRs
@@ -320,7 +323,7 @@ Each is its own PR into `develop`, in this order:
 - **#35:** the correlation fix (merged).
 - **#36:** tidying the conversion leftovers, `docs/PLAN.md` and `Cargo.toml` (merged).
 - **#37:** lint jobs and `#![forbid(unsafe_code)]` (merged).
-- **`cargo-semver-checks`.**
+- **#38:** `cargo-semver-checks` (merged).
 - **WebAssembly:** the CI build and the tests under `wasm-bindgen-test`.
 - **`cargo-deny`.**
 
