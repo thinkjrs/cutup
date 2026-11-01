@@ -337,10 +337,10 @@ mod tests {
         let scaled = Returns::returns_matrix(&allocator.returns * 1e-3).unwrap();
         let budgets = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
         let risk_parity = RiskParity::default().risk_budgets(budgets.as_slice());
-        let scaled_config = RiskParity::default().risk_budgets((budgets * 7.0).as_slice());
+        let scaled_risk_parity = RiskParity::default().risk_budgets((budgets * 7.0).as_slice());
         assert_weights_close(
             &allocator.allocate(&risk_parity).unwrap(),
-            &scaled.allocate(&scaled_config).unwrap(),
+            &scaled.allocate(&scaled_risk_parity).unwrap(),
             1e-12,
         );
     }
