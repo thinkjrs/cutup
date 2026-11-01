@@ -8,6 +8,7 @@ name: Semver
 # The release type is minor, the level a 0.3.x release must meet under Cargo's
 # rules: additions are allowed, breaking changes aren't. The version in
 # Cargo.toml usually still names the last release, so the tool can't infer it.
+# Both feature groups run, so moving an item behind a feature fails too.
 
 on:
   pull_request:
@@ -24,6 +25,10 @@ concurrency:
 jobs:
   semver:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature-group: [default-features, all-features]
 
     steps:
       - name: Checkout repository
@@ -33,4 +38,4 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           release-type: minor
-          feature-group: all-features
+          feature-group: ${{ matrix.feature-group }}
