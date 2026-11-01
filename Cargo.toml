@@ -31,7 +31,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 
-# proptest's default features don't build for wasm, so the property tests run natively.
+# proptest needs other features and a getrandom backend to build for wasm, so the property
+# tests run natively.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
 

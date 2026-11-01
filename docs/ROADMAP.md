@@ -311,8 +311,8 @@ the review checks only that.
   - the unit, integration and reference tests run under wasm with
     `wasm-bindgen-test`, so anything that breaks only on wasm shows up here
     rather than in the sample app;
-  - the property tests stay native, since `proptest`'s default features don't
-    build for wasm.
+  - the property tests stay native, since `proptest` needs other features and
+    a `getrandom` backend to build for wasm.
 - **`cargo-deny`** for dependency licenses and security advisories.
 
 ### PRs
