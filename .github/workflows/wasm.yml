@@ -61,8 +61,10 @@ jobs:
             cargo-wasm-${{ steps.toolchain.outputs.cachekey }}-${{ runner.os }}-
 
       # The test runner has to match the wasm-bindgen version in Cargo.lock exactly.
+      # An explicit bash turns on pipefail, so a stale Cargo.lock fails here.
       - name: Read the wasm-bindgen version
         id: wasm-bindgen
+        shell: bash
         run: |
           version=$(cargo metadata --locked --format-version 1 \
             | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
@@ -84,4 +86,4 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown --all-features --tests -- -D warnings
 
       - name: Run tests
-        run: cargo test --target wasm32-unknown-unknown --all-features --lib --tests
+        run: cargo test --target wasm32-unknown-unknown --all-features --tests
