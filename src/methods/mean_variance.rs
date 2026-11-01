@@ -457,9 +457,7 @@ mod tests {
         // With nothing to choose between on return, risk aversion reduces to minimum variance.
         let mean_variance = MeanVariance::risk_aversion(2.0).expected_returns(flat.as_slice());
         assert_weights_close(
-            &allocator
-                .allocate(&mean_variance.clone().allow_short())
-                .unwrap(),
+            &allocator.allocate(&mean_variance.allow_short()).unwrap(),
             &allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),
@@ -469,9 +467,7 @@ mod tests {
         // And no portfolio can target any other return.
         let mean_variance = MeanVariance::target_return(0.02).expected_returns(flat.as_slice());
         assert_eq!(
-            allocator
-                .allocate(&mean_variance.clone().allow_short())
-                .err(),
+            allocator.allocate(&mean_variance.allow_short()).err(),
             Some(CutupError::DegenerateExpectedReturns)
         );
     }
@@ -484,8 +480,8 @@ mod tests {
             .clone()
             .expected_returns(sample_mean(&allocator).as_slice());
         assert_eq!(
-            allocator.allocate(&default.clone().allow_short()).unwrap(),
-            allocator.allocate(&explicit.clone().allow_short()).unwrap()
+            allocator.allocate(&default.allow_short()).unwrap(),
+            allocator.allocate(&explicit.allow_short()).unwrap()
         );
     }
 
@@ -498,12 +494,12 @@ mod tests {
             .covariance(CovarianceConfig::default().shrinkage(0.5));
         assert_ne!(
             allocator.allocate(&plain.clone().allow_short()).unwrap(),
-            allocator.allocate(&shrunk.clone().allow_short()).unwrap()
+            allocator.allocate(&shrunk.allow_short()).unwrap()
         );
 
         let invalid = plain.covariance(CovarianceConfig::default().shrinkage(2.0));
         assert_eq!(
-            allocator.allocate(&invalid.clone().allow_short()).err(),
+            allocator.allocate(&invalid.allow_short()).err(),
             Some(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 2.0
@@ -527,7 +523,7 @@ mod tests {
 
         let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_vec(vec![0.01, f64::NAN, 0.02]).as_slice());
-        match allocator.allocate(&mean_variance.clone().allow_short()) {
+        match allocator.allocate(&mean_variance.allow_short()) {
             Err(CutupError::InvalidAssetValue { field, column, .. }) => {
                 assert_eq!((field, column), ("expected_returns", 1))
             }
@@ -537,9 +533,7 @@ mod tests {
         let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_vec(vec![0.01, 0.02]).as_slice());
         assert_eq!(
-            allocator
-                .allocate(&mean_variance.clone().allow_short())
-                .err(),
+            allocator.allocate(&mean_variance.allow_short()).err(),
             Some(CutupError::DimensionMismatch {
                 field: "expected_returns",
                 expected: 3,
@@ -757,7 +751,7 @@ mod tests {
         );
 
         let shrunk = mean_variance.covariance(CovarianceConfig::default().shrinkage(0.1));
-        assert!(allocator.allocate(&shrunk.clone().allow_short()).is_ok());
+        assert!(allocator.allocate(&shrunk.allow_short()).is_ok());
     }
 
     #[test]
@@ -782,9 +776,7 @@ mod tests {
         let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_element(3, 0.01).as_slice());
         assert_weights_close(
-            &allocator
-                .allocate(&mean_variance.clone().allow_short())
-                .unwrap(),
+            &allocator.allocate(&mean_variance.allow_short()).unwrap(),
             &allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),

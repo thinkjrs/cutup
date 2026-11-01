@@ -344,7 +344,7 @@ mod tests {
             .allocate(
                 &MinVariance::default()
                     .covariance(config.clone())
-                    .bounds(capped.clone()),
+                    .bounds(capped),
             )
             .unwrap();
         assert_weights_close(
@@ -359,7 +359,7 @@ mod tests {
             .allocate(
                 &MinVariance::default()
                     .covariance(config.clone())
-                    .bounds(floored.clone()),
+                    .bounds(floored),
             )
             .unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.5, 0.25, 0.25]), 1e-12);
@@ -367,11 +367,7 @@ mod tests {
         // Floors and caps of 1/3 leave equal weights as the only portfolio.
         let pinned = WeightBounds::uniform(1.0 / 3.0, 1.0 / 3.0);
         let weights = allocator
-            .allocate(
-                &MinVariance::default()
-                    .covariance(config.clone())
-                    .bounds(pinned.clone()),
-            )
+            .allocate(&MinVariance::default().covariance(config).bounds(pinned))
             .unwrap();
         assert_weights_close(&weights, &Weights::from(vec![1.0 / 3.0; 3]), 1e-15);
     }
@@ -390,7 +386,7 @@ mod tests {
                 )
                 .unwrap(),
             allocator
-                .allocate(&MinVariance::default().covariance(config.clone()))
+                .allocate(&MinVariance::default().covariance(config))
                 .unwrap()
         );
         for mean_variance in [
@@ -416,7 +412,7 @@ mod tests {
 
         // The lowest return fills the last asset to 60% first, then the first to 40%.
         let mean_variance = MeanVariance::target_return(0.004).expected_returns(mu.as_slice());
-        match allocator.allocate(&mean_variance.clone().bounds(bounds.clone())) {
+        match allocator.allocate(&mean_variance.bounds(bounds.clone())) {
             Err(CutupError::TargetReturnOutOfRange {
                 target_return,
                 lowest,
@@ -433,15 +429,13 @@ mod tests {
         // the weight by minimum variance, 2/3 and 1/3, until the 60% cap binds.
         let mean_variance = MeanVariance::target_return(0.003).expected_returns(mu.as_slice());
         let weights = allocator
-            .allocate(&mean_variance.clone().bounds(bounds.clone()))
+            .allocate(&mean_variance.bounds(bounds.clone()))
             .unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.6, 0.4, 0.0]), 1e-12);
 
         // In between, the target holds and the weights stay within the bounds.
         let mean_variance = MeanVariance::target_return(0.0025).expected_returns(mu.as_slice());
-        let weights = allocator
-            .allocate(&mean_variance.clone().bounds(bounds.clone()))
-            .unwrap();
+        let weights = allocator.allocate(&mean_variance.bounds(bounds)).unwrap();
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - 0.0025).abs() < 1e-15, "{achieved}");
         assert!(
@@ -460,7 +454,7 @@ mod tests {
             allocator.allocate(
                 &MinVariance::default()
                     .covariance(config.clone())
-                    .bounds(bounds.clone()),
+                    .bounds(bounds),
             )
         };
         let infeasible = |lower_sum: f64, upper_sum: f64| {

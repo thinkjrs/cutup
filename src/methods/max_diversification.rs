@@ -214,7 +214,7 @@ mod tests {
         // Shrinkage gives every portfolio some variance.
         let config = CovarianceConfig::default().shrinkage(0.3);
         let weights = allocator
-            .allocate(&MaxDiversification::default().covariance(config.clone()))
+            .allocate(&MaxDiversification::default().covariance(config))
             .unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
@@ -231,7 +231,7 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
-            allocator.allocate(&MaxDiversification::default().covariance(config.clone())),
+            allocator.allocate(&MaxDiversification::default().covariance(config)),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 1.5

@@ -311,11 +311,7 @@ mod tests {
             .shrinkage(1.0);
         assert!(
             allocator
-                .allocate(
-                    &MinVariance::default()
-                        .allow_short()
-                        .covariance(edges.clone())
-                )
+                .allocate(&MinVariance::default().allow_short().covariance(edges))
                 .is_ok()
         );
     }
@@ -489,7 +485,7 @@ mod tests {
         assert!(marginal.max() - marginal.min() < 1e-14 * marginal.amax());
         assert_weights_close(
             &allocator
-                .allocate(&MinVariance::default().covariance(config.clone()))
+                .allocate(&MinVariance::default().covariance(config))
                 .unwrap(),
             &weights,
             1e-14,
@@ -625,7 +621,7 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.5);
         assert_eq!(
-            allocator.allocate(&MinVariance::default().covariance(config.clone())),
+            allocator.allocate(&MinVariance::default().covariance(config)),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 1.5

@@ -474,7 +474,7 @@ impl Returns {
     /// * A `DMatrix<f64>` representing the covariance matrix.
     fn compute_covariance_matrix(returns: &DMatrix<f64>) -> DMatrix<f64> {
         let mean = returns.row_mean();
-        let mean_matrix = DMatrix::from_rows(&vec![mean.clone(); returns.nrows()]);
+        let mean_matrix = DMatrix::from_rows(&vec![mean; returns.nrows()]);
         let centered = returns - mean_matrix;
         (centered.transpose() * centered) / (returns.nrows() as f64 - 1.0)
     }
@@ -550,7 +550,7 @@ mod tests {
         ];
         let flat: Vec<f64> = rows.iter().flatten().copied().collect();
         let matrix = DMatrix::from_fn(3, 3, |t, j| rows[t][j]);
-        let expected = Returns::returns_matrix(matrix.clone()).unwrap();
+        let expected = Returns::returns_matrix(matrix).unwrap();
         let vecs: Vec<Vec<f64>> = rows.iter().map(|row| row.to_vec()).collect();
         let slices: Vec<&[f64]> = rows.iter().map(|row| row.as_slice()).collect();
         for allocator in [
@@ -646,7 +646,7 @@ mod tests {
             allocator.cov_matrix,
             Returns::prices_matrix(prices).unwrap().cov_matrix
         );
-        let returns = allocator.returns.clone();
+        let returns = allocator.returns;
         let weights = Returns::from_matrix(returns)
             .unwrap()
             .allocate(&EqualWeight)

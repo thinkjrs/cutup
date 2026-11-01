@@ -552,7 +552,7 @@ mod tests {
         ])
         .unwrap();
         let method = MeanVariance::target_return(0.1).expected_returns([0.001, 0.002, 0.003]);
-        let uncapped = method.clone().allocate(&allocator);
+        let uncapped = method.allocate(&allocator);
         assert!(matches!(
             uncapped,
             Err(CutupError::TargetReturnOutOfRange { .. })

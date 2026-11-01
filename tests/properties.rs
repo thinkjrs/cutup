@@ -871,7 +871,7 @@ proptest! {
         };
 
         let max_sharpe = MaxSharpe::default().risk_free_rate(risk_free_rate);
-        let best = sharpe(&allocator.allocate(&max_sharpe.clone().allow_short()).unwrap());
+        let best = sharpe(&allocator.allocate(&max_sharpe.allow_short()).unwrap());
         for (name, weights) in all_methods(&allocator, mean) {
             let other = sharpe(&weights);
             prop_assert!(other <= best + 1e-9 * (1.0 + best.abs()), "{name}: {other} > {best}");
@@ -916,7 +916,7 @@ proptest! {
         let s = 2f64.powi(exponent);
         let scaled = returns_via_flat(returns * s)
             .unwrap()
-            .allocate(&max_sharpe(mu.clone() * s, rate * s).allow_short())
+            .allocate(&max_sharpe(mu * s, rate * s).allow_short())
             .unwrap();
 
         let tolerance = 1e-9 * (1.0 + base.iter().fold(0.0f64, |m, w| m.max(w.abs())));
@@ -948,9 +948,9 @@ proptest! {
 
         // Min variance has gradient Σw, and risk aversion γΣw − μ.
         let weights = match gamma {
-            None => allocator.allocate(&MinVariance::default().covariance(config).bounds(bounds.clone())),
+            None => allocator.allocate(&MinVariance::default().covariance(config).bounds(bounds)),
             Some(gamma) => allocator
-                .allocate(&MeanVariance::risk_aversion(gamma).covariance(config).bounds(bounds.clone())),
+                .allocate(&MeanVariance::risk_aversion(gamma).covariance(config).bounds(bounds)),
         }
         .unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
@@ -985,7 +985,7 @@ proptest! {
         prop_assert!(lowest <= highest);
         let target = if fraction == 1.0 { highest } else { lowest + fraction * (highest - lowest) };
         let weights = allocator
-            .allocate(&MeanVariance::target_return(target).bounds(bounds.clone()))
+            .allocate(&MeanVariance::target_return(target).bounds(bounds))
             .unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
         prop_assert!((w.dot(&mu) - target).abs() < 1e-12 * mu.amax(), "{weights:?}");
@@ -1043,7 +1043,7 @@ proptest! {
         // other caps allow, so the caps can still sum to 1. That limit is at most the weight,
         // since the other weights are within their caps.
         let others: f64 = (0..n).filter(|&j| j != asset).map(|j| upper[j]).sum();
-        let mut tight = upper.clone();
+        let mut tight = upper;
         tight[asset] = (lower[asset] + squeeze * (loose[asset] - lower[asset]).max(0.0))
             .max(1.0 - others);
         let tight = solve(tight).unwrap();
@@ -1062,7 +1062,7 @@ proptest! {
         );
         let mean_variance = MeanVariance::risk_aversion(gamma);
         prop_assert_eq!(
-            allocator.allocate(&mean_variance.clone().bounds(loose.clone())).unwrap(),
+            allocator.allocate(&mean_variance.clone().bounds(loose)).unwrap(),
             allocator.allocate(&mean_variance).unwrap()
         );
     }
@@ -1398,7 +1398,7 @@ proptest! {
             .transaction_costs(0.0)
             .turnover_penalty(0.0);
         prop_assert_eq!(
-            allocator.allocate(&idle.clone().max_turnover(2.0)),
+            allocator.allocate(&idle.max_turnover(2.0)),
             allocator.allocate(&MeanVariance::risk_aversion(gamma))
         );
         prop_assert_eq!(
@@ -1576,7 +1576,7 @@ proptest! {
             views(BlackLitterman::new(fractions, 2.5), pairs(&portfolio)).expected_returns(&allocator),
             BlackLitterman::new(pairs(fractions), 2.5)
                 .view(View::absolute(order[0], mu[order[0]]))
-                .view(View::portfolio(portfolio.clone(), 0.001))
+                .view(View::portfolio(portfolio, 0.001))
                 .expected_returns(&allocator)
         );
     }

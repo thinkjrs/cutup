@@ -168,11 +168,7 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let config = CovarianceConfig::default().shrinkage(1.0);
         let weights = allocator
-            .allocate(
-                &MinVariance::default()
-                    .allow_short()
-                    .covariance(config.clone()),
-            )
+            .allocate(&MinVariance::default().allow_short().covariance(config))
             .unwrap();
         assert_weights_close(&weights, &allocator.allocate(&EqualWeight).unwrap(), 1e-12);
     }
@@ -196,11 +192,7 @@ mod tests {
                 )
                 .unwrap(),
             &scaled
-                .allocate(
-                    &MinVariance::default()
-                        .allow_short()
-                        .covariance(config.clone()),
-                )
+                .allocate(&MinVariance::default().allow_short().covariance(config))
                 .unwrap(),
             1e-12,
         );
@@ -222,9 +214,9 @@ mod tests {
                     .allow_short()
                     .covariance(shrunk.clone()),
             ),
-            allocator.allocate(&MinVariance::default().covariance(shrunk.clone())),
-            allocator.allocate(&mean_variance.clone().allow_short()),
-            allocator.allocate(&max_sharpe.clone().allow_short()),
+            allocator.allocate(&MinVariance::default().covariance(shrunk)),
+            allocator.allocate(&mean_variance.allow_short()),
+            allocator.allocate(&max_sharpe.allow_short()),
             allocator.allocate(&risk_parity),
         ] {
             assert_eq!(result, Err(CutupError::SingularCovariance));
@@ -260,19 +252,11 @@ mod tests {
 
         let regularized = CovarianceConfig::default().regularization(1e-6);
         let weights = allocator
-            .allocate(
-                &MinVariance::default()
-                    .allow_short()
-                    .covariance(regularized.clone()),
-            )
+            .allocate(&MinVariance::default().allow_short().covariance(regularized))
             .unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
 
         let mean_variance = MeanVariance::risk_aversion(2.0).covariance(shrunk);
-        assert!(
-            allocator
-                .allocate(&mean_variance.clone().allow_short())
-                .is_ok()
-        );
+        assert!(allocator.allocate(&mean_variance.allow_short()).is_ok());
     }
 }
