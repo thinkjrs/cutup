@@ -263,16 +263,21 @@ the review checks only that.
   `long_only_weights`, `correlation` and HRP and HERC's cluster helpers. Unit
   test fixtures are in a test-only `test_support.rs`.
 
-### Correlation underflow in HRP and HERC
+### Correlation underflow in HRP and HERC (#35)
 
 - **The bug:** `correlation_distance` divides each covariance by
   `sqrt(σᵢᵢ·σⱼⱼ)`, and for variances near 1e-160 that product underflows to
   zero, so HRP and HERC fail with `NonFiniteCovariance`.
-- **The fix:** use `methods::correlation`, which divides by each volatility in
-  turn, as the other methods already do.
-- **Weights:** inputs that fail today get weights instead, with a test at
-  that scale. Other inputs can move only by rounding, since each correlation
-  is divided in a different order, and the reference cases must still match.
+- **The fix:** `correlation_distance` divides each covariance by each
+  volatility in turn, as `methods::correlation` and the other methods
+  already do.
+- **A cutoff:** variances below `f64::MIN_POSITIVE / f64::EPSILON`, about
+  1e-292, still return `NonFiniteCovariance`. Below it, covariances between
+  assets are subnormal and lose precision, and a cluster's inverse variances
+  can sum past `f64::MAX`.
+- **Weights:** returns between about 1e-81 and 1e-146 get weights instead of
+  an error, matching the same data at unit scale. Other inputs move only by
+  rounding, and all the reference cases still match.
 
 ### Tidying
 
@@ -306,7 +311,7 @@ the review checks only that.
 Each is its own PR into `develop`, in this order:
 
 - **#34:** the split (merged).
-- **The correlation fix**, first, so it's reviewed apart from the tooling.
+- **#35:** the correlation fix (merged).
 - **Tidying:** the conversion leftovers, `docs/PLAN.md` and `Cargo.toml`.
 - **Lint jobs** and `#![forbid(unsafe_code)]`.
 - **`cargo-semver-checks`.**
@@ -552,6 +557,8 @@ to 0.3.8.
   - a deprecated item stays for at least one minor release, with a note naming
     its replacement;
   - it's removed only in 2.0.
+- **Fixtures:** updating a reference fixture or a property's expected value
+  needs a CHANGELOG line saying why.
 - **Candidates for 1.x minors:** whatever of "Later 0.3.x or 1.x" hasn't
   shipped, plus discrete allocation (whole shares or spend increments),
   resampled and robust optimization, and fixed or tiered transaction costs.
