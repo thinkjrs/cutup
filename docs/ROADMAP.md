@@ -291,9 +291,12 @@ the review checks only that.
 ### Tooling
 
 - **Lint jobs in CI:** clippy and `cargo doc` with `-D warnings` on stable
-  and the MSRV, and `cargo fmt --check` on stable, in `lint.yml`. They check
-  the release rule above on every PR. Beta and nightly stay test-only, so a
-  new lint there doesn't fail a PR.
+  and the MSRV, and `cargo fmt --check` on stable, in `lint.yml`. They run
+  on every PR and every push to `main` and `develop`, so they check the
+  release rule for everything merged through a PR. A change made on a release
+  branch is still checked by hand before tagging, since `main` is linted only
+  once the tag is pushed. Beta and nightly stay test-only, so a new lint there
+  doesn't fail a PR.
 - **`#![forbid(unsafe_code)]`.** cutup has no `unsafe` code; this makes that
   a guarantee.
 - **`cargo-semver-checks` in CI** on every PR to `main`, so 0.3.x stays
