@@ -26,6 +26,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Without the import a test file still compiles and this job still passes, but
+      # its tests don't run. tests/properties.rs is the one file that stays native.
+      - name: Check that every test file runs under wasm
+        run: |
+          missing=$(grep -rlF '#[test]' src tests \
+            | grep -vxF tests/properties.rs \
+            | xargs grep -LF 'wasm_bindgen_test as test' || true)
+          if [ -n "$missing" ]; then
+            echo "::error::These test files don't import wasm_bindgen_test, so their tests won't run under wasm:"
+            echo "$missing"
+            exit 1
+          fi
+
       - name: Set up Rust stable
         id: toolchain
         uses: dtolnay/rust-toolchain@master
