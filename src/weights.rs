@@ -216,6 +216,8 @@ mod tests {
     use super::*;
     use crate::test_support::labeled;
     use crate::{EqualWeight, InverseVariance};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_weights_accessors() {

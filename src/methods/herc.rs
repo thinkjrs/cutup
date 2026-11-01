@@ -210,6 +210,8 @@ mod tests {
     use crate::test_support::{assert_weights_close, collinear_returns, two_block_returns};
     use crate::{Hrp, InverseVariance};
     use nalgebra::dmatrix;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_herc_with_one_cluster_is_inverse_variance() {

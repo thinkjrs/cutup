@@ -99,6 +99,8 @@ mod tests {
     };
     use crate::{InverseVariance, InverseVolatility, MaxSharpe, MinVariance, RiskParity};
     use nalgebra::{DMatrix, DVector, dmatrix, dvector};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_max_diversification_matches_closed_form() {

@@ -310,6 +310,8 @@ mod tests {
     use crate::test_support::{assert_weights_close, full_rank_prices, uncorrelated_returns};
     use crate::{CovarianceConfig, MeanVariance, MinVariance, Returns, Weights};
     use nalgebra::dvector;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_a_range_narrower_than_rounding_snaps_to_the_nearer_end() {

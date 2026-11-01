@@ -346,6 +346,8 @@ impl fmt::Display for AssetName<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_error_display() {

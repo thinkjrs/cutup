@@ -276,6 +276,8 @@ fn nearest_neighbor_chain(distance: &DMatrix<f64>, linkage: Linkage) -> Vec<Merg
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     /// Distances for points on a line at 0, 1, 10, 11, 30, so single linkage merges (0, 1),
     /// (2, 3), then those two pairs, then 4.

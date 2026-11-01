@@ -381,6 +381,8 @@ impl View {
 mod tests {
     use super::*;
     use nalgebra::dmatrix;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     fn allocator() -> Returns {
         Returns::returns_matrix(dmatrix![

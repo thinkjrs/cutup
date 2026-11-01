@@ -2,6 +2,8 @@ use cutup::{
     Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
     MinVariance, Returns, Weights,
 };
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[test]
 fn test_portfolio_allocations() {

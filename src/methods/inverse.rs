@@ -102,6 +102,8 @@ mod tests {
     use crate::test_support::{assert_weights_close, full_rank_prices};
     use crate::{Hrp, MinVariance};
     use nalgebra::dmatrix;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_inverse_volatility_and_variance_closed_form() {

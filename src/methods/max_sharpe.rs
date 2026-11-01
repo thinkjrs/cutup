@@ -289,6 +289,8 @@ mod tests {
     };
     use crate::{EqualWeight, Hrp, InverseVariance, InverseVolatility, MeanVariance, MinVariance};
     use nalgebra::{dmatrix, dvector};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_long_only_max_sharpe_matches_unconstrained_when_long() {

@@ -389,6 +389,8 @@ mod tests {
         assert_weights_close, full_rank_prices, portfolio_variance, rank_one_returns, sample_mean,
     };
     use nalgebra::{dmatrix, dvector};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_mean_variance_target_return() {

@@ -233,6 +233,8 @@ mod tests {
         assert_weights_close, collinear_returns, full_rank_prices, rank_one_returns, risk_shares,
     };
     use nalgebra::dmatrix;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_risk_parity_equalizes_risk_contributions() {

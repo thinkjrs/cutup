@@ -854,6 +854,8 @@ fn descent_ray(
 mod tests {
     use super::*;
     use nalgebra::{dmatrix, dvector};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     fn budget(n: usize) -> (DMatrix<f64>, DVector<f64>) {
         (DMatrix::from_element(n, 1, 1.0), dvector![1.0])

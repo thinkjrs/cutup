@@ -356,6 +356,8 @@ impl Problem {
 mod tests {
     use super::*;
     use nalgebra::{dmatrix, dvector};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     const INF: f64 = f64::INFINITY;
 

@@ -11,6 +11,8 @@ use cutup::{
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 const DATASETS: &str = include_str!("fixtures/datasets.json");
 const EXPECTED: &str = include_str!("fixtures/expected.json");

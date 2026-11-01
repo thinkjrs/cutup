@@ -146,6 +146,8 @@ mod tests {
     use crate::test_support::{assert_weights_close, full_rank_prices};
     use crate::{EqualWeight, MaxSharpe, MeanVariance, MinVariance, RiskParity};
     use nalgebra::dmatrix;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
     fn test_covariance_config_builder() {
