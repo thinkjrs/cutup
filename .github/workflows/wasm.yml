@@ -2,12 +2,15 @@ name: Wasm
 
 # Builds for wasm32-unknown-unknown with and without features, and runs the unit,
 # integration and reference tests there under Node. The property tests run
-# natively in tests.yml, since proptest's default features don't build for wasm.
+# natively in tests.yml, since proptest needs other features and a getrandom
+# backend to build for wasm. Releases merge into main without a PR, so this runs on
+# pushes to release branches too. tgrf pushes only after tagging, so a release
+# branch is checked before its tag only if it's pushed first.
 
 on:
   pull_request:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "release/**"]
 
 permissions:
   contents: read
