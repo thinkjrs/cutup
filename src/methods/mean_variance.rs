@@ -455,9 +455,11 @@ mod tests {
         let flat = DVector::from_element(3, 0.01);
 
         // With nothing to choose between on return, risk aversion reduces to minimum variance.
-        let config = MeanVariance::risk_aversion(2.0).expected_returns(flat.as_slice());
+        let mean_variance = MeanVariance::risk_aversion(2.0).expected_returns(flat.as_slice());
         assert_weights_close(
-            &allocator.allocate(&config.clone().allow_short()).unwrap(),
+            &allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .unwrap(),
             &allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),
@@ -465,9 +467,11 @@ mod tests {
         );
 
         // And no portfolio can target any other return.
-        let config = MeanVariance::target_return(0.02).expected_returns(flat.as_slice());
+        let mean_variance = MeanVariance::target_return(0.02).expected_returns(flat.as_slice());
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()).err(),
+            allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .err(),
             Some(CutupError::DegenerateExpectedReturns)
         );
     }
@@ -521,19 +525,21 @@ mod tests {
             other => panic!("NaN target gave {other:?}"),
         }
 
-        let config = MeanVariance::target_return(0.01)
+        let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_vec(vec![0.01, f64::NAN, 0.02]).as_slice());
-        match allocator.allocate(&config.clone().allow_short()) {
+        match allocator.allocate(&mean_variance.clone().allow_short()) {
             Err(CutupError::InvalidAssetValue { field, column, .. }) => {
                 assert_eq!((field, column), ("expected_returns", 1))
             }
             other => panic!("NaN expected return gave {other:?}"),
         }
 
-        let config = MeanVariance::target_return(0.01)
+        let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_vec(vec![0.01, 0.02]).as_slice());
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()).err(),
+            allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .err(),
             Some(CutupError::DimensionMismatch {
                 field: "expected_returns",
                 expected: 3,
@@ -570,14 +576,20 @@ mod tests {
         ];
         let allocator = Returns::returns_matrix(returns).unwrap();
         let expected = dvector![0.001, 0.002, 0.003];
-        for config in [
+        for mean_variance in [
             MeanVariance::risk_aversion(100.0),
             MeanVariance::target_return(0.0015),
         ] {
-            let config = config.expected_returns(expected.as_slice());
-            let unconstrained = allocator.allocate(&config.clone().allow_short()).unwrap();
+            let mean_variance = mean_variance.expected_returns(expected.as_slice());
+            let unconstrained = allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .unwrap();
             assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
-            assert_weights_close(&allocator.allocate(&config).unwrap(), &unconstrained, 1e-12);
+            assert_weights_close(
+                &allocator.allocate(&mean_variance).unwrap(),
+                &unconstrained,
+                1e-12,
+            );
         }
     }
 
@@ -587,17 +599,18 @@ mod tests {
         let expected = dvector![0.001, 0.003, 0.002];
 
         // With almost no aversion to risk, everything goes to the highest expected return.
-        let config = MeanVariance::risk_aversion(1e-9).expected_returns(expected.as_slice());
+        let mean_variance = MeanVariance::risk_aversion(1e-9).expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&mean_variance).unwrap(),
             &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
         // Only the asset with the highest expected return reaches it.
-        let config = MeanVariance::target_return(0.003).expected_returns(expected.as_slice());
+        let mean_variance =
+            MeanVariance::target_return(0.003).expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&mean_variance).unwrap(),
             &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
@@ -608,8 +621,9 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         for target in [0.001, 0.0012, 0.0025, 0.0029] {
-            let config = MeanVariance::target_return(target).expected_returns(expected.as_slice());
-            let weights = allocator.allocate(&config).unwrap();
+            let mean_variance =
+                MeanVariance::target_return(target).expected_returns(expected.as_slice());
+            let weights = allocator.allocate(&mean_variance).unwrap();
             let w = DVector::from_column_slice(weights.as_slice());
             assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
             assert!((w.sum() - 1.0).abs() < 1e-12);
@@ -623,10 +637,10 @@ mod tests {
     #[test]
     fn test_long_only_mean_variance_rejects_unreachable_targets() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
-        let config = MeanVariance::target_return(0.004)
+        let mean_variance = MeanVariance::target_return(0.004)
             .expected_returns(dvector![0.001, 0.003, 0.002].as_slice());
         assert_eq!(
-            allocator.allocate(&config),
+            allocator.allocate(&mean_variance),
             Err(CutupError::TargetReturnOutOfRange {
                 target_return: 0.004,
                 lowest: 0.001,
@@ -636,14 +650,14 @@ mod tests {
 
         // With equal expected returns, only that return can be targeted, by any portfolio.
         let flat = dvector![0.002, 0.002, 0.002];
-        let config = MeanVariance::target_return(0.001).expected_returns(flat.as_slice());
+        let mean_variance = MeanVariance::target_return(0.001).expected_returns(flat.as_slice());
         assert!(matches!(
-            allocator.allocate(&config),
+            allocator.allocate(&mean_variance),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
-        let config = MeanVariance::target_return(0.002).expected_returns(flat.as_slice());
+        let mean_variance = MeanVariance::target_return(0.002).expected_returns(flat.as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&mean_variance).unwrap(),
             &allocator.allocate(&MinVariance::default()).unwrap(),
             1e-12,
         );
@@ -655,18 +669,19 @@ mod tests {
 
         // A target a rounding error above the highest expected return is that return.
         let expected = dvector![0.001, 0.003, 0.002];
-        let config = MeanVariance::target_return(0.003 * (1.0 + 4.0 * f64::EPSILON))
+        let mean_variance = MeanVariance::target_return(0.003 * (1.0 + 4.0 * f64::EPSILON))
             .expected_returns(expected.as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&mean_variance).unwrap(),
             &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-12,
         );
 
         // highest − lowest overflows here, which mustn't spoil the starting point.
         let expected = dvector![-1e308, 1e308, 0.0];
-        let config = MeanVariance::target_return(5e307).expected_returns(expected.as_slice());
-        let weights = allocator.allocate(&config).unwrap();
+        let mean_variance =
+            MeanVariance::target_return(5e307).expected_returns(expected.as_slice());
+        let weights = allocator.allocate(&mean_variance).unwrap();
         let w = DVector::from_column_slice(weights.as_slice());
         assert!(w.iter().all(|&x| x >= 0.0), "{weights:?}");
         assert!(
@@ -677,9 +692,9 @@ mod tests {
         // An unreachable target is reported before the covariance is checked.
         let returns = dmatrix![0.01, 0.0; -0.02, 0.0; 0.03, 0.0];
         let allocator = Returns::returns_matrix(returns).unwrap();
-        let config = MeanVariance::target_return(1.0);
+        let mean_variance = MeanVariance::target_return(1.0);
         assert!(matches!(
-            allocator.allocate(&config),
+            allocator.allocate(&mean_variance),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
     }
@@ -689,12 +704,12 @@ mod tests {
         // Unconstrained, utility grows without limit (see the next test). Long-only, the
         // weights can't grow, so there is always an optimum.
         let allocator = Returns::returns_matrix(rank_one_returns()).unwrap();
-        let config = MeanVariance::risk_aversion(2.0);
+        let mean_variance = MeanVariance::risk_aversion(2.0);
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()),
+            allocator.allocate(&mean_variance.clone().allow_short()),
             Err(CutupError::Unbounded)
         );
-        let weights = allocator.allocate(&config).unwrap();
+        let weights = allocator.allocate(&mean_variance).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -716,9 +731,10 @@ mod tests {
                 value: f64::INFINITY
             })
         );
-        let config = MeanVariance::risk_aversion(1.0).expected_returns(dvector![0.01].as_slice());
+        let mean_variance =
+            MeanVariance::risk_aversion(1.0).expected_returns(dvector![0.01].as_slice());
         assert_eq!(
-            allocator.allocate(&config),
+            allocator.allocate(&mean_variance),
             Err(CutupError::DimensionMismatch {
                 field: "expected_returns",
                 expected: 3,
@@ -732,13 +748,15 @@ mod tests {
         // With Σ singular, d = [5, -7, 2] has Σd = 0 and 1ᵀd = 0, but μᵀd ≠ 0 for the sample
         // mean, so utility grows without limit along d.
         let allocator = Returns::returns_matrix(rank_one_returns()).unwrap();
-        let config = MeanVariance::risk_aversion(2.0);
+        let mean_variance = MeanVariance::risk_aversion(2.0);
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()).err(),
+            allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .err(),
             Some(CutupError::Unbounded)
         );
 
-        let shrunk = config.covariance(CovarianceConfig::default().shrinkage(0.1));
+        let shrunk = mean_variance.covariance(CovarianceConfig::default().shrinkage(0.1));
         assert!(allocator.allocate(&shrunk.clone().allow_short()).is_ok());
     }
 
@@ -761,10 +779,12 @@ mod tests {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
-        let config = MeanVariance::target_return(0.01)
+        let mean_variance = MeanVariance::target_return(0.01)
             .expected_returns(DVector::from_element(3, 0.01).as_slice());
         assert_weights_close(
-            &allocator.allocate(&config.clone().allow_short()).unwrap(),
+            &allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .unwrap(),
             &allocator
                 .allocate(&MinVariance::default().allow_short())
                 .unwrap(),

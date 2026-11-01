@@ -214,9 +214,9 @@ mod tests {
     #[test]
     fn test_herc_with_one_cluster_is_inverse_variance() {
         let allocator = Returns::returns_matrix(two_block_returns()).unwrap();
-        let config = Herc::default().clusters(1);
+        let herc = Herc::default().clusters(1);
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&herc).unwrap(),
             &allocator.allocate(&InverseVariance).unwrap(),
             1e-15,
         );
@@ -242,10 +242,10 @@ mod tests {
     #[test]
     fn test_herc_chooses_the_blocks() {
         let allocator = Returns::returns_matrix(two_block_returns()).unwrap();
-        let config = Herc::default().clusters(2);
+        let herc = Herc::default().clusters(2);
         assert_eq!(
             allocator.allocate(&Herc::default()),
-            allocator.allocate(&config)
+            allocator.allocate(&herc)
         );
     }
 
@@ -254,8 +254,8 @@ mod tests {
         let allocator = Returns::returns_matrix(collinear_returns()).unwrap();
         let iv = allocator.allocate(&InverseVariance).unwrap();
         for clusters in [1, 2] {
-            let config = Herc::default().clusters(clusters);
-            assert_weights_close(&allocator.allocate(&config).unwrap(), &iv, 1e-15);
+            let herc = Herc::default().clusters(clusters);
+            assert_weights_close(&allocator.allocate(&herc).unwrap(), &iv, 1e-15);
         }
         assert_weights_close(&allocator.allocate(&Herc::default()).unwrap(), &iv, 1e-15);
     }
@@ -269,8 +269,8 @@ mod tests {
             0.015, -0.015, -0.01, 0.01
         ];
         let allocator = Returns::returns_matrix(returns).unwrap();
-        let config = Herc::default().clusters(4);
-        let weights = allocator.allocate(&config).unwrap();
+        let herc = Herc::default().clusters(4);
+        let weights = allocator.allocate(&herc).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w >= 0.0));
     }

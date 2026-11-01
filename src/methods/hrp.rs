@@ -329,8 +329,8 @@ mod tests {
             Linkage::Average,
             Linkage::Ward,
         ] {
-            let config = Hrp::default().linkage(linkage);
-            let order = config.cluster_order(&allocator).unwrap();
+            let hrp = Hrp::default().linkage(linkage);
+            let order = hrp.cluster_order(&allocator).unwrap();
 
             let mut sorted = order.clone();
             sorted.sort_unstable();
@@ -341,7 +341,7 @@ mod tests {
             first_block.sort_unstable();
             assert_eq!(first_block[2] - first_block[0], 2, "{linkage:?}: {order:?}");
 
-            let weights = allocator.allocate(&config).unwrap();
+            let weights = allocator.allocate(&hrp).unwrap();
             assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
             assert!(weights.iter().all(|&w| w >= 0.0));
         }

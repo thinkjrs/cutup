@@ -185,14 +185,17 @@ mod tests {
             );
 
             // Equal Sharpe ratios: μᵢ ∝ σᵢ gives weights ∝ 1 / σᵢ.
-            let config = MaxSharpe::default().expected_returns(dvector![0.1, 0.1 * s].as_slice());
+            let max_sharpe =
+                MaxSharpe::default().expected_returns(dvector![0.1, 0.1 * s].as_slice());
             close(
-                &allocator.allocate(&config.clone().allow_short()).unwrap(),
+                &allocator
+                    .allocate(&max_sharpe.clone().allow_short())
+                    .unwrap(),
                 &inverse_volatility,
                 s,
             );
             close(
-                &allocator.allocate(&config).unwrap(),
+                &allocator.allocate(&max_sharpe).unwrap(),
                 &inverse_volatility,
                 s,
             );

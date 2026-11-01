@@ -250,9 +250,9 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         // Spanning eight orders of magnitude, and not summing to 1.
         let budgets = [1e-8, 3.0, 1.0];
-        let config =
+        let risk_parity =
             RiskParity::default().risk_budgets(DVector::from_row_slice(&budgets).as_slice());
-        let weights = allocator.allocate(&config).unwrap();
+        let weights = allocator.allocate(&risk_parity).unwrap();
         let total: f64 = budgets.iter().sum();
         for (share, budget) in risk_shares(&allocator, &weights).iter().zip(budgets) {
             assert!(
@@ -284,12 +284,12 @@ mod tests {
             ],
         );
         let allocator = Returns::returns_matrix(returns).unwrap();
-        let config = RiskParity::default()
+        let risk_parity = RiskParity::default()
             .risk_budgets(
                 DVector::from_row_slice(&[0.8571666963481355, 0.45606979884293564]).as_slice(),
             )
             .covariance(CovarianceConfig::default().shrinkage(0.29613802865778266));
-        assert!(allocator.allocate(&config).is_ok());
+        assert!(allocator.allocate(&risk_parity).is_ok());
     }
 
     #[test]
@@ -336,10 +336,10 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let scaled = Returns::returns_matrix(&allocator.returns * 1e-3).unwrap();
         let budgets = DVector::from_row_slice(&[1.0, 2.0, 3.0]);
-        let config = RiskParity::default().risk_budgets(budgets.as_slice());
+        let risk_parity = RiskParity::default().risk_budgets(budgets.as_slice());
         let scaled_config = RiskParity::default().risk_budgets((budgets * 7.0).as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&risk_parity).unwrap(),
             &scaled.allocate(&scaled_config).unwrap(),
             1e-12,
         );
@@ -358,8 +358,9 @@ mod tests {
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
         );
-        let config = RiskParity::default().covariance(CovarianceConfig::default().shrinkage(0.3));
-        let weights = allocator.allocate(&config).unwrap();
+        let risk_parity =
+            RiskParity::default().covariance(CovarianceConfig::default().shrinkage(0.3));
+        let weights = allocator.allocate(&risk_parity).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(weights.iter().all(|&w| w > 0.0));
     }
@@ -372,9 +373,9 @@ mod tests {
             allocator.allocate(&RiskParity::default()),
             Err(CutupError::SingularCovariance)
         );
-        let config =
+        let risk_parity =
             RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-6));
-        let weights = allocator.allocate(&config).unwrap();
+        let weights = allocator.allocate(&risk_parity).unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.5, 0.5]), 1e-12);
     }
 
@@ -410,9 +411,10 @@ mod tests {
                 ..
             })
         ));
-        let config = RiskParity::default().covariance(CovarianceConfig::default().shrinkage(2.0));
+        let risk_parity =
+            RiskParity::default().covariance(CovarianceConfig::default().shrinkage(2.0));
         assert_eq!(
-            allocator.allocate(&config),
+            allocator.allocate(&risk_parity),
             Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value: 2.0
@@ -432,9 +434,9 @@ mod tests {
             })
         );
         // Regularization gives the constant asset a variance, and nearly all the weight.
-        let config =
+        let risk_parity =
             RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-8));
-        let weights = allocator.allocate(&config).unwrap();
+        let weights = allocator.allocate(&risk_parity).unwrap();
         assert!(weights[1] > 0.99);
     }
 }

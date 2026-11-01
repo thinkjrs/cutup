@@ -268,7 +268,11 @@ mod tests {
             .unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
 
-        let config = MeanVariance::risk_aversion(2.0).covariance(shrunk);
-        assert!(allocator.allocate(&config.clone().allow_short()).is_ok());
+        let mean_variance = MeanVariance::risk_aversion(2.0).covariance(shrunk);
+        assert!(
+            allocator
+                .allocate(&mean_variance.clone().allow_short())
+                .is_ok()
+        );
     }
 }

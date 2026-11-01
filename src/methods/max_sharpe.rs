@@ -302,12 +302,18 @@ mod tests {
             -s1, -s2, s3
         ];
         let allocator = Returns::returns_matrix(returns).unwrap();
-        let config = MaxSharpe::default()
+        let max_sharpe = MaxSharpe::default()
             .risk_free_rate(0.0005)
             .expected_returns(dvector![0.001, 0.002, 0.003].as_slice());
-        let unconstrained = allocator.allocate(&config.clone().allow_short()).unwrap();
+        let unconstrained = allocator
+            .allocate(&max_sharpe.clone().allow_short())
+            .unwrap();
         assert!(unconstrained.iter().all(|&w| w > 0.0), "{unconstrained:?}");
-        assert_weights_close(&allocator.allocate(&config).unwrap(), &unconstrained, 1e-12);
+        assert_weights_close(
+            &allocator.allocate(&max_sharpe).unwrap(),
+            &unconstrained,
+            1e-12,
+        );
     }
 
     #[test]
@@ -315,12 +321,12 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let expected = dvector![0.001, 0.003, 0.002];
         let at = |rate: f64| {
-            let config = MaxSharpe::default()
+            let max_sharpe = MaxSharpe::default()
                 .risk_free_rate(rate)
                 .expected_returns(expected.as_slice());
             (
-                allocator.allocate(&config.clone().allow_short()),
-                allocator.allocate(&config),
+                allocator.allocate(&max_sharpe.clone().allow_short()),
+                allocator.allocate(&max_sharpe),
             )
         };
 
@@ -352,10 +358,10 @@ mod tests {
     fn test_long_only_max_sharpe_extreme_returns() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let at = |rate: f64, expected: DVector<f64>| {
-            let config = MaxSharpe::default()
+            let max_sharpe = MaxSharpe::default()
                 .risk_free_rate(rate)
                 .expected_returns(expected.as_slice());
-            allocator.allocate(&config)
+            allocator.allocate(&max_sharpe)
         };
 
         // A subnormal excess return mustn't make the starting point infinite. With a zero
@@ -383,12 +389,13 @@ mod tests {
         // [4/7, 0, 3/7] is long-only with zero variance, and with these expected returns its
         // excess return is positive, so the Sharpe ratio grows without limit.
         let allocator = Returns::returns_matrix(rank_one_returns()).unwrap();
-        let config = MaxSharpe::default().expected_returns(dvector![0.01, 0.0, 0.01].as_slice());
-        assert_eq!(allocator.allocate(&config), Err(CutupError::Unbounded));
+        let max_sharpe =
+            MaxSharpe::default().expected_returns(dvector![0.01, 0.0, 0.01].as_slice());
+        assert_eq!(allocator.allocate(&max_sharpe), Err(CutupError::Unbounded));
 
         // Shrinkage gives every portfolio some variance.
-        let config = config.covariance(CovarianceConfig::default().shrinkage(0.3));
-        let weights = allocator.allocate(&config).unwrap();
+        let max_sharpe = max_sharpe.covariance(CovarianceConfig::default().shrinkage(0.3));
+        let weights = allocator.allocate(&max_sharpe).unwrap();
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     }
@@ -396,17 +403,17 @@ mod tests {
     #[test]
     fn test_long_only_max_sharpe_rejects_bad_input() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
-        let config = MaxSharpe::default().risk_free_rate(f64::NAN);
+        let max_sharpe = MaxSharpe::default().risk_free_rate(f64::NAN);
         assert!(matches!(
-            allocator.allocate(&config),
+            allocator.allocate(&max_sharpe),
             Err(CutupError::InvalidConfig {
                 field: "risk_free_rate",
                 ..
             })
         ));
-        let config = MaxSharpe::default().expected_returns(dvector![0.01].as_slice());
+        let max_sharpe = MaxSharpe::default().expected_returns(dvector![0.01].as_slice());
         assert_eq!(
-            allocator.allocate(&config),
+            allocator.allocate(&max_sharpe),
             Err(CutupError::DimensionMismatch {
                 field: "expected_returns",
                 expected: 3,
@@ -419,8 +426,10 @@ mod tests {
     fn test_max_sharpe_closed_form() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
-        let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
-        let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
+        let max_sharpe = MaxSharpe::default().risk_free_rate(risk_free_rate);
+        let weights = allocator
+            .allocate(&max_sharpe.clone().allow_short())
+            .unwrap();
 
         let excess = sample_mean(&allocator).add_scalar(-risk_free_rate);
         let z = allocator.cov_matrix.clone().try_inverse().unwrap() * excess;
@@ -432,10 +441,12 @@ mod tests {
     fn test_max_sharpe_beats_every_other_method() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let risk_free_rate = min_variance_return(&allocator) - 0.002;
-        let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
+        let max_sharpe = MaxSharpe::default().risk_free_rate(risk_free_rate);
         let best = sharpe(
             &allocator,
-            &allocator.allocate(&config.clone().allow_short()).unwrap(),
+            &allocator
+                .allocate(&max_sharpe.clone().allow_short())
+                .unwrap(),
             risk_free_rate,
         );
 
@@ -480,8 +491,8 @@ mod tests {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
         for risk_free_rate in [threshold, threshold + 0.001] {
-            let config = MaxSharpe::default().risk_free_rate(risk_free_rate);
-            match allocator.allocate(&config.clone().allow_short()) {
+            let max_sharpe = MaxSharpe::default().risk_free_rate(risk_free_rate);
+            match allocator.allocate(&max_sharpe.clone().allow_short()) {
                 Err(CutupError::RiskFreeRateTooHigh {
                     risk_free_rate: got,
                     min_variance_return,
@@ -538,9 +549,9 @@ mod tests {
 
         // Below its return, the zero-variance portfolio has excess return and no risk, so the
         // Sharpe ratio is unbounded.
-        let config = MaxSharpe::default().risk_free_rate(-0.01);
+        let max_sharpe = MaxSharpe::default().risk_free_rate(-0.01);
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()).err(),
+            allocator.allocate(&max_sharpe.clone().allow_short()).err(),
             Some(CutupError::Unbounded)
         );
     }
@@ -551,8 +562,10 @@ mod tests {
         // maximum, however leveraged.
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let threshold = min_variance_return(&allocator);
-        let config = MaxSharpe::default().risk_free_rate(threshold - 1e-6);
-        let weights = allocator.allocate(&config.clone().allow_short()).unwrap();
+        let max_sharpe = MaxSharpe::default().risk_free_rate(threshold - 1e-6);
+        let weights = allocator
+            .allocate(&max_sharpe.clone().allow_short())
+            .unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
     }
 
@@ -563,10 +576,10 @@ mod tests {
             Err(CutupError::InvalidConfig { field, .. }) => assert_eq!(field, "risk_free_rate"),
             other => panic!("NaN risk-free rate gave {other:?}"),
         }
-        let config =
+        let max_sharpe =
             MaxSharpe::default().expected_returns(DVector::from_vec(vec![0.01]).as_slice());
         assert_eq!(
-            allocator.allocate(&config.clone().allow_short()).err(),
+            allocator.allocate(&max_sharpe.clone().allow_short()).err(),
             Some(CutupError::DimensionMismatch {
                 field: "expected_returns",
                 expected: 3,

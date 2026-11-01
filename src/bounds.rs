@@ -316,10 +316,10 @@ mod tests {
         // Returns of 100, 100 + 5e-11 and 100: the whole range is within rounding, and a
         // target at its top is only reached by the second asset.
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
-        let config = MeanVariance::target_return(100.0 + 5e-11)
+        let mean_variance = MeanVariance::target_return(100.0 + 5e-11)
             .expected_returns(dvector![100.0, 100.0 + 5e-11, 100.0].as_slice());
         assert_weights_close(
-            &allocator.allocate(&config).unwrap(),
+            &allocator.allocate(&mean_variance).unwrap(),
             &Weights::from(vec![0.0, 1.0, 0.0]),
             1e-15,
         );
@@ -393,16 +393,17 @@ mod tests {
                 .allocate(&MinVariance::default().covariance(config.clone()))
                 .unwrap()
         );
-        for config in [
+        for mean_variance in [
             MeanVariance::risk_aversion(5.0),
             MeanVariance::target_return(0.004),
         ] {
-            let config = config.expected_returns(dvector![0.002, 0.006, 0.003].as_slice());
+            let mean_variance =
+                mean_variance.expected_returns(dvector![0.002, 0.006, 0.003].as_slice());
             assert_eq!(
                 allocator
-                    .allocate(&config.clone().bounds(loose.clone()))
+                    .allocate(&mean_variance.clone().bounds(loose.clone()))
                     .unwrap(),
-                allocator.allocate(&config).unwrap()
+                allocator.allocate(&mean_variance).unwrap()
             );
         }
     }
@@ -414,8 +415,8 @@ mod tests {
         let bounds = WeightBounds::uniform(0.0, 0.6);
 
         // The lowest return fills the last asset to 60% first, then the first to 40%.
-        let config = MeanVariance::target_return(0.004).expected_returns(mu.as_slice());
-        match allocator.allocate(&config.clone().bounds(bounds.clone())) {
+        let mean_variance = MeanVariance::target_return(0.004).expected_returns(mu.as_slice());
+        match allocator.allocate(&mean_variance.clone().bounds(bounds.clone())) {
             Err(CutupError::TargetReturnOutOfRange {
                 target_return,
                 lowest,
@@ -430,16 +431,16 @@ mod tests {
 
         // At the highest return the last asset holds nothing, and the two tied assets split
         // the weight by minimum variance, 2/3 and 1/3, until the 60% cap binds.
-        let config = MeanVariance::target_return(0.003).expected_returns(mu.as_slice());
+        let mean_variance = MeanVariance::target_return(0.003).expected_returns(mu.as_slice());
         let weights = allocator
-            .allocate(&config.clone().bounds(bounds.clone()))
+            .allocate(&mean_variance.clone().bounds(bounds.clone()))
             .unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.6, 0.4, 0.0]), 1e-12);
 
         // In between, the target holds and the weights stay within the bounds.
-        let config = MeanVariance::target_return(0.0025).expected_returns(mu.as_slice());
+        let mean_variance = MeanVariance::target_return(0.0025).expected_returns(mu.as_slice());
         let weights = allocator
-            .allocate(&config.clone().bounds(bounds.clone()))
+            .allocate(&mean_variance.clone().bounds(bounds.clone()))
             .unwrap();
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - 0.0025).abs() < 1e-15, "{achieved}");
