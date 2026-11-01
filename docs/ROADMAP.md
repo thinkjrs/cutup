@@ -291,9 +291,9 @@ the review checks only that.
 ### Tooling
 
 - **Lint jobs in CI:** clippy and `cargo doc` with `-D warnings` on stable
-  and the MSRV, and `cargo fmt --check` on stable. The release rule above is
-  checked by hand until then. Beta and nightly stay test-only, so a new lint
-  there doesn't fail a PR.
+  and the MSRV, and `cargo fmt --check` on stable, in `lint.yml`. They check
+  the release rule above on every PR. Beta and nightly stay test-only, so a
+  new lint there doesn't fail a PR.
 - **`#![forbid(unsafe_code)]`.** cutup has no `unsafe` code; this makes that
   a guarantee.
 - **`cargo-semver-checks` in CI** on every PR to `main`, so 0.3.x stays
@@ -311,7 +311,7 @@ Each is its own PR into `develop`, in this order:
 
 - **#34:** the split (merged).
 - **#35:** the correlation fix (merged).
-- **Tidying:** the conversion leftovers, `docs/PLAN.md` and `Cargo.toml`.
+- **#36:** tidying the conversion leftovers, `docs/PLAN.md` and `Cargo.toml` (merged).
 - **Lint jobs** and `#![forbid(unsafe_code)]`.
 - **`cargo-semver-checks`.**
 - **WebAssembly:** the CI build and the tests under `wasm-bindgen-test`.
