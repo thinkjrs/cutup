@@ -144,8 +144,6 @@ fn rotate(a: &mut DMatrix<f64>, v: &mut DMatrix<f64>, p: usize, q: usize) {
 mod tests {
     use super::*;
     use nalgebra::dmatrix;
-    #[cfg(not(target_arch = "wasm32"))]
-    use proptest::prelude::*;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -245,11 +243,11 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    proptest! {
+    proptest::proptest! {
         #[test]
         fn decomposes_random_symmetric_matrices(
             n in 1usize..12,
-            values in prop::collection::vec(-1.0f64..1.0, 144),
+            values in proptest::collection::vec(-1.0f64..1.0, 144),
             rank in 0usize..12,
             exponent in -8i32..8,
         ) {
