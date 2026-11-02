@@ -1,5 +1,5 @@
-//! Times `allocate` for the methods that run a solver or a clustering step, at 10, 100 and
-//! 500 assets.
+//! Times `allocate` for the methods that run a solver or a clustering step: `MinVariance`,
+//! `Hrp`, `Herc` and `RiskParity` at 10, 100 and 500 assets, and `MinCvar` at 10, 50 and 100.
 //!
 //! ```bash
 //! cargo bench
@@ -18,21 +18,22 @@
 //! there it checks only the smallest size.
 
 use std::hint::black_box;
-use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity};
 
-/// The numbers of assets each method is timed at.
-const SIZES: [usize; 3] = [10, 100, 500];
+/// The sizes each method is timed at, in assets, with how many samples criterion takes at
+/// each. Its default is 100. Sizes where a solve takes over a tenth of a second get its minimum
+/// of 10, so the full run stays within minutes: at 100 samples, a 1-second solve takes over a
+/// minute and a half to measure.
+const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
-/// `MinCvar`'s sizes, until its LP converges at 200 assets and beyond.
-const MIN_CVAR_SIZES: [usize; 3] = [10, 50, 100];
+/// `MinVariance`'s sizes: a solve at 500 assets takes about 18 seconds.
+const MIN_VARIANCE_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
 
-/// Solves slower than this many seconds get criterion's minimum of 10 samples, so the full
-/// run stays within minutes. At its default of 100, a 1-second solve takes over a minute and a
-/// half to measure.
-const SLOW_SECONDS: f64 = 0.1;
+/// `MinCvar`'s sizes, until its LP converges at 200 assets and beyond. A solve at 100 assets
+/// takes about a second.
+const MIN_CVAR_SIZES: [(usize, usize); 3] = [(10, 100), (50, 100), (100, 10)];
 
 /// Periods per asset. Twice as many periods as assets keeps the sample covariance well
 /// conditioned at every size.
@@ -102,27 +103,31 @@ fn benchmarking() -> bool {
 }
 
 /// Times `method` on the generated returns at each of `sizes`, under `name/assets`.
-fn bench_method(c: &mut Criterion, name: &str, method: &dyn Allocation, sizes: &[usize]) {
+fn bench_method(c: &mut Criterion, name: &str, method: &dyn Allocation, sizes: &[(usize, usize)]) {
     let sizes = if benchmarking() { sizes } else { &sizes[..1] };
     let mut group = c.benchmark_group(name);
-    for &assets in sizes {
-        let data = returns(assets);
-        // Fail before measuring, with the method and size, and see how long one solve takes.
-        let start = Instant::now();
-        data.allocate(method)
-            .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"));
-        if start.elapsed().as_secs_f64() > SLOW_SECONDS {
-            group.sample_size(10);
-        }
-        group.bench_with_input(BenchmarkId::from_parameter(assets), &data, |b, data| {
-            b.iter(|| black_box(data).allocate(method).unwrap());
+    for &(assets, samples) in sizes {
+        group.sample_size(samples);
+        // Generated only if criterion's filter selects this benchmark.
+        group.bench_function(BenchmarkId::from_parameter(assets), |b| {
+            let data = returns(assets);
+            b.iter(|| {
+                black_box(&data)
+                    .allocate(method)
+                    .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"))
+            });
         });
     }
     group.finish();
 }
 
 fn allocate(c: &mut Criterion) {
-    bench_method(c, "MinVariance", &MinVariance::default(), &SIZES);
+    bench_method(
+        c,
+        "MinVariance",
+        &MinVariance::default(),
+        &MIN_VARIANCE_SIZES,
+    );
     bench_method(c, "MinCvar", &MinCvar::default(), &MIN_CVAR_SIZES);
     bench_method(c, "Hrp", &Hrp::default(), &SIZES);
     bench_method(c, "Herc", &Herc::default(), &SIZES);
