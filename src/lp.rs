@@ -100,22 +100,20 @@ pub(crate) fn solve_from(
     let a = &DMatrix::from_fn(m, n, |i, j| a[(i, j)] / scales[i]);
     let b = &b.component_div(&scales);
     // Nonbasic variables start at a finite bound, the upper one if asked and it's finite, or at
-    // zero if they have none.
-    let mut starts_upper = vec![false; n];
+    // zero if they have none. One rule gives both the value and the status, so they agree.
+    let mut asked_upper = vec![false; n];
     for &j in at_upper {
-        starts_upper[j] = upper[j].is_finite();
+        asked_upper[j] = true;
     }
-    let start = DVector::from_fn(n, |j, _| {
-        if starts_upper[j] {
-            upper[j]
-        } else if lower[j].is_finite() {
-            lower[j]
-        } else if upper[j].is_finite() {
-            upper[j]
-        } else {
-            0.0
-        }
-    });
+    let (start, start_status): (Vec<f64>, Vec<Status>) = (0..n)
+        .map(|j| match (lower[j].is_finite(), upper[j].is_finite()) {
+            (_, true) if asked_upper[j] => (upper[j], Status::Upper),
+            (true, _) => (lower[j], Status::Lower),
+            (false, true) => (upper[j], Status::Upper),
+            (false, false) => (0.0, Status::Free),
+        })
+        .unzip();
+    let start = DVector::from_vec(start);
     let residual = b - a * &start;
     // Artificial variable i carries row i's residual, with the sign that makes it nonnegative.
     let mut columns = a.clone().resize_horizontally(n + m, 0.0);
@@ -130,14 +128,9 @@ pub(crate) fn solve_from(
         upper: upper.clone().resize_vertically(n + m, f64::INFINITY),
         x: start.resize_vertically(n + m, 0.0),
         basis: (n..n + m).collect(),
-        status: (0..n + m)
-            .map(|j| match j {
-                j if j >= n => Status::Basic,
-                j if starts_upper[j] => Status::Upper,
-                j if lower[j].is_finite() => Status::Lower,
-                j if upper[j].is_finite() => Status::Upper,
-                _ => Status::Free,
-            })
+        status: start_status
+            .into_iter()
+            .chain(std::iter::repeat_n(Status::Basic, m))
             .collect(),
     };
     for i in 0..m {
