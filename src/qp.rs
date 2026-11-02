@@ -40,7 +40,7 @@ pub(crate) fn solve_kkt(
     else {
         return Ok(None);
     };
-    let x = checked(units.original(&u), e, b)?;
+    let x = checked(units.original(&u), e, b, &units.column_scales)?;
     Ok(Some((x, units.original_multipliers(&multipliers))))
 }
 
@@ -51,17 +51,15 @@ pub(crate) fn solve_kkt(
 /// has a tiny entry in `E`. Converting back multiplies that variable's rounding by its inverse
 /// scale, which can leave the constraint unmet by orders of magnitude more than the terms'
 /// rounding. Such a problem is too ill-conditioned to solve, so it's
-/// [`CutupError::SingularCovariance`].
+/// [`CutupError::SingularCovariance`]. `column_scales` are [`Units`]' largest entry of each
+/// column of `E`.
 fn checked(
     x: DVector<f64>,
     e: &DMatrix<f64>,
     b: &DVector<f64>,
+    column_scales: &[f64],
 ) -> Result<DVector<f64>, CutupError> {
-    for (column, &target) in e.column_iter().zip(b.iter()) {
-        let scale = match column.amax() {
-            s if s.is_finite() && s > 0.0 => s,
-            _ => 1.0,
-        };
+    for ((column, &target), &scale) in e.column_iter().zip(b.iter()).zip(column_scales) {
         let terms = (column / scale).component_mul(&x);
         let target = target / scale;
         let largest = terms.amax().max(target.abs());
