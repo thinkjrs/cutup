@@ -808,6 +808,31 @@ mod tests {
     }
 
     #[test]
+    fn test_long_short_rebalance_starts_from_current_weights_when_ill_conditioned() {
+        // The same problem as above, rebalanced. The optimum without the kinks misses the
+        // budget, which only means it can't be the start: the current weights still are.
+        let values: Vec<f64> = [
+            5119, 247, -17, -1, -1, -1, -256, -1, 8, -1, -65, -1, -32747, 0, -1, -1, -1, 3838,
+        ]
+        .iter()
+        .map(|&v: &i32| f64::from(v) * 1e8)
+        .collect();
+        let data = Returns::new_flat(&values, 6).unwrap();
+        let mean_variance = MeanVariance::risk_aversion(2.574958403566059e207)
+            .allow_short()
+            .regularization(3.909151256095177e-308)
+            .current_weights(vec![1.0 / 6.0; 6]);
+        for rebalance in [
+            mean_variance.clone().transaction_costs(1e-3),
+            mean_variance.max_turnover(10.0),
+        ] {
+            let weights = data.allocate(&rebalance).unwrap();
+            let sum: f64 = weights.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-9, "{weights:?}");
+        }
+    }
+
+    #[test]
     fn test_mean_variance_target_equal_to_common_return() {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
