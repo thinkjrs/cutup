@@ -3,9 +3,10 @@
 
 [advisories]
 ignore = [
-  # paste is unmaintained, and comes in through nalgebra and simba. It has no
-  # safe upgrade, and it's a maintenance notice, not a vulnerability.
-  { id = "RUSTSEC-2024-0436", reason = "paste comes in through nalgebra and simba, with no upgrade available" },
+  # paste is unmaintained, and comes in through nalgebra and simba. Dropping it
+  # takes nalgebra 0.35, which needs Rust 1.89, above cutup's MSRV of 1.85. It's
+  # a maintenance notice, not a vulnerability.
+  { id = "RUSTSEC-2024-0436", reason = "paste comes in through nalgebra and simba, and the nalgebra without it needs a newer Rust than cutup's MSRV" },
 ]
 
 [licenses]
