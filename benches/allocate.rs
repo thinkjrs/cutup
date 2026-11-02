@@ -16,123 +16,139 @@
 //!
 //! `cargo test --all-targets` runs this file too, once per benchmark and unoptimized, so
 //! there it checks only the smallest size.
+//!
+//! criterion is a native-only dev-dependency, so on wasm this is an empty program.
 
-use std::hint::black_box;
+#[cfg(not(target_arch = "wasm32"))]
+criterion::criterion_main!(native::benches);
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity};
+#[cfg(target_arch = "wasm32")]
+fn main() {}
 
-/// The sizes each method is timed at, in assets, with how many samples criterion takes at
-/// each. Its default is 100. Sizes where a solve takes over a tenth of a second get its minimum
-/// of 10, so the full run stays within minutes: at 100 samples, a 1-second solve takes over a
-/// minute and a half to measure.
-const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use std::hint::black_box;
 
-/// `MinVariance`'s sizes: a solve at 500 assets takes about 18 seconds.
-const MIN_VARIANCE_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
+    use criterion::{BenchmarkId, Criterion, criterion_group};
+    use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity};
 
-/// `MinCvar`'s sizes, until its LP converges at 200 assets and beyond. A solve at 100 assets
-/// takes about a second.
-const MIN_CVAR_SIZES: [(usize, usize); 3] = [(10, 100), (50, 100), (100, 10)];
+    /// The sizes each method is timed at, in assets, with how many samples criterion takes at
+    /// each. Its default is 100. Sizes where a solve takes over a tenth of a second get its minimum
+    /// of 10, so the full run stays within minutes: at 100 samples, a 1-second solve takes over a
+    /// minute and a half to measure.
+    const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
-/// Periods per asset. Twice as many periods as assets keeps the sample covariance well
-/// conditioned at every size.
-const PERIODS_PER_ASSET: usize = 2;
+    /// `MinVariance`'s sizes: a solve at 500 assets takes about 18 seconds.
+    const MIN_VARIANCE_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
 
-/// Common factors driving the returns, so assets are correlated as real ones are.
-const FACTORS: usize = 3;
+    /// `MinCvar`'s sizes, until its LP converges at 200 assets and beyond. A solve at 100 assets
+    /// takes about a second.
+    const MIN_CVAR_SIZES: [(usize, usize); 3] = [(10, 100), (50, 100), (100, 10)];
 
-/// SplitMix64: a small, fixed-seed generator, so every run sees the same returns without a
-/// dependency on `rand`.
-struct SplitMix64(u64);
+    /// Periods per asset. Twice as many periods as assets keeps the sample covariance well
+    /// conditioned at every size.
+    const PERIODS_PER_ASSET: usize = 2;
 
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
+    /// Common factors driving the returns, so assets are correlated as real ones are.
+    const FACTORS: usize = 3;
+
+    /// SplitMix64: a small, fixed-seed generator, so every run sees the same returns without a
+    /// dependency on `rand`.
+    struct SplitMix64(u64);
+
+    impl SplitMix64 {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+
+        /// A uniform draw in (0, 1).
+        fn uniform(&mut self) -> f64 {
+            ((self.next_u64() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+
+        /// A standard normal draw, by Box-Muller.
+        fn normal(&mut self) -> f64 {
+            let (u, v) = (self.uniform(), self.uniform());
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        }
     }
 
-    /// A uniform draw in (0, 1).
-    fn uniform(&mut self) -> f64 {
-        ((self.next_u64() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    /// Daily-scale returns for `assets` assets from a factor model: each asset has its own
+    /// exposures to the common factors, a positive drift, and its own noise.
+    fn returns(assets: usize) -> Returns {
+        let periods = PERIODS_PER_ASSET * assets;
+        let mut rng = SplitMix64(0x5eed ^ assets as u64);
+
+        let exposures: Vec<[f64; FACTORS]> = (0..assets)
+            .map(|_| std::array::from_fn(|_| 0.5 + rng.uniform()))
+            .collect();
+        let drifts: Vec<f64> = (0..assets)
+            .map(|_| 0.0002 + 0.0006 * rng.uniform())
+            .collect();
+        let noise: Vec<f64> = (0..assets).map(|_| 0.005 + 0.015 * rng.uniform()).collect();
+
+        let rows: Vec<Vec<f64>> = (0..periods)
+            .map(|_| {
+                let factors: [f64; FACTORS] = std::array::from_fn(|_| 0.006 * rng.normal());
+                (0..assets)
+                    .map(|i| {
+                        let common: f64 =
+                            exposures[i].iter().zip(&factors).map(|(b, f)| b * f).sum();
+                        drifts[i] + common + noise[i] * rng.normal()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Returns::new(&rows).expect("generated returns are finite and rectangular")
     }
 
-    /// A standard normal draw, by Box-Muller.
-    fn normal(&mut self) -> f64 {
-        let (u, v) = (self.uniform(), self.uniform());
-        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+    /// Whether this is a real benchmark run. `cargo bench` passes `--bench`; `cargo test` runs
+    /// the same binary without it, and criterion then runs each benchmark once.
+    fn benchmarking() -> bool {
+        std::env::args().any(|arg| arg == "--bench")
     }
-}
 
-/// Daily-scale returns for `assets` assets from a factor model: each asset has its own
-/// exposures to the common factors, a positive drift, and its own noise.
-fn returns(assets: usize) -> Returns {
-    let periods = PERIODS_PER_ASSET * assets;
-    let mut rng = SplitMix64(0x5eed ^ assets as u64);
-
-    let exposures: Vec<[f64; FACTORS]> = (0..assets)
-        .map(|_| std::array::from_fn(|_| 0.5 + rng.uniform()))
-        .collect();
-    let drifts: Vec<f64> = (0..assets)
-        .map(|_| 0.0002 + 0.0006 * rng.uniform())
-        .collect();
-    let noise: Vec<f64> = (0..assets).map(|_| 0.005 + 0.015 * rng.uniform()).collect();
-
-    let rows: Vec<Vec<f64>> = (0..periods)
-        .map(|_| {
-            let factors: [f64; FACTORS] = std::array::from_fn(|_| 0.006 * rng.normal());
-            (0..assets)
-                .map(|i| {
-                    let common: f64 = exposures[i].iter().zip(&factors).map(|(b, f)| b * f).sum();
-                    drifts[i] + common + noise[i] * rng.normal()
-                })
-                .collect()
-        })
-        .collect();
-
-    Returns::new(&rows).expect("generated returns are finite and rectangular")
-}
-
-/// Whether this is a real benchmark run. `cargo bench` passes `--bench`; `cargo test` runs
-/// the same binary without it, and criterion then runs each benchmark once.
-fn benchmarking() -> bool {
-    std::env::args().any(|arg| arg == "--bench")
-}
-
-/// Times `method` on the generated returns at each of `sizes`, under `name/assets`.
-fn bench_method(c: &mut Criterion, name: &str, method: &dyn Allocation, sizes: &[(usize, usize)]) {
-    let sizes = if benchmarking() { sizes } else { &sizes[..1] };
-    let mut group = c.benchmark_group(name);
-    for &(assets, samples) in sizes {
-        group.sample_size(samples);
-        // Generated only if criterion's filter selects this benchmark.
-        group.bench_function(BenchmarkId::from_parameter(assets), |b| {
-            let data = returns(assets);
-            b.iter(|| {
-                black_box(&data)
-                    .allocate(method)
-                    .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"))
+    /// Times `method` on the generated returns at each of `sizes`, under `name/assets`.
+    fn bench_method(
+        c: &mut Criterion,
+        name: &str,
+        method: &dyn Allocation,
+        sizes: &[(usize, usize)],
+    ) {
+        let sizes = if benchmarking() { sizes } else { &sizes[..1] };
+        let mut group = c.benchmark_group(name);
+        for &(assets, samples) in sizes {
+            group.sample_size(samples);
+            // Generated only if criterion's filter selects this benchmark.
+            group.bench_function(BenchmarkId::from_parameter(assets), |b| {
+                let data = returns(assets);
+                b.iter(|| {
+                    black_box(&data)
+                        .allocate(method)
+                        .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"))
+                });
             });
-        });
+        }
+        group.finish();
     }
-    group.finish();
-}
 
-fn allocate(c: &mut Criterion) {
-    bench_method(
-        c,
-        "MinVariance",
-        &MinVariance::default(),
-        &MIN_VARIANCE_SIZES,
-    );
-    bench_method(c, "MinCvar", &MinCvar::default(), &MIN_CVAR_SIZES);
-    bench_method(c, "Hrp", &Hrp::default(), &SIZES);
-    bench_method(c, "Herc", &Herc::default(), &SIZES);
-    bench_method(c, "RiskParity", &RiskParity::default(), &SIZES);
-}
+    fn allocate(c: &mut Criterion) {
+        bench_method(
+            c,
+            "MinVariance",
+            &MinVariance::default(),
+            &MIN_VARIANCE_SIZES,
+        );
+        bench_method(c, "MinCvar", &MinCvar::default(), &MIN_CVAR_SIZES);
+        bench_method(c, "Hrp", &Hrp::default(), &SIZES);
+        bench_method(c, "Herc", &Herc::default(), &SIZES);
+        bench_method(c, "RiskParity", &RiskParity::default(), &SIZES);
+    }
 
-criterion_group!(benches, allocate);
-criterion_main!(benches);
+    criterion_group!(benches, allocate);
+}
