@@ -303,7 +303,7 @@ cargo test
 
 Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, transaction costs and target returns (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC and for HRP and HERC with shrinkage and regularization. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
-`cargo bench` times `MinVariance`, `Hrp`, `Herc` and `RiskParity` at 10, 100 and 500 assets, and `MinCvar` at 10, 50 and 100. [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the baseline numbers.
+`cargo bench` times the solver and clustering methods at 10, 100 and 500 assets. [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the baseline numbers.
 
 ## License
 
