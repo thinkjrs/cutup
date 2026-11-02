@@ -342,6 +342,10 @@ larger than the 0.3.1 tooling.
 - **Benchmarks** with `criterion`, for the active-set solver, the LP, the
   clustering methods and risk parity, at 10, 100 and 500 assets. Moved here
   from the 1.0.0 list so 0.3.6's solver work is measured before and after.
+  `docs/BENCHMARKS.md` has the 0.3.1 baseline:
+  - `MinVariance` takes 18 s at 500 assets;
+  - `MinCvar` is benchmarked only up to 100 assets, since at 200 its LP's
+    phase 1 stalls on a degenerate vertex and returns `NotConverged`.
 - **Mutation testing** with `cargo-mutants`, which reports code changes that
   no test notices: weak assertions that coverage doesn't show. Run before each
   release, with a CI job if it's fast enough.
