@@ -353,7 +353,9 @@ larger than the 0.3.1 tooling.
   release, with a CI job if it's fast enough.
 - **Fuzzing** of the constructors and setters with `cargo-fuzz`, to show no
   input panics. The `MinCvar` clamp panic from the #23 review is the kind of
-  bug it finds.
+  bug it finds. `fuzz/` has three targets, `returns`, `allocate` and
+  `weights`, which CI builds on every PR and runs weekly; `docs/FUZZING.md`
+  describes them and lists what they've found.
 
 ## 0.3.3: portfolio statistics and `Weights::clean`
 
