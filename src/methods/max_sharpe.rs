@@ -208,8 +208,9 @@ impl Returns {
                 // A fully invested zero-variance portfolio exists, w0 ∝ D⁻¹ Σ aₖvₖ, earning
                 // excess return b·a / a·a. Any part of b not along a is a budget-neutral,
                 // variance-free change that adds return.
-                let along = b.dot(&(&a / a_norm)) / a_norm;
-                if norm(&(&b - &a * along)) > noise || along * a_norm > noise {
+                let projected = b.dot(&(&a / a_norm));
+                let along = projected / a_norm;
+                if norm(&(&b - &a * along)) > noise || projected > noise {
                     return Err(CutupError::Unbounded);
                 }
                 return Err(too_high(risk_free_rate + along));
