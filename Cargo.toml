@@ -32,9 +32,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 
 # proptest needs other features and a getrandom backend to build for wasm, so the property
-# tests run natively.
+# tests run natively. The benchmarks run natively too. criterion 0.8 needs Rust 1.86, above
+# the MSRV, and without its default features it leaves out plotters and rayon.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+[[bench]]
+name = "allocate"
+harness = false
