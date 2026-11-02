@@ -35,7 +35,7 @@ point estimate.
 | Method | 10 assets | 50 assets | 100 assets | 500 assets |
 | --- | --- | --- | --- | --- |
 | `MinVariance` | 28 µs | | 35 ms | 18 s |
-| `MinCvar` | 54 µs | 24 ms | 0.96 s | Fails |
+| `MinCvar` | 54 µs | 24 ms | 0.96 s | Not run |
 | `Hrp` | 1.5 µs | | 62 µs | 1.4 ms |
 | `Herc` | 2.2 µs | | 0.19 ms | 4.6 ms |
 | `RiskParity` | 2.6 µs | | 0.24 ms | 20 ms |
@@ -49,8 +49,9 @@ point estimate.
 ## Running time
 
 - **`cargo bench`:** about five minutes, most of it `MinVariance` at 500
-  assets. Solves slower than a tenth of a second get criterion's minimum of 10
-  samples.
+  assets. That size and `MinCvar` at 100 assets, the two where a solve takes
+  over a tenth of a second, get criterion's minimum of 10 samples rather than
+  its default of 100.
 - **`cargo test --all-targets`:** runs each benchmark once, unoptimized, at the
   smallest size only, so CI checks that the benchmarks build and run without
   timing them. Timings on shared CI runners are too noisy to compare.
