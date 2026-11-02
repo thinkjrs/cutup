@@ -1,0 +1,40 @@
+name: Deny
+
+# Checks the dependency tree's licenses, security advisories, duplicate versions
+# and sources against deny.toml. Advisories run separately, so a new one doesn't
+# hide the other results, and weekly, since they appear without anyone pushing.
+# Releases merge into main without a PR, so this runs on pushes to release branches
+# too. tgrf pushes only after tagging, so a release branch is checked before its
+# tag only if it's pushed first.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop, "release/**"]
+  schedule:
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [advisories, bans licenses sources]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check ${{ matrix.checks }}
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --all-features
+          command: check ${{ matrix.checks }}
