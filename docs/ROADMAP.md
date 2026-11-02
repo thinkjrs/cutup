@@ -316,10 +316,11 @@ the review checks only that.
 - **`cargo-deny`** for dependency licenses, security advisories, duplicate
   versions and sources, in `deny.yml`, configured by `deny.toml`:
   - licenses are limited to MIT, Apache-2.0 and Unicode-3.0;
-  - advisories also run weekly, since they appear without anyone pushing;
-  - RUSTSEC-2024-0436 is ignored: `paste` is unmaintained, but it comes in
-    through `nalgebra` and `simba` with no upgrade available, and it's a
-    maintenance notice, not a vulnerability.
+  - every check also runs weekly on `main`, since advisories appear without
+    anyone pushing;
+  - RUSTSEC-2024-0436 is ignored: `paste` is unmaintained and comes in through
+    `nalgebra` and `simba`. Dropping it takes `nalgebra` 0.35, which needs Rust
+    1.89, above the MSRV, and it's a maintenance notice, not a vulnerability.
 
 ### PRs
 
