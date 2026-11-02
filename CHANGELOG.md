@@ -19,9 +19,11 @@ All notable changes to this project are documented here. The format follows
   about 8.9e172. The quadratic solver checks its solution against the constraints, and that
   check squared residuals near 1e299, overflowed, and passed. It's now computed without
   overflow, and returns `SingularCovariance` where it still can't be. Found by fuzzing.
-- Long-short `MaxSharpe` no longer returns all-zero weights when the unnormalized weights sum
-  past `f64::MAX`, as a shrinkage of 1e-314 on constant assets did. Weights whose sum
-  overflows are divided by their largest magnitude first. Found by fuzzing.
+- Long-short `MaxSharpe` no longer returns weights when the unnormalized weights sum past
+  `f64::MAX`, as a shrinkage of 1.9e-314 on constant assets did. The same overflow made the
+  minimum-variance return NaN, which skipped the risk-free rate check, so it returned weights
+  where it should have returned `RiskFreeRateTooHigh`; below that rate, they were all zero. Both
+  sums are now divided by their largest magnitude first. Found by fuzzing.
 
 ## [0.3.1] - 2026-11-01
 
