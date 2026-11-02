@@ -257,19 +257,27 @@ impl Returns {
     }
 }
 
-/// The scenarios whose `zₜ` start at `cap` in [`MinCvar`]'s LP: the `⌊1/cap⌋` where the
-/// equal-weight portfolio loses most, worst first.
+/// The scenarios whose `zₜ` start at `cap` in [`MinCvar`]'s LP: those where the equal-weight
+/// portfolio loses most, worst first, as many as the whole number nearest `1/cap`, and at least
+/// one.
 ///
 /// Every asset row of the LP has `b = 0`, so starting every `zₜ` at 0 leaves all those rows
 /// without a residual: a degenerate start, which stalls the LP from about 200 assets. Starting
-/// these at the cap leaves each row a residual, and starts `z` near a tail the optimum is
-/// likely to share. From 200 assets that's faster than starting the first `⌊1/cap⌋` scenarios
-/// there: 0.31 s against 0.48 s at 200, and 1.4 s against 2.7 s at 300.
+/// these at the cap leaves asset `i`'s row a residual unless its returns over them sum to zero,
+/// and starts `z` near a tail the optimum is likely to share. From 200 assets that's faster
+/// than starting the first scenarios there: 0.31 s against 0.48 s at 200, and 1.4 s against
+/// 2.7 s at 300.
+///
+/// The nearest whole number, not the floor: `1/cap` is `(1 − β)T`, which rounding can leave
+/// just under a whole number, as for `β = 0.9` and `T = 10`. At least one, so that a cap over 1,
+/// under one scenario's worth of tail, doesn't bring back the start at 0. Then `Σzₜ` can start
+/// over 1, and the budget row's residual is negative, which phase 1 handles like any other.
 fn starting_tail(returns: &DMatrix<f64>, cap: f64) -> Vec<usize> {
     let mut scenarios: Vec<usize> = (0..returns.nrows()).collect();
     let loss = |s: usize| -returns.row(s).sum();
     scenarios.sort_by(|&p, &q| loss(q).total_cmp(&loss(p)));
-    scenarios.truncate(((1.0 / cap) as usize).min(returns.nrows()));
+    let count = (1.0 / cap).round().max(1.0) as usize;
+    scenarios.truncate(count.min(returns.nrows()));
     scenarios
 }
 
@@ -363,8 +371,12 @@ mod tests {
         assert_eq!(starting_tail(&returns, 0.5), vec![2, 1]);
         // At 1/3, a third: the 1%.
         assert_eq!(starting_tail(&returns, 1.0 / 3.0), vec![2, 1, 3]);
-        // Under one scenario's worth, none, so every zₜ starts at 0.
-        assert_eq!(starting_tail(&returns, 2.0), Vec::<usize>::new());
+        // Under one scenario's worth, still the worst, rather than every zₜ at 0.
+        assert_eq!(starting_tail(&returns, 2.0), vec![2]);
+        // A tail of 0.9 × 10 scenarios gives 1/cap just under 1, which still counts as one.
+        let cap = 1.0 / ((1.0 - 0.9) * 10.0);
+        assert!(1.0 / cap < 1.0);
+        assert_eq!(starting_tail(&returns, cap), vec![2]);
     }
 
     /// Every scenario weight used to start at 0, which left the LP on a degenerate vertex
