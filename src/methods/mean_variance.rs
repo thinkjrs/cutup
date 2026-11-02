@@ -771,6 +771,18 @@ mod tests {
     }
 
     #[test]
+    fn test_long_short_target_is_degenerate_on_one_asset_at_any_scale() {
+        // One asset can only be held in full, so only its own return can be targeted. At these
+        // scales the KKT check used to overflow and return a weight of about 8.9e172. Found by
+        // the `allocate` fuzz target.
+        let data = Returns::new_flat(&[-5e122, 2.4064e126], 1).unwrap();
+        assert_eq!(
+            data.allocate(&MeanVariance::target_return(1.065197824640524e299).allow_short()),
+            Err(CutupError::DegenerateExpectedReturns)
+        );
+    }
+
+    #[test]
     fn test_mean_variance_target_equal_to_common_return() {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
