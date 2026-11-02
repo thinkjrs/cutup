@@ -344,8 +344,10 @@ larger than the 0.3.1 tooling.
   from the 1.0.0 list so 0.3.6's solver work is measured before and after.
   `docs/BENCHMARKS.md` has the 0.3.1 baseline:
   - `MinVariance` takes 18 s at 500 assets;
-  - `MinCvar` is benchmarked only up to 100 assets, since at 200 its LP's
-    phase 1 stalls on a degenerate vertex and returns `NotConverged`.
+  - `MinCvar` was benchmarked only up to 100 assets, since at 200 its LP's
+    phase 1 stalled on a degenerate vertex and returned `NotConverged`. It now
+    starts from the equal-weight portfolio's worst scenarios, which fixes that
+    and makes it 34 times faster at 100 assets.
 - **Mutation testing** with `cargo-mutants`, which reports code changes that
   no test notices: weak assertions that coverage doesn't show. Run before each
   release, with a CI job if it's fast enough.
@@ -397,6 +399,9 @@ larger than the 0.3.1 tooling.
 - **LP speed:** LU updates in the simplex solver rather than refactoring the
   basis every iteration, and computing the reduced-cost magnitudes in the same
   pass over the columns. Measured with the 0.3.2 benchmarks.
+- **Degenerate starts in the LP:** `MinCvar` avoids one by choosing its
+  starting point, but the simplex solver itself still stalls under Bland's rule
+  on a degenerate vertex. Perturbing the bounds would fix it for every caller.
 - **Factorization reuse** in the active-set solver, if the benchmarks show it
   matters.
 
