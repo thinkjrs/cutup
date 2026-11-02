@@ -565,6 +565,30 @@ mod tests {
     }
 
     #[test]
+    fn test_max_sharpe_weights_sum_to_one_when_their_sum_overflows() {
+        // Shrinkage of 1.9e-314 leaves the two constant assets with variances near 1e-308,
+        // so the unnormalized weights are huge and their sum overflows. Dividing by it used to
+        // return all zeros. Found by the `allocate` fuzz target.
+        let rows = [
+            [-1.0, -1.0, -9.0, -2263.0, -256.0, -1.0, -1.0, 21.0],
+            [0.0, -1.0, -1.0, -1.0, -2049.0, -1.0, -1.0, -1.0],
+        ];
+        let data = Returns::new(&rows).unwrap();
+        let max_sharpe = MaxSharpe::default()
+            .shrinkage(1.881613435e-314)
+            .allow_short();
+        match data.allocate(&max_sharpe) {
+            Ok(weights) => {
+                assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
+                let sum: f64 = weights.iter().sum();
+                let gross: f64 = weights.iter().map(|w| w.abs()).sum();
+                assert!((sum - 1.0).abs() <= 1e-9 * gross.max(1.0), "{weights:?}");
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
     fn test_max_sharpe_rejects_invalid_config() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         match allocator.allocate(&MaxSharpe::default().risk_free_rate(f64::NAN).allow_short()) {
