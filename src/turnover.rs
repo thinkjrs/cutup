@@ -155,11 +155,16 @@ pub(crate) fn rebalance(
     // Long-short, the optimum without the kinks is a feasible start that, unlike the current
     // weights, isn't at every kink at once. Where there's none, as when a singular covariance
     // lets expected return grow without limit, the costs or the cap may still bound the
-    // problem, and the current weights are a feasible start.
+    // problem, and the current weights are a feasible start. So are they when the optimum is
+    // too ill-conditioned to meet the budget: the solve below only needs somewhere to start.
     let start = if bounds.lower.iter().all(|l| l.is_finite()) {
         interior_start(&bounds)
     } else {
-        qp::solve_kkt(&q, &c, &e, &b)?.map_or_else(|| current.clone(), |(x, _)| x)
+        match qp::solve_kkt(&q, &c, &e, &b) {
+            Ok(Some((x, _))) => x,
+            Ok(None) | Err(CutupError::SingularCovariance) => current.clone(),
+            Err(error) => return Err(error),
+        }
     };
     let weights = match trading.max_turnover {
         Some(cap) => {
