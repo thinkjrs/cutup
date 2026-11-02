@@ -24,6 +24,18 @@ All notable changes to this project are documented here. The format follows
   minimum-variance return NaN, which skipped the risk-free rate check, so it returned weights
   where it should have returned `RiskFreeRateTooHigh`; below that rate, they were all zero. Both
   sums are now divided by their largest magnitude first. Found by fuzzing.
+- Long-short `MeanVariance` no longer returns weights that miss the budget when one asset's
+  variance is vanishingly small next to the others'. A regularization of 3.9e-308
+  on a constant asset left weights summing to about −7.6e75. The solver checked its solution
+  in rescaled units, where that asset's rounding is tiny, and converting back multiplied it by
+  about 1e50. The solution is now also checked in the original units, and
+  `SingularCovariance` is returned if it misses there. Long-short `MinVariance` and
+  rebalancing use the same solver. Found by fuzzing.
+- Long-short `MaxSharpe` no longer misses a fully invested zero-variance portfolio when asset
+  volatilities are below about 1e-154. The checks that find one compared norms that
+  overflowed, and `∞ > ∞` is false, so on two assets that offset exactly at returns near
+  1e-155 it returned weights where it should have returned `RiskFreeRateTooHigh`. They're now
+  computed without overflow.
 
 ## [0.3.1] - 2026-11-01
 
