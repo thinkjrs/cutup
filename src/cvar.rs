@@ -367,6 +367,22 @@ mod tests {
         assert_eq!(starting_tail(&returns, 2.0), Vec::<usize>::new());
     }
 
+    /// Every scenario weight used to start at 0, which left the LP on a degenerate vertex
+    /// that it didn't leave before the iteration cap, from about 200 assets. Unoptimized,
+    /// this takes about 40 seconds, so `tests.yml` runs it with `--release`.
+    #[test]
+    #[ignore = "about 40 s unoptimized; tests.yml runs it with --release --ignored"]
+    fn converges_on_two_hundred_assets() {
+        let returns = crate::test_support::factor_returns(200, 400, 7);
+        let allocator = Returns::returns_matrix(returns).unwrap();
+        let weights = allocator.allocate(&MinCvar::default()).unwrap();
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(weights.iter().all(|&w| w >= 0.0));
+        let cvar = allocator.cvar(&weights, 0.95).unwrap();
+        let equal = allocator.allocate(&crate::EqualWeight).unwrap();
+        assert!(cvar < allocator.cvar(&equal, 0.95).unwrap());
+    }
+
     #[test]
     fn the_optimum_matches_its_own_cvar_and_beats_every_vertex() {
         let allocator = allocator();

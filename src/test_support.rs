@@ -15,6 +15,30 @@ pub(crate) fn full_rank_prices() -> DMatrix<f64> {
     ]
 }
 
+/// `periods` rows of returns for `assets` assets from a three-factor model, generated from
+/// `seed` with SplitMix64: correlated, in general position, and the same on every run.
+pub(crate) fn factor_returns(assets: usize, periods: usize, seed: u64) -> DMatrix<f64> {
+    let mut state = seed;
+    let mut uniform = || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        (((z ^ (z >> 31)) >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut normal = || {
+        let (u, v) = (uniform(), uniform());
+        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+    };
+    let exposures = DMatrix::from_fn(assets, 3, |_, _| 0.5 + normal().abs());
+    let noise = DVector::from_fn(assets, |_, _| 0.005 + 0.01 * normal().abs());
+    let factors = DMatrix::from_fn(periods, 3, |_, _| 0.006 * normal());
+    let common = &factors * exposures.transpose();
+    DMatrix::from_fn(periods, assets, |t, i| {
+        0.0004 + common[(t, i)] + noise[i] * normal()
+    })
+}
+
 pub(crate) fn assert_weights_close(a: &Weights, b: &Weights, tol: f64) {
     assert_eq!(a.len(), b.len());
     for (i, (wa, wb)) in a.iter().zip(b).enumerate() {
