@@ -575,6 +575,26 @@ mod tests {
     }
 
     #[test]
+    fn test_max_sharpe_finds_zero_variance_portfolios_at_any_scale() {
+        // Short one unit of asset 1 for every two of asset 0 and the portfolio has zero
+        // variance and zero return, so a risk-free rate of 0 is too high. At returns near
+        // 1e-155, the budget 1/σ had a norm that overflowed, `∞ > ∞` was false, and the
+        // check that finds that portfolio was skipped.
+        for x in [1e-100, 1e-155] {
+            let rows = [
+                [x, 2.0 * x, 0.01],
+                [-x, -2.0 * x, -0.02],
+                [0.5 * x, x, 0.03],
+            ];
+            let data = Returns::new(&rows).unwrap();
+            match data.allocate(&MaxSharpe::default().allow_short()) {
+                Err(CutupError::RiskFreeRateTooHigh { .. }) => {}
+                other => panic!("x = {x:e}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn test_max_sharpe_weights_sum_to_one_when_their_sum_overflows() {
         // Shrinkage of 1.9e-314 leaves the three constant assets with variances near 1e-308,
         // so the unnormalized weights are huge and their sum overflows. Dividing by it used to
