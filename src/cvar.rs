@@ -273,9 +273,9 @@ impl Returns {
 /// under one scenario's worth of tail, doesn't bring back the start at 0. Then `Σzₜ` can start
 /// over 1, and the budget row's residual is negative, which phase 1 handles like any other.
 fn starting_tail(returns: &DMatrix<f64>, cap: f64) -> Vec<usize> {
+    let losses: Vec<f64> = returns.row_iter().map(|row| -row.sum()).collect();
     let mut scenarios: Vec<usize> = (0..returns.nrows()).collect();
-    let loss = |s: usize| -returns.row(s).sum();
-    scenarios.sort_by(|&p, &q| loss(q).total_cmp(&loss(p)));
+    scenarios.sort_by(|&p, &q| losses[q].total_cmp(&losses[p]));
     let count = (1.0 / cap).round().max(1.0) as usize;
     scenarios.truncate(count.min(returns.nrows()));
     scenarios
