@@ -14,6 +14,14 @@ All notable changes to this project are documented here. The format follows
   it's faster at every size: 28 ms rather than 0.96 s at 100 assets, and 11 s at 500. Where
   the optimum is unique, the weights are the same. Where several portfolios share the lowest
   CVaR, it can return a different one of them.
+- Long-short `MeanVariance::target_return` no longer returns weights that miss the budget at
+  extreme scales: one asset with returns near 1e126 and a target near 1e299 got a weight of
+  about 8.9e172. The quadratic solver checks its solution against the constraints, and that
+  check squared residuals near 1e299, overflowed, and passed. It's now computed without
+  overflow, and returns `SingularCovariance` where it still can't be. Found by fuzzing.
+- Long-short `MaxSharpe` no longer returns all-zero weights when the unnormalized weights sum
+  past `f64::MAX`, as a shrinkage of 1e-314 on constant assets did. Weights whose sum
+  overflows are divided by their largest magnitude first. Found by fuzzing.
 
 ## [0.3.1] - 2026-11-01
 
