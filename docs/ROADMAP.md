@@ -313,7 +313,13 @@ the review checks only that.
     rather than in the sample app;
   - the property tests stay native, since `proptest` needs other features and
     a `getrandom` backend to build for wasm.
-- **`cargo-deny`** for dependency licenses and security advisories.
+- **`cargo-deny`** for dependency licenses, security advisories, duplicate
+  versions and sources, in `deny.yml`, configured by `deny.toml`:
+  - licenses are limited to MIT, Apache-2.0 and Unicode-3.0;
+  - advisories also run weekly, since they appear without anyone pushing;
+  - RUSTSEC-2024-0436 is ignored: `paste` is unmaintained, but it comes in
+    through `nalgebra` and `simba` with no upgrade available, and it's a
+    maintenance notice, not a vulnerability.
 
 ### PRs
 
@@ -324,7 +330,7 @@ Each is its own PR into `develop`, in this order:
 - **#36:** tidying the conversion leftovers, `docs/PLAN.md` and `Cargo.toml` (merged).
 - **#37:** lint jobs and `#![forbid(unsafe_code)]` (merged).
 - **#38:** `cargo-semver-checks` (merged).
-- **WebAssembly:** the CI build and the tests under `wasm-bindgen-test`.
+- **#39:** WebAssembly, the CI build and the tests under `wasm-bindgen-test` (merged).
 - **`cargo-deny`.**
 
 ## 0.3.2: measurement
