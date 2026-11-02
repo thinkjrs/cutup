@@ -2,7 +2,8 @@ name: Deny
 
 # Checks the dependency tree's licenses, security advisories, duplicate versions
 # and sources against deny.toml. Advisories run separately, so a new one doesn't
-# hide the other results, and weekly, since they appear without anyone pushing.
+# hide the other results. Everything also runs weekly on main, since advisories
+# appear without anyone pushing; develop is rechecked only when it's pushed to.
 # Releases merge into main without a PR, so this runs on pushes to release branches
 # too. tgrf pushes only after tagging, so a release branch is checked before its
 # tag only if it's pushed first.
