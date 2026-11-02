@@ -84,7 +84,8 @@ use nalgebra::{DMatrix, DVector};
 ///   shrinkage nor regularization is applied.
 /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance times
 ///   the risk aversion, isn't finite.
-/// * [`CutupError::SingularCovariance`] if no finite weights can be computed.
+/// * [`CutupError::SingularCovariance`] if no finite weights can be computed, or the
+///   covariance is too ill-conditioned for the weights to meet their constraints.
 /// * [`CutupError::NotConverged`] if the long-only solver stops early, which only extreme
 ///   inputs should cause.
 ///

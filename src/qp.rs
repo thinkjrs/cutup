@@ -26,7 +26,9 @@ type Solution = (DVector<f64>, DVector<f64>);
 ///
 /// The solution is then checked against the KKT system. If it doesn't satisfy it, the problem
 /// has no optimum, either because the objective is unbounded or because the constraints are
-/// infeasible, and `Ok(None)` is returned.
+/// infeasible, and `Ok(None)` is returned. If it satisfies it there but not `Eᵀx = b` in the
+/// original units, the problem is too ill-conditioned to solve, and
+/// [`CutupError::SingularCovariance`] is returned.
 pub(crate) fn solve_kkt(
     k: &DMatrix<f64>,
     c: &DVector<f64>,
@@ -34,10 +36,49 @@ pub(crate) fn solve_kkt(
     b: &DVector<f64>,
 ) -> Result<Option<Solution>, CutupError> {
     let units = Units::new(k, c, e, b);
-    Ok(
-        solve_noisy_kkt(&units.k, &units.c, &units.e, &units.b, 0.0)?
-            .map(|(u, multipliers)| (units.original(&u), units.original_multipliers(&multipliers))),
-    )
+    let Some((u, multipliers)) = solve_noisy_kkt(&units.k, &units.c, &units.e, &units.b, 0.0)?
+    else {
+        return Ok(None);
+    };
+    let x = checked(units.original(&u), e, b)?;
+    Ok(Some((x, units.original_multipliers(&multipliers))))
+}
+
+/// `x`, if it satisfies `Eᵀx = b` in the original units: each constraint to within `1e-8` of
+/// the size of its terms `|Eᵢⱼxᵢ|` and `|bⱼ|`, computed so that huge terms can't overflow.
+///
+/// [`solve_noisy_kkt`] checks its solution in [`Units`], where a variable with a near-zero variance
+/// has a tiny entry in `E`. Converting back multiplies that variable's rounding by its inverse
+/// scale, which can leave the constraint unmet by orders of magnitude more than the terms'
+/// rounding. Such a problem is too ill-conditioned to solve, so it's
+/// [`CutupError::SingularCovariance`].
+fn checked(
+    x: DVector<f64>,
+    e: &DMatrix<f64>,
+    b: &DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    for (column, &target) in e.column_iter().zip(b.iter()) {
+        let scale = match column.amax() {
+            s if s.is_finite() && s > 0.0 => s,
+            _ => 1.0,
+        };
+        let terms = (column / scale).component_mul(&x);
+        let target = target / scale;
+        let largest = terms.amax().max(target.abs());
+        if !largest.is_finite() {
+            return Err(CutupError::SingularCovariance);
+        }
+        if largest == 0.0 {
+            continue;
+        }
+        let residual = terms.iter().map(|t| t / largest).sum::<f64>() - target / largest;
+        let size =
+            terms.iter().map(|t| (t / largest).abs()).sum::<f64>() + (target / largest).abs();
+        if residual.abs() > 1e-8 * size {
+            return Err(CutupError::SingularCovariance);
+        }
+    }
+    Ok(x)
 }
 
 /// A problem in `x` restated in `u = Dx`, with `D = diag(sqrt(Kᵢᵢ))`: `K` becomes
@@ -154,7 +195,7 @@ fn solve_noisy_kkt(
 
 /// The Euclidean norm of `m`'s entries, computed on `m / max|mᵢⱼ|` so that squaring entries
 /// above about 1e154 doesn't overflow. Infinite or NaN if an entry is.
-fn norm<R: nalgebra::Dim, C: nalgebra::Dim, S: nalgebra::RawStorage<f64, R, C>>(
+pub(crate) fn norm<R: nalgebra::Dim, C: nalgebra::Dim, S: nalgebra::RawStorage<f64, R, C>>(
     m: &nalgebra::Matrix<f64, R, C, S>,
 ) -> f64 {
     if m.iter().any(|v| v.is_nan()) {
