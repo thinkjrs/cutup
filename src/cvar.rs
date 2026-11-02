@@ -351,6 +351,23 @@ mod tests {
     }
 
     #[test]
+    fn the_start_is_the_equal_weight_tail_worst_first() {
+        let returns = dmatrix![
+            0.01, 0.02;
+            -0.03, 0.01;
+            -0.01, -0.04;
+            0.00, -0.01;
+            0.02, 0.01
+        ];
+        // At a cap of 1/2, two scenarios: the 5% loss, then the 2%.
+        assert_eq!(starting_tail(&returns, 0.5), vec![2, 1]);
+        // At 1/3, a third: the 1%.
+        assert_eq!(starting_tail(&returns, 1.0 / 3.0), vec![2, 1, 3]);
+        // Under one scenario's worth, none, so every zₜ starts at 0.
+        assert_eq!(starting_tail(&returns, 2.0), Vec::<usize>::new());
+    }
+
+    #[test]
     fn the_optimum_matches_its_own_cvar_and_beats_every_vertex() {
         let allocator = allocator();
         for beta in [0.5, 0.75, 0.9] {
