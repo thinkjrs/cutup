@@ -83,12 +83,14 @@ jobs:
           restore-keys: |
             cargo-fuzz-${{ matrix.target }}-${{ steps.toolchain.outputs.cachekey }}-
 
+      # The prebuilt cargo-fuzz is a musl binary, and it defaults to building for its own
+      # target, where the sanitizer can't link. Build for the runner's glibc target instead.
       - name: Build ${{ matrix.target }}
-        run: cargo fuzz build ${{ matrix.target }}
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
       - name: Fuzz ${{ matrix.target }} for five minutes
         if: github.event_name == 'schedule'
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -max_len=4096
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=300 -max_len=4096
 
       - name: Upload the crashing input
         if: failure() && github.event_name == 'schedule'
