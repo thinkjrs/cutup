@@ -1,0 +1,98 @@
+name: Fuzz
+
+# Builds the fuzz targets in fuzz/ on every PR, and lints them, since the crate's own jobs
+# don't reach fuzz/, a workspace of its own. The fuzzer itself runs only weekly, five minutes
+# a target, so a new finding never fails an unrelated PR; GitHub runs schedules from main
+# only. Releases merge into main without a PR, so this runs on pushes to release branches
+# too. tgrf pushes only after tagging, so a release branch is checked before its tag only if
+# it's pushed first.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop, "release/**"]
+  schedule:
+    - cron: "0 10 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # fmt and clippy run on stable: only cargo fuzz needs nightly.
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fuzz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [returns, allocate, weights]
+    defaults:
+      run:
+        working-directory: fuzz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust nightly
+        id: toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # The key includes the rustc version, so a new nightly starts a fresh cache rather than
+      # restoring artifacts the new compiler can't reuse.
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: cargo-fuzz-${{ matrix.target }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('fuzz/Cargo.lock') }}
+          restore-keys: |
+            cargo-fuzz-${{ matrix.target }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      - name: Build ${{ matrix.target }}
+        run: cargo fuzz build ${{ matrix.target }}
+
+      - name: Fuzz ${{ matrix.target }} for five minutes
+        if: github.event_name == 'schedule'
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -max_len=4096
+
+      - name: Upload the crashing input
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/${{ matrix.target }}
