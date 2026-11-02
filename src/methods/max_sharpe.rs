@@ -225,7 +225,13 @@ impl Returns {
                 })
                 .component_div(&volatilities)
         };
+        // Divided by its largest magnitude, which doesn't change r_mvp, so that near-zero
+        // variances can't overflow its sum and make r_mvp NaN, which would skip the check.
         let inv_ones = pinv(&ones);
+        let inv_ones = match inv_ones.amax() {
+            s if s.is_finite() && s > 0.0 => inv_ones / s,
+            _ => inv_ones,
+        };
         let min_variance_return = inv_ones.dot(&mu) / inv_ones.sum();
         // The rounding in r_mvp comes from its terms wᵢμᵢ, which don't change when an asset is
         // rescaled.
@@ -566,9 +572,10 @@ mod tests {
 
     #[test]
     fn test_max_sharpe_weights_sum_to_one_when_their_sum_overflows() {
-        // Shrinkage of 1.9e-314 leaves the two constant assets with variances near 1e-308,
+        // Shrinkage of 1.9e-314 leaves the three constant assets with variances near 1e-308,
         // so the unnormalized weights are huge and their sum overflows. Dividing by it used to
-        // return all zeros. Found by the `allocate` fuzz target.
+        // return all zeros, and the same overflow made the minimum-variance return NaN, which
+        // skipped the risk-free rate check. Found by the `allocate` fuzz target.
         let rows = [
             [-1.0, -1.0, -9.0, -2263.0, -256.0, -1.0, -1.0, 21.0],
             [0.0, -1.0, -1.0, -1.0, -2049.0, -1.0, -1.0, -1.0],
@@ -577,7 +584,19 @@ mod tests {
         let max_sharpe = MaxSharpe::default()
             .shrinkage(1.881613435e-314)
             .allow_short();
+        // The constant assets all return −1, so the minimum-variance return is −1, as it is
+        // at any shrinkage that doesn't overflow.
         match data.allocate(&max_sharpe) {
+            Err(CutupError::RiskFreeRateTooHigh {
+                min_variance_return,
+                ..
+            }) => assert!(
+                (min_variance_return + 1.0).abs() < 1e-9,
+                "{min_variance_return}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        match data.allocate(&max_sharpe.risk_free_rate(-2.0)) {
             Ok(weights) => {
                 assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
                 let sum: f64 = weights.iter().sum();
