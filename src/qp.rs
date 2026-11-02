@@ -925,6 +925,31 @@ mod tests {
     }
 
     #[test]
+    fn inconsistent_constraints_are_caught_at_any_scale() {
+        // x = 1 and x = b₁ can't both hold. At b₁ ≈ 1e299 the residuals' squares overflow,
+        // which made the check pass and returned x as if it were optimal.
+        let k = dmatrix![1.0];
+        let c = dvector![0.0];
+        let e = dmatrix![1.0, 1.0];
+        for b1 in [2.0, 1e20, 1e299] {
+            assert_eq!(
+                solve_kkt(&k, &c, &e, &dvector![1.0, b1]).unwrap(),
+                None,
+                "{b1}"
+            );
+        }
+    }
+
+    #[test]
+    fn norm_does_not_overflow() {
+        assert_eq!(norm(&dvector![3e300, 4e300]), 5e300);
+        assert_eq!(norm(&dvector![3.0, 4.0]), 5.0);
+        assert_eq!(norm(&DVector::<f64>::zeros(2)), 0.0);
+        assert_eq!(norm(&dvector![f64::INFINITY, 1.0]), f64::INFINITY);
+        assert!(norm(&dvector![f64::NAN, f64::INFINITY]).is_nan());
+    }
+
+    #[test]
     fn negative_weight_is_clamped() {
         // Unconstrained, minimizing ½‖x‖² − 3x₀ over x₀ + x₁ = 1 gives (2, −1).
         let q = DMatrix::identity(2, 2);
