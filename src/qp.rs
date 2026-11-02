@@ -127,13 +127,18 @@ fn solve_noisy_kkt(
     let x = x0 + z * v;
     let multipliers = constraints.multipliers(&(&c - k * &x));
 
-    let stationarity = (k * &x + e * &multipliers - &c).norm();
-    let feasibility = (e.transpose() * &x - &b).norm();
-    let size = k.norm() * x.norm()
-        + e.norm() * (x.norm() + multipliers.norm())
-        + c.norm()
-        + b.norm()
+    let stationarity = norm(&(k * &x + e * &multipliers - &c));
+    let feasibility = norm(&(e.transpose() * &x - &b));
+    let size = norm(k) * norm(&x)
+        + norm(e) * (norm(&x) + norm(&multipliers))
+        + norm(&c)
+        + norm(&b)
         + noise / problem.k_scale;
+    // A check that overflows can't tell a solution from an inconsistent system: `∞ > ∞` is
+    // false, so it would pass.
+    if !(stationarity + feasibility).is_finite() || !size.is_finite() {
+        return Err(CutupError::SingularCovariance);
+    }
     if stationarity + feasibility > 1e-8 * size {
         return Ok(None);
     }
@@ -144,6 +149,21 @@ fn solve_noisy_kkt(
         multipliers[j] * problem.k_scale / problem.column_scales[j]
     });
     Ok(Some((x, multipliers)))
+}
+
+/// The Euclidean norm of `m`'s entries, computed on `m / max|mᵢⱼ|` so that squaring entries
+/// above about 1e154 doesn't overflow. Infinite or NaN if an entry is.
+fn norm<R: nalgebra::Dim, C: nalgebra::Dim, S: nalgebra::RawStorage<f64, R, C>>(
+    m: &nalgebra::Matrix<f64, R, C, S>,
+) -> f64 {
+    if m.iter().any(|v| v.is_nan()) {
+        return f64::NAN;
+    }
+    let largest = m.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    if largest == 0.0 || largest.is_infinite() {
+        return largest;
+    }
+    largest * m.iter().map(|v| (v / largest).powi(2)).sum::<f64>().sqrt()
 }
 
 /// `K` and `E` put on a comparable scale, so that the cutoffs treat them alike: `K` divided by
@@ -844,7 +864,7 @@ fn descent_ray(
     });
     // The KKT system was inconsistent, so such a direction exists up to rounding; without one
     // the system was too ill-conditioned to tell.
-    if direction.norm() <= 1e-12 * c.norm() || direction.norm() == 0.0 {
+    if norm(&direction) <= 1e-12 * norm(c) || norm(&direction) == 0.0 {
         return Err(CutupError::SingularCovariance);
     }
     Ok(direction)
