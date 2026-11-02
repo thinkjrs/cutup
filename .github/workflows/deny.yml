@@ -36,5 +36,5 @@ jobs:
       - name: Check ${{ matrix.checks }}
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          arguments: --all-features
+          arguments: --all-features --locked
           command: check ${{ matrix.checks }}
