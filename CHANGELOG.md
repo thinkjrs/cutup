@@ -10,9 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - `MinCvar` no longer returns `NotConverged` from about 200 assets. Its linear program started
   every scenario weight at 0, a degenerate start that it didn't leave before the iteration cap.
-  It now starts the scenarios where the equal-weight portfolio loses most at their cap. No
-  weights change, and it's faster at every size: 28 ms rather than 0.96 s at 100 assets, and
-  11 s at 500.
+  It now starts the scenarios where the equal-weight portfolio loses most at their cap, and
+  it's faster at every size: 28 ms rather than 0.96 s at 100 assets, and 11 s at 500. Where
+  the optimum is unique, the weights are the same. Where several portfolios share the lowest
+  CVaR, it can return a different one of them.
 
 ## [0.3.1] - 2026-11-01
 
