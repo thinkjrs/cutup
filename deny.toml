@@ -13,8 +13,10 @@ ignore = [
 allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
 
 [bans]
-# syn 2 and 3 are both in the tree through crates cutup doesn't control.
+# syn 2 and 3 are both in the tree through crates cutup doesn't control, syn 3
+# only through dev-dependencies, which this check skips unless told otherwise.
 multiple-versions = "warn"
+multiple-versions-include-dev = true
 
 [sources]
 unknown-registry = "deny"
