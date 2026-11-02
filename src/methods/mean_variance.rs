@@ -784,6 +784,30 @@ mod tests {
     }
 
     #[test]
+    fn test_long_short_risk_aversion_meets_the_budget_or_errors() {
+        // Asset 3 is constant, so a regularization of 3.9e-308 leaves it a variance some 1e332
+        // times smaller than the others'. The solver's check passed in rescaled units, but
+        // converting back multiplied that asset's rounding by about 1e50, and the weights
+        // summed to −7.6e75. Found by the `allocate` fuzz target.
+        let values: Vec<f64> = [
+            5119, 247, -17, -1, -1, -1, -256, -1, 8, -1, -65, -1, -32747, 0, -1, -1, -1, 3838,
+        ]
+        .iter()
+        .map(|&v: &i32| f64::from(v) * 1e8)
+        .collect();
+        let data = Returns::new_flat(&values, 6).unwrap();
+        let mean_variance = MeanVariance::risk_aversion(2.574958403566059e207).allow_short();
+        assert!(matches!(
+            data.allocate(&mean_variance.clone().regularization(3.909151256095177e-308)),
+            Err(CutupError::SingularCovariance)
+        ));
+        // A regularization the solver can resolve still meets the budget.
+        let weights = data.allocate(&mean_variance.regularization(1e-4)).unwrap();
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-9, "{weights:?}");
+    }
+
+    #[test]
     fn test_mean_variance_target_equal_to_common_return() {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
