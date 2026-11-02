@@ -2,6 +2,7 @@
 
 use super::{correlation, long_only_max_ratio, normalized};
 use crate::eigen::SymmetricEigen;
+use crate::qp::norm;
 use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights};
 use nalgebra::DVector;
 
@@ -199,18 +200,21 @@ impl Returns {
             // Coordinates of the budget and the excess returns in the null space.
             let a = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&budget)));
             let b = DVector::from_iterator(null.len(), null.iter().map(|v| v.dot(&earned)));
-            let noise = 1e-9 * earned.norm().max(f64::MIN_POSITIVE);
-            if a.norm() > 1e-9 * budget.norm() {
+            // With norms that can't overflow: near-zero volatilities make the budget and
+            // the excess returns huge, and an infinite norm would make each check below false.
+            let noise = 1e-9 * norm(&earned).max(f64::MIN_POSITIVE);
+            let a_norm = norm(&a);
+            if a_norm > 1e-9 * norm(&budget) {
                 // A fully invested zero-variance portfolio exists, w0 ∝ D⁻¹ Σ aₖvₖ, earning
                 // excess return b·a / a·a. Any part of b not along a is a budget-neutral,
                 // variance-free change that adds return.
-                let along = b.dot(&a) / a.dot(&a);
-                if (&b - &a * along).norm() > noise || along * a.norm() > noise {
+                let along = b.dot(&(&a / a_norm)) / a_norm;
+                if norm(&(&b - &a * along)) > noise || along * a_norm > noise {
                     return Err(CutupError::Unbounded);
                 }
                 return Err(too_high(risk_free_rate + along));
             }
-            if b.norm() > noise {
+            if norm(&b) > noise {
                 return Err(CutupError::Unbounded);
             }
         }
