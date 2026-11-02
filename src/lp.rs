@@ -49,16 +49,42 @@ enum Status {
 /// in the ratio test going to the lowest index: Bland's rule, which can't cycle. It holds
 /// until `x` moves again.
 ///
+/// Nonbasic variables start at their lower bound if it's finite, or else their upper bound,
+/// or zero. [`solve_from`] can start some at their upper bound instead.
+///
 /// # Errors
 ///
 /// [`CutupError::NotConverged`] if a basis can't be factored or the iteration cap is reached,
-/// which only rounding trouble should cause.
+/// which only rounding trouble or a degenerate start, as [`solve_from`] describes, should
+/// cause.
 pub(crate) fn solve(
     c: &DVector<f64>,
     a: &DMatrix<f64>,
     b: &DVector<f64>,
     lower: &DVector<f64>,
     upper: &DVector<f64>,
+) -> Result<Outcome, CutupError> {
+    solve_from(c, a, b, lower, upper, &[])
+}
+
+/// [`solve`], with the variables in `at_upper` starting at their upper bound where it's
+/// finite.
+///
+/// The start matters on rows where `b` is zero. If it leaves such rows with no residual,
+/// their artificial variables start in the basis at zero, a degenerate vertex. Every pivot
+/// there can leave `x` where it was, so Bland's rule takes over, and it may not leave that
+/// vertex before the iteration cap. A start that leaves every row a residual avoids that.
+///
+/// # Errors
+///
+/// As for [`solve`].
+pub(crate) fn solve_from(
+    c: &DVector<f64>,
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    lower: &DVector<f64>,
+    upper: &DVector<f64>,
+    at_upper: &[usize],
 ) -> Result<Outcome, CutupError> {
     let (m, n) = a.shape();
     if m == 0 {
@@ -73,9 +99,16 @@ pub(crate) fn solve(
     });
     let a = &DMatrix::from_fn(m, n, |i, j| a[(i, j)] / scales[i]);
     let b = &b.component_div(&scales);
-    // Nonbasic variables start at a finite bound, or at zero if they have none.
+    // Nonbasic variables start at a finite bound, the upper one if asked and it's finite, or at
+    // zero if they have none.
+    let mut starts_upper = vec![false; n];
+    for &j in at_upper {
+        starts_upper[j] = upper[j].is_finite();
+    }
     let start = DVector::from_fn(n, |j, _| {
-        if lower[j].is_finite() {
+        if starts_upper[j] {
+            upper[j]
+        } else if lower[j].is_finite() {
             lower[j]
         } else if upper[j].is_finite() {
             upper[j]
@@ -100,6 +133,7 @@ pub(crate) fn solve(
         status: (0..n + m)
             .map(|j| match j {
                 j if j >= n => Status::Basic,
+                j if starts_upper[j] => Status::Upper,
                 j if lower[j].is_finite() => Status::Lower,
                 j if upper[j].is_finite() => Status::Upper,
                 _ => Status::Free,
