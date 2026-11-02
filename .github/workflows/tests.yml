@@ -41,3 +41,8 @@ jobs:
 
       - name: Run tests without features
         run: cargo test --all-targets
+
+      # Tests too slow to run unoptimized, marked #[ignore]. Once is enough.
+      - name: Run ignored tests optimized
+        if: matrix.rust == 'stable'
+        run: cargo test --release --all-features --lib -- --ignored
