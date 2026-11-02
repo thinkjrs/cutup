@@ -305,6 +305,8 @@ Besides unit tests and doctests, `tests/reference.rs` checks every allocation me
 
 `cargo bench` times the solver and clustering methods at 10, 100 and 500 assets. [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the baseline numbers.
 
+`fuzz/` holds fuzz targets for the constructors, every allocation method and `Weights`, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](docs/FUZZING.md) describes them.
+
 ## License
 
 This project is licensed under the MIT License.
