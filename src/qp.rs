@@ -129,8 +129,9 @@ fn solve_noisy_kkt(
 
     let stationarity = norm(&(k * &x + e * &multipliers - &c));
     let feasibility = norm(&(e.transpose() * &x - &b));
-    let size = norm(k) * norm(&x)
-        + norm(e) * (norm(&x) + norm(&multipliers))
+    let x_norm = norm(&x);
+    let size = norm(k) * x_norm
+        + norm(e) * (x_norm + norm(&multipliers))
         + norm(&c)
         + norm(&b)
         + noise / problem.k_scale;
@@ -159,7 +160,7 @@ fn norm<R: nalgebra::Dim, C: nalgebra::Dim, S: nalgebra::RawStorage<f64, R, C>>(
     if m.iter().any(|v| v.is_nan()) {
         return f64::NAN;
     }
-    let largest = m.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    let largest = m.amax();
     if largest == 0.0 || largest.is_infinite() {
         return largest;
     }
@@ -864,7 +865,8 @@ fn descent_ray(
     });
     // The KKT system was inconsistent, so such a direction exists up to rounding; without one
     // the system was too ill-conditioned to tell.
-    if norm(&direction) <= 1e-12 * norm(c) || norm(&direction) == 0.0 {
+    let length = norm(&direction);
+    if length <= 1e-12 * norm(c) || length == 0.0 {
         return Err(CutupError::SingularCovariance);
     }
     Ok(direction)
