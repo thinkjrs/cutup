@@ -1,0 +1,21 @@
+# cargo-deny's configuration: which licenses, advisories, duplicate versions and
+# sources the dependency tree may have. See .github/workflows/deny.yml.
+
+[advisories]
+ignore = [
+  # paste is unmaintained, and comes in through nalgebra and simba. It has no
+  # safe upgrade, and it's a maintenance notice, not a vulnerability.
+  { id = "RUSTSEC-2024-0436", reason = "paste comes in through nalgebra and simba, with no upgrade available" },
+]
+
+[licenses]
+# Unicode-3.0 is required by unicode-ident, through proc-macro2.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+
+[bans]
+# syn 2 and 3 are both in the tree through crates cutup doesn't control.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
