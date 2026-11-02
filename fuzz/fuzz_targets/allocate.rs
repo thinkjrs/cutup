@@ -412,10 +412,14 @@ fuzz_target!(|input: Input| {
     };
     assert_eq!(weights.len(), data.labels().len());
     assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
-    let sum: f64 = weights.iter().sum();
-    let gross: f64 = weights.iter().map(|w| w.abs()).sum();
+    // Divided by the largest magnitude, so that huge weights can't overflow the gross sum and
+    // make the tolerance infinite.
+    let largest = weights.iter().fold(1.0, |m: f64, w| m.max(w.abs()));
+    let sum: f64 = weights.iter().map(|w| w / largest).sum();
+    let gross: f64 = weights.iter().map(|w| (w / largest).abs()).sum();
     assert!(
-        (sum - 1.0).abs() <= 1e-6 * gross.max(1.0),
-        "weights sum to {sum}: {weights:?}"
+        (sum - 1.0 / largest).abs() <= 1e-6 * gross.max(1.0 / largest),
+        "weights sum to {}: {weights:?}",
+        sum * largest
     );
 });
