@@ -1,0 +1,42 @@
+[package]
+name = "cutup-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+nalgebra = "0.33"
+
+[dependencies.cutup]
+path = ".."
+features = ["nalgebra"]
+
+# Its own workspace, so the crate's cargo test, clippy and fmt don't build it: it needs nightly.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "returns"
+path = "fuzz_targets/returns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "allocate"
+path = "fuzz_targets/allocate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "weights"
+path = "fuzz_targets/weights.rs"
+test = false
+doc = false
+bench = false
