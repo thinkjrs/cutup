@@ -52,12 +52,12 @@ point estimate.
 
 The LP used to start every scenario weight at 0, which left its asset rows
 without a residual: the degenerate start above. It now starts the scenarios
-where the equal-weight portfolio loses most at their cap. No weights change.
+where the equal-weight portfolio loses most at their cap.
 
-| `MinCvar` | 10 assets | 50 assets | 100 assets | 500 assets |
-| --- | --- | --- | --- | --- |
-| 0.3.1 | 54 µs | 24 ms | 0.96 s | Not run |
-| Now | 47 µs | 2.9 ms | 28 ms | 11 s |
+| `MinCvar` | 10 assets | 100 assets | 500 assets |
+| --- | --- | --- | --- |
+| 0.3.1 | 54 µs | 0.96 s | Not run |
+| Now | 47 µs | 28 ms | 11 s |
 
 ## Running time
 
