@@ -332,7 +332,7 @@ Each is its own PR into `develop`, in this order:
 - **#37:** lint jobs and `#![forbid(unsafe_code)]` (merged).
 - **#38:** `cargo-semver-checks` (merged).
 - **#39:** WebAssembly, the CI build and the tests under `wasm-bindgen-test` (merged).
-- **`cargo-deny`.**
+- **#40:** `cargo-deny` (merged).
 
 ## 0.3.2: measurement
 
