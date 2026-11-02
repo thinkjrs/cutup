@@ -62,7 +62,17 @@ pub(crate) fn long_only_weights(
 
 /// `x` rescaled to sum to 1. With a budget constraint `1ᵀx = 1`, that only removes the
 /// rounding left by clamping to the bounds; for max Sharpe it maps `y` back to `w`.
+///
+/// If the sum overflows, `x` is first divided by its largest magnitude: dividing finite
+/// entries by an infinite sum would make every weight 0.
 pub(crate) fn normalized(x: DVector<f64>) -> Vec<f64> {
+    let total = x.sum();
+    let largest = x.amax();
+    let x = if !total.is_finite() && largest.is_finite() && largest > 0.0 {
+        x / largest
+    } else {
+        x
+    };
     let total = x.sum();
     x.iter().map(|w| w / total).collect()
 }

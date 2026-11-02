@@ -1,6 +1,6 @@
 //! [`MaxSharpe`]: the maximum Sharpe ratio portfolio.
 
-use super::{correlation, long_only_max_ratio};
+use super::{correlation, long_only_max_ratio, normalized};
 use crate::eigen::SymmetricEigen;
 use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights};
 use nalgebra::DVector;
@@ -235,12 +235,11 @@ impl Returns {
             return Err(too_high(min_variance_return));
         }
 
-        let z = pinv(&excess);
-        let weights = &z / z.sum();
+        let weights = normalized(pinv(&excess));
         if weights.iter().any(|w| !w.is_finite()) {
             return Err(CutupError::SingularCovariance);
         }
-        Ok(self.weights(weights.iter().copied().collect()))
+        Ok(self.weights(weights))
     }
 
     /// The long-only maximum Sharpe ratio portfolio, for [`MaxSharpe`].
