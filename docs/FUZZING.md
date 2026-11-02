@@ -45,7 +45,9 @@ Each finding gets a regression test in `src` and a CHANGELOG entry.
 - **`allocate`:** long-short `MaxSharpe` with a shrinkage of 1.9e-314, on two
   periods with two constant assets, returned all-zero weights. The shrinkage left
   those assets with variances near 1e-308, so the unnormalized weights were
-  huge, their sum overflowed, and dividing by it gave zeros.
+  huge, their sum overflowed, and dividing by it gave zeros. The same overflow
+  made the minimum-variance return NaN, so the risk-free rate check passed when
+  it should have returned `RiskFreeRateTooHigh`.
 
 ### Open
 
