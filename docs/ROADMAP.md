@@ -402,6 +402,8 @@ larger than the 0.3.1 tooling.
 - **Degenerate starts in the LP:** `MinCvar` avoids one by choosing its
   starting point, but the simplex solver itself still stalls under Bland's rule
   on a degenerate vertex. Perturbing the bounds would fix it for every caller.
+  The turnover LP may need it: each asset whose current weight is at its lower
+  bound, such as 0, starts its row without a residual.
 - **Factorization reuse** in the active-set solver, if the benchmarks show it
   matters.
 
