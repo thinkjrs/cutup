@@ -697,6 +697,28 @@ mod tests {
     }
 
     #[test]
+    fn starting_at_upper_bounds_reaches_the_same_optimum() {
+        // Pick at most two of four items, at most one of the last two, for the most value.
+        let c = dvector![-3.0, -1.0, -2.0, -4.0, 0.0, 0.0];
+        let a = dmatrix![
+            1.0, 1.0, 1.0, 1.0, 1.0, 0.0;
+            0.0, 0.0, 1.0, 1.0, 0.0, 1.0
+        ];
+        let b = dvector![2.0, 1.0];
+        let lower = DVector::zeros(6);
+        let upper = dvector![1.0, 1.0, 1.0, 1.0, INF, INF];
+        let from_lower = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
+        assert_optimal(&from_lower, (&c, &a, &b), (&lower, &upper));
+        assert_eq!(from_lower.objective, -7.0);
+        // Starting at the upper bound of variables 1 and 2, the wrong ones, and of variable 4,
+        // which has none and so starts at its lower bound.
+        let from_upper = optimal(solve_from(&c, &a, &b, &lower, &upper, &[1, 2, 4]).unwrap());
+        assert_optimal(&from_upper, (&c, &a, &b), (&lower, &upper));
+        assert_eq!(from_upper.x, from_lower.x);
+        assert_eq!(from_upper.objective, -7.0);
+    }
+
+    #[test]
     fn no_rows_leaves_only_the_bounds() {
         let none = DMatrix::zeros(0, 3);
         let solution = optimal(
