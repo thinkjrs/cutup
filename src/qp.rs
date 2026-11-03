@@ -72,7 +72,8 @@ fn checked(
         let residual = terms.iter().map(|t| t / largest).sum::<f64>() - target / largest;
         let size =
             terms.iter().map(|t| (t / largest).abs()).sum::<f64>() + (target / largest).abs();
-        if residual.abs() > 1e-8 * size {
+        // A NaN entry, which `amax` skips over, leaves a NaN residual that no comparison fails.
+        if residual.is_nan() || residual.abs() > 1e-8 * size {
             return Err(CutupError::SingularCovariance);
         }
     }
@@ -492,7 +493,8 @@ pub(crate) fn solve_bounded(
 /// # Errors
 ///
 /// * [`CutupError::Unbounded`] if the objective decreases without limit.
-/// * [`CutupError::SingularCovariance`] if the linear algebra fails.
+/// * [`CutupError::SingularCovariance`] if the linear algebra fails, or the solution misses
+///   `Eᵀx = b` in the original units, as [`solve_kkt`]'s can.
 /// * [`CutupError::NotConverged`] if the iteration cap is reached, or a variable that would
 ///   lower the objective can't enter without the solver cycling. Only rounding trouble on
 ///   extreme inputs should cause either.
