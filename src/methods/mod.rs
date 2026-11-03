@@ -37,9 +37,9 @@ pub(crate) fn correlation(cov: &DMatrix<f64>) -> Result<(DMatrix<f64>, DVector<f
     let correlation = DMatrix::from_fn(cov.nrows(), cov.ncols(), |i, j| {
         cov[(i, j)] / volatilities[i] / volatilities[j]
     });
-    if volatilities.iter().any(|&s| s.is_nan() || s <= 0.0)
-        || correlation.iter().any(|c| !c.is_finite())
-    {
+    // A variance that isn't positive leaves a volatility of 0 or NaN, and with it a diagonal
+    // entry of 0/0 or NaN.
+    if correlation.iter().any(|c| !c.is_finite()) {
         return Err(CutupError::SingularCovariance);
     }
     Ok((correlation, volatilities))
