@@ -639,6 +639,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_returns_are_equal_when_their_returns_and_labels_are() {
+        let returns = || Returns::prices_matrix(full_rank_prices()).unwrap();
+        assert_eq!(returns(), returns());
+        assert_ne!(returns(), labeled());
+        let other = Returns::returns_matrix(returns().returns * 2.0).unwrap();
+        assert_ne!(returns(), other);
+    }
+
     #[cfg(feature = "nalgebra")]
     #[test]
     fn test_matrix_inputs_and_vector_weights() {

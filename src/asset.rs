@@ -380,6 +380,14 @@ mod tests {
     }
 
     #[test]
+    fn an_asset_is_a_column_or_a_label() {
+        assert_eq!(Asset::from(2).column(), Some(2));
+        assert_eq!(Asset::from(2).label(), None);
+        assert_eq!(Asset::from("TLT").column(), None);
+        assert_eq!(Asset::from("TLT").label(), Some("TLT"));
+    }
+
+    #[test]
     fn values_in_column_order_are_as_given() {
         let labels = labels();
         // One per asset, even where pairs could leave some out.

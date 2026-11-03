@@ -411,6 +411,19 @@ mod tests {
                 actual: 2
             })
         );
+        for bad in [-0.001, f64::INFINITY] {
+            assert_eq!(
+                from()
+                    .transaction_costs_per_asset([0.001, bad, 0.0])
+                    .allocate(&allocator),
+                Err(CutupError::InvalidAssetValue {
+                    field: "transaction_costs",
+                    column: 1,
+                    asset: "1".into(),
+                    value: bad
+                })
+            );
+        }
     }
 
     #[test]

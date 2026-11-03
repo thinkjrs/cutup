@@ -232,6 +232,7 @@ mod tests {
 
         assert_eq!(weights.clone().into_vec(), vec![0.2, 0.3, 0.5]);
         assert_eq!(Vec::from(weights), vec![0.2, 0.3, 0.5]);
+        assert!(Weights::from(Vec::new()).is_empty());
     }
 
     #[test]
