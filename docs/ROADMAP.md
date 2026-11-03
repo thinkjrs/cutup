@@ -349,8 +349,9 @@ larger than the 0.3.1 tooling.
     starts from the equal-weight portfolio's worst scenarios, which fixes that
     and makes it 34 times faster at 100 assets.
 - **Mutation testing** with `cargo-mutants`, which reports code changes that
-  no test notices: weak assertions that coverage doesn't show. Run before each
-  release, with a CI job if it's fast enough.
+  no test notices: weak assertions that coverage doesn't show. CI mutates the
+  lines each PR changes, and the whole crate weekly; `docs/MUTATION.md`
+  describes the setup and the mutants known to survive.
 - **Fuzzing** of the constructors and setters with `cargo-fuzz`, to show no
   input panics. The `MinCvar` clamp panic from the #23 review is the kind of
   bug it finds. `fuzz/` has three targets, `returns`, `allocate` and

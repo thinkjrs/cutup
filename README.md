@@ -307,6 +307,8 @@ Besides unit tests and doctests, `tests/reference.rs` checks every allocation me
 
 `fuzz/` holds fuzz targets for the constructors, every allocation method and `Weights`, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](docs/FUZZING.md) describes them.
 
+`cargo mutants` checks that the tests notice small changes to the code. [`docs/MUTATION.md`](docs/MUTATION.md) describes the setup and the mutants known to survive.
+
 ## License
 
 This project is licensed under the MIT License.
