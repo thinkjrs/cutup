@@ -867,22 +867,10 @@ mod tests {
                 (earned - target).abs() <= 1e-9 * gross,
                 "{weights:?} earns {earned}"
             );
-            match data.allocate(&rebalance(target, 1e-100)) {
-                Err(CutupError::SingularCovariance) => {}
-                Ok(weights) => {
-                    let earned: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
-                    let gross: f64 = weights
-                        .iter()
-                        .zip(mu.iter())
-                        .map(|(w, m)| (w * m).abs())
-                        .sum();
-                    assert!(
-                        (earned - target).abs() <= 1e-9 * gross,
-                        "{weights:?} earns {earned}"
-                    );
-                }
-                Err(error) => panic!("{error:?}"),
-            }
+            assert!(matches!(
+                data.allocate(&rebalance(target, 1e-100)),
+                Err(CutupError::SingularCovariance)
+            ));
         }
     }
 
