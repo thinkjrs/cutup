@@ -193,6 +193,41 @@ mod tests {
         assert_decomposes(&DMatrix::zeros(4, 4));
     }
 
+    /// Applies one rotation to `a`, from the identity, and checks that it zeroes `a[(p, q)]`
+    /// and that `VᵀaV` is the rotated matrix. nalgebra's start usually leaves the rotations
+    /// little to do, so they're tested on their own.
+    fn assert_rotates(a: &DMatrix<f64>, p: usize, q: usize) -> DMatrix<f64> {
+        let n = a.nrows();
+        let (mut rotated, mut v) = (a.clone(), DMatrix::identity(n, n));
+        rotate(&mut rotated, &mut v, p, q);
+        assert_eq!(rotated[(p, q)], 0.0);
+        let expected = v.transpose() * a * &v;
+        assert!(
+            (&rotated - &expected).amax() <= 1e-15 * a.amax(),
+            "{rotated} but VᵀAV is {expected}"
+        );
+        v
+    }
+
+    #[test]
+    fn a_rotation_is_a_similarity_transform() {
+        let a = dmatrix![
+            4.0, 1.0, 0.5;
+            1.0, 3.0, 0.2;
+            0.5, 0.2, 1.0
+        ];
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            assert_rotates(&a, p, q);
+        }
+    }
+
+    #[test]
+    fn a_rotation_by_a_tiny_angle_does_not_overflow() {
+        // τ = 5e199, whose square overflows: the rotation is by about 1e-200.
+        let v = assert_rotates(&dmatrix![0.0, 1e-200; 1e-200, 1.0], 0, 1);
+        assert!((v - DMatrix::<f64>::identity(2, 2)).amax() <= 1e-199);
+    }
+
     #[test]
     fn rejects_non_finite_matrices() {
         let a = dmatrix![1.0, f64::NAN; f64::NAN, 1.0];
