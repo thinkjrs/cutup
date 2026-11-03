@@ -447,6 +447,115 @@ mod tests {
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
     }
 
+    fn three() -> Vec<String> {
+        ["A", "B", "C"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn test_resolved_caps_leave_room_for_the_other_floors() {
+        let resolved = WeightBounds::default().resolve(&three()).unwrap();
+        assert_eq!(resolved.upper, dvector![1.0, 1.0, 1.0]);
+        let resolved = WeightBounds::per_asset(vec![0.2, 0.1, 0.0], vec![f64::INFINITY; 3])
+            .resolve(&three())
+            .unwrap();
+        assert_weights_close(
+            &Weights::from(resolved.upper.as_slice().to_vec()),
+            &Weights::from(vec![0.9, 0.8, 0.7]),
+            1e-15,
+        );
+    }
+
+    #[test]
+    fn test_bounds_exactly_at_the_rounding_allowance_are_feasible() {
+        // Floors summing to exactly 1 + 1e-12 are rounding, and are rescaled to sum to 1.
+        let resolved = WeightBounds::per_asset(vec![1.0 + 1e-12, 0.0, 0.0], vec![2.0; 3])
+            .resolve(&three())
+            .unwrap();
+        assert!((resolved.lower.sum() - 1.0).abs() <= f64::EPSILON);
+        // Caps summing to exactly 1 − 1e-12 are rounding too.
+        assert!(
+            WeightBounds::per_asset(vec![0.0; 3], vec![1.0 - 1e-12, 0.0, 0.0])
+                .resolve(&three())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_invalid_per_asset_bounds_are_rejected() {
+        let invalid = |field, column, value| CutupError::InvalidAssetValue {
+            field,
+            column,
+            asset: three()[column].clone(),
+            value,
+        };
+        let resolve = |lower: Vec<f64>, upper: Vec<f64>| {
+            WeightBounds::per_asset(lower, upper).resolve(&three())
+        };
+        assert_eq!(
+            resolve(vec![0.0, -0.1, 0.0], vec![1.0; 3]).unwrap_err(),
+            invalid("lower_bound", 1, -0.1)
+        );
+        assert_eq!(
+            resolve(vec![0.0, 0.0, f64::INFINITY], vec![f64::INFINITY; 3]).unwrap_err(),
+            invalid("lower_bound", 2, f64::INFINITY)
+        );
+        assert_eq!(
+            resolve(vec![0.0, 0.3, 0.0], vec![1.0, 0.2, 1.0]).unwrap_err(),
+            invalid("upper_bound", 1, 0.2)
+        );
+    }
+
+    #[test]
+    fn test_interior_start_spreads_the_room_above_the_floors() {
+        let bounds = qp::Bounds {
+            lower: dvector![0.1, 0.0, 0.0],
+            upper: dvector![0.5, 1.0, 1.0],
+        };
+        // Room 2.4 for the 0.9 left above the floors: 0.375 of each asset's room.
+        assert_weights_close(
+            &Weights::from(interior_start(&bounds).as_slice().to_vec()),
+            &Weights::from(vec![0.25, 0.375, 0.375]),
+            1e-15,
+        );
+        // With no room, the floors.
+        let fixed = qp::Bounds {
+            lower: dvector![0.5, 0.5],
+            upper: dvector![0.5, 0.5],
+        };
+        assert_eq!(interior_start(&fixed), dvector![0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_reachable_snaps_targets_within_rounding_of_an_end() {
+        let unit = qp::Bounds {
+            lower: dvector![0.0, 0.0],
+            upper: dvector![1.0, 1.0],
+        };
+        // From 0 to 1, rounding is 1e-12: a target exactly that far inside snaps to the end.
+        let range = ReturnRange::new(&dvector![0.0, 1.0], &unit);
+        assert_eq!(range.reachable(1e-12), Ok(0.0));
+        assert_eq!(range.reachable(2e-12), Ok(2e-12));
+        // A target exactly halfway across a range within rounding goes to the top.
+        let narrow = ReturnRange::new(&dvector![1.0, 1.0 + 4.0 * f64::EPSILON], &unit);
+        assert_eq!(
+            narrow.reachable(1.0 + 2.0 * f64::EPSILON),
+            Ok(1.0 + 4.0 * f64::EPSILON)
+        );
+    }
+
+    #[test]
+    fn test_a_target_at_an_end_needs_only_the_budget() {
+        let unit = qp::Bounds {
+            lower: dvector![0.0, 0.0, 0.0],
+            upper: dvector![1.0, 1.0, 1.0],
+        };
+        let mu = dvector![0.1, 0.2, 0.3];
+        for (target, columns) in [(0.1, 1), (0.3, 1), (0.2, 2)] {
+            let problem = ReturnRange::target_problem(&mu, unit.clone(), target).unwrap();
+            assert_eq!(problem.e.ncols(), columns, "{target}");
+        }
+    }
+
     #[test]
     fn test_invalid_bounds_are_rejected() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
