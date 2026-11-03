@@ -25,13 +25,18 @@ All notable changes to this project are documented here. The format follows
   where it should have returned `RiskFreeRateTooHigh`; below that rate, they were all zero. Both
   sums are now divided by their largest magnitude first. Found by fuzzing.
 - Long-short `MeanVariance` no longer returns weights that miss the budget when one asset's
-  variance is vanishingly small next to the others'. A regularization of 3.9e-308
-  on a constant asset left weights summing to about −7.6e75. The solver checked its solution
-  in rescaled units, where that asset's rounding is tiny, and converting back multiplied it by
-  about 1e50. The solution is now also checked in the original units, and
-  `SingularCovariance` is returned if it misses there. Long-short `MinVariance` uses the same
-  solver. Long-short rebalancing with costs or a turnover cap starts from the current weights
-  when that solution misses. Found by fuzzing.
+  variance is vanishingly small next to the others'. A regularization of 3.9e-308 on a
+  constant asset left weights summing to about −7.6e75. The quadratic solver's null-space
+  basis was accurate only to rounding of 1, so its tiny entry for that asset, near 1e-62, was
+  wrong in most of its digits, and converting back to weights multiplied it by about 1e50. It's
+  now accurate in its tiny entries, and that input returns the near-riskless asset. Long-short
+  `MinVariance` and rebalancing use the same solver. Found by fuzzing.
+- `MeanVariance`, `MinVariance` and rebalancing now check their solutions against the budget
+  and any target return in the original units, and return `SingularCovariance` if they miss.
+  Bounded solves were only rescaled to sum to 1, which hid a missed budget, and a target return
+  wasn't rechecked: long-only rebalancing to a target of 0 on the input above earned −1e8.
+  Long-short, it now meets the target. Long-only, the two constraints are parallel to rounding
+  once rescaled, so it returns `SingularCovariance`.
 - Long-short `MaxSharpe` no longer misses a fully invested zero-variance portfolio when asset
   volatilities are below about 1e-154. The checks that find one compared norms that
   overflowed, and `∞ > ∞` is false, so on two assets that offset exactly at returns near
