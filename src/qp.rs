@@ -521,7 +521,7 @@ pub(crate) fn solve_piecewise(
         .collect();
     let start = start.component_mul(&units.scales);
     let u = solve_piecewise_in_units(&units.k, &units.c, &units.e, &units.b, &segments, start)?;
-    Ok(units.original(&u))
+    checked(units.original(&u), e, b, &units.column_scales)
 }
 
 /// [`solve_piecewise`] for a problem already in [`Units`].
