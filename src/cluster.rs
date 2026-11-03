@@ -321,6 +321,47 @@ mod tests {
     }
 
     #[test]
+    fn merges_match_scipy() {
+        // SciPy 1.17.1's linkage of points on a line at 1, 10, 17, 20, 21, 34. Average and
+        // Ward linkage weigh clusters by size here: unweighted, average linkage would join
+        // (5, 7) fourth.
+        let x = [1.0, 10.0, 17.0, 20.0, 21.0, 34.0];
+        let distance = DMatrix::from_fn(6, 6, |i, j| f64::abs(x[i] - x[j]));
+        for (linkage, children) in [
+            (Linkage::Single, [(3, 4), (2, 6), (1, 7), (0, 8), (5, 9)]),
+            (Linkage::Complete, [(3, 4), (2, 6), (0, 1), (5, 7), (8, 9)]),
+            (Linkage::Average, [(3, 4), (2, 6), (0, 1), (7, 8), (5, 9)]),
+            (Linkage::Ward, [(3, 4), (2, 6), (0, 1), (5, 7), (8, 9)]),
+        ] {
+            assert_eq!(
+                hierarchy(&distance, linkage).children,
+                children,
+                "{linkage:?}"
+            );
+        }
+        // Four points all 1 apart: SciPy breaks the ties toward the lowest index.
+        let ties = DMatrix::from_fn(4, 4, |i, j| if i == j { 0.0 } else { 1.0 });
+        for linkage in [Linkage::Single, Linkage::Average] {
+            assert_eq!(
+                hierarchy(&ties, linkage).children,
+                [(0, 1), (2, 4), (3, 5)],
+                "{linkage:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cluster_count_matches_riskfolio_on_nine_points() {
+        // riskfolio-lib 7.4.0's two_diff_gap_stat, with max_k = 3, gives 3 for single
+        // linkage of these points. Allowing a fourth cluster, or multiplying W_{k+2} by W_k,
+        // would give 4 or 2.
+        let x = [7.0, 11.0, 18.0, 21.0, 40.0, 46.0, 47.0, 55.0, 57.0];
+        let distance = DMatrix::from_fn(9, 9, |i, j| f64::abs(x[i] - x[j]));
+        let h = hierarchy(&distance, Linkage::Single);
+        assert_eq!(h.cluster_count(&distance, 3), 3);
+    }
+
+    #[test]
     fn cluster_count_with_too_few_assets_is_one() {
         for n in [2, 3] {
             let distance = DMatrix::from_fn(n, n, |i, j| if i == j { 0.0 } else { 0.5 });
