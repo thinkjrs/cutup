@@ -453,6 +453,17 @@ mod tests {
     }
 
     #[test]
+    fn a_single_asset_takes_the_whole_budget() {
+        let one = Returns::returns_matrix(dmatrix![0.01; -0.02; 0.005; 0.003]).unwrap();
+        for allocator in [
+            MinCvar::default(),
+            MinCvar::default().target_return(-0.0005),
+        ] {
+            assert_eq!(one.allocate(&allocator).unwrap().as_slice(), &[1.0]);
+        }
+    }
+
+    #[test]
     fn invalid_settings_are_rejected() {
         let allocator = allocator();
         for beta in [0.0, 1.0, f64::NAN] {
@@ -468,6 +479,15 @@ mod tests {
             allocator.allocate(&MinCvar::default().target_return(1.0)),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
+        for target in [f64::INFINITY, f64::NAN] {
+            assert!(matches!(
+                allocator.allocate(&MinCvar::default().target_return(target)),
+                Err(CutupError::InvalidConfig {
+                    field: "target_return",
+                    ..
+                })
+            ));
+        }
         assert_eq!(
             allocator.allocate(&MinCvar::default().bounds(WeightBounds::uniform(0.0, 0.2))),
             Err(CutupError::InfeasibleBounds {
