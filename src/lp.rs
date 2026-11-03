@@ -416,6 +416,132 @@ mod tests {
     }
 
     #[test]
+    fn infeasibility_is_measured_against_the_problems_scale() {
+        // x₀ − x₁ = 0 with x₀ ≥ l and x₁ ≤ u, and x₀ = b where given: infeasible by l − u.
+        let solve_gap = |l: f64, u: f64, b: Option<f64>| {
+            let (a, rhs) = match b {
+                Some(b) => (dmatrix![1.0, -1.0; 1.0, 0.0], dvector![0.0, b]),
+                None => (dmatrix![1.0, -1.0], dvector![0.0]),
+            };
+            solve(
+                &dvector![0.0, 0.0],
+                &a,
+                &rhs,
+                &dvector![l, 0.0],
+                &dvector![INF, u],
+            )
+            .unwrap()
+        };
+        // Within 1e-9 of weights of 1e8, or of a right-hand side of 1e8, is rounding.
+        optimal(solve_gap(1e8, 1e8 - 1e-2, None));
+        optimal(solve_gap(1e8, 1e8 - 1e-2, Some(1e8)));
+        // At weights of 1e-8, a gap of 1e-12 is not.
+        assert!(matches!(
+            solve_gap(1e-8, 1e-8 - 1e-12, None),
+            Outcome::Infeasible
+        ));
+    }
+
+    #[test]
+    fn without_constraints_each_variable_takes_the_bound_its_cost_favors() {
+        let bounds = (dvector![0.5, 0.0, -2.0, 1.0], dvector![3.0, 2.0, 5.0, 4.0]);
+        let solution = optimal(
+            solve(
+                &dvector![1.0, -1.0, 0.0, 0.0],
+                &DMatrix::zeros(0, 4),
+                &DVector::zeros(0),
+                &bounds.0,
+                &bounds.1,
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[0.5, 2.0, 0.0, 1.0]);
+        assert!(matches!(
+            solve(
+                &dvector![-1.0],
+                &DMatrix::zeros(0, 1),
+                &DVector::zeros(0),
+                &dvector![0.0],
+                &dvector![INF],
+            )
+            .unwrap(),
+            Outcome::Unbounded
+        ));
+    }
+
+    #[test]
+    fn a_small_lp_reaches_its_vertex_at_any_cost_scale() {
+        // a_small_lp_reaches_its_vertex with its costs scaled: the reduced costs' tolerance
+        // scales with them.
+        let a = dmatrix![1.0, 1.0, 1.0, 0.0; 1.0, 3.0, 0.0, 1.0];
+        for scale in [1e-8, 1e8] {
+            let solution = optimal(
+                solve(
+                    &(dvector![-3.0, -2.0, 0.0, 0.0] * scale),
+                    &a,
+                    &dvector![4.0, 6.0],
+                    &dvector![0.0, 0.0, 0.0, 0.0],
+                    &dvector![3.0, INF, INF, INF],
+                )
+                .unwrap(),
+            );
+            assert!((solution.x[0] - 3.0).abs() < 1e-14, "{scale}");
+            assert!((solution.x[1] - 1.0).abs() < 1e-14, "{scale}");
+        }
+    }
+
+    #[test]
+    fn an_entering_variable_can_stop_at_its_other_bound() {
+        // maximize x subject to x + s = 4, 1 ≤ x ≤ 3: x reaches 3 before s reaches 0.
+        let solution = optimal(
+            solve(
+                &dvector![-1.0, 0.0],
+                &dmatrix![1.0, 1.0],
+                &dvector![4.0],
+                &dvector![1.0, 0.0],
+                &dvector![3.0, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[3.0, 1.0]);
+    }
+
+    #[test]
+    fn a_tiny_change_still_blocks_a_long_step() {
+        // maximize x subject to x + s₁ = 1e10 and 1e-10·x + s₂ = 0.5. s₂ changes by only
+        // 1e-10 per unit of x, within rounding of the pivot, but over the step of 1e10 that s₁
+        // allows it would reach −0.5, so it blocks first, at x = 5e9.
+        let solution = optimal(
+            solve(
+                &dvector![-1.0, 0.0, 0.0],
+                &dmatrix![1.0, 1.0, 0.0; 1e-10, 0.0, 1.0],
+                &dvector![1e10, 0.5],
+                &dvector![0.0, 0.0, 0.0],
+                &dvector![INF, INF, INF],
+            )
+            .unwrap(),
+        );
+        assert!((solution.x[0] - 5e9).abs() <= 1e-6, "{}", solution.x);
+        assert!(solution.x[2].abs() <= 1e-12, "{}", solution.x);
+    }
+
+    #[test]
+    fn an_all_zero_row_is_kept() {
+        // 0 = 0 alongside x₀ + x₁ = 1: minimize x₀.
+        let solution = optimal(
+            solve(
+                &dvector![1.0, 0.0],
+                &dmatrix![0.0, 0.0; 1.0, 1.0],
+                &dvector![0.0, 1.0],
+                &dvector![0.0, 0.0],
+                &dvector![INF, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[0.0, 1.0]);
+    }
+
+    #[test]
     fn beales_cycling_example_terminates() {
         // Beale (1955): the textbook rule cycles on this degenerate vertex; Bland's can't.
         let a = dmatrix![
