@@ -31,9 +31,9 @@ catches each one, or explain in the PR why it can't change the result; the
 kinds below are the usual reasons.
 
 The whole crate runs weekly and by hand, split across eight jobs. It reports
-the missed mutants in each job's summary and uploads `mutants.out`, but doesn't
-fail: the mutants below are known to survive. GitHub runs scheduled workflows
-from `main` only.
+the missed and timed-out mutants in each job's summary and uploads
+`mutants.out`, but doesn't fail: the mutants below are known to survive.
+GitHub runs scheduled workflows from `main` only.
 
 ## Baseline
 
