@@ -839,6 +839,54 @@ mod tests {
     }
 
     #[test]
+    fn test_rebalance_to_target_with_a_near_zero_variance_asset() {
+        // Rebalancing to a target return checked only the budget, and that only after dividing
+        // by the weights' sum. Long-short, the target was missed through the same inaccurate
+        // null-space basis; it's now met. Long-only, the budget and the target are parallel to
+        // rounding once rescaled, so the target constraint was dropped and the weights earned
+        // −1e8. That can't be solved in these units, so it's SingularCovariance.
+        let data = near_zero_variance_data();
+        let mu = data.expected_returns(None).unwrap();
+        let rebalance = |target: f64, epsilon: f64| {
+            MeanVariance::target_return(target)
+                .regularization(epsilon)
+                .current_weights(vec![1.0 / 6.0; 6])
+                .max_turnover(10.0)
+        };
+        for target in [0.0, 1e9] {
+            let weights = data
+                .allocate(&rebalance(target, 1e-4).allow_short())
+                .unwrap();
+            let earned: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+            let gross: f64 = weights
+                .iter()
+                .zip(mu.iter())
+                .map(|(w, m)| (w * m).abs())
+                .sum();
+            assert!(
+                (earned - target).abs() <= 1e-9 * gross,
+                "{weights:?} earns {earned}"
+            );
+            match data.allocate(&rebalance(target, 1e-100)) {
+                Err(CutupError::SingularCovariance) => {}
+                Ok(weights) => {
+                    let earned: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+                    let gross: f64 = weights
+                        .iter()
+                        .zip(mu.iter())
+                        .map(|(w, m)| (w * m).abs())
+                        .sum();
+                    assert!(
+                        (earned - target).abs() <= 1e-9 * gross,
+                        "{weights:?} earns {earned}"
+                    );
+                }
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn test_mean_variance_target_equal_to_common_return() {
         // Every fully invested portfolio earns the common return, so the target is met by the
         // minimum variance portfolio.
