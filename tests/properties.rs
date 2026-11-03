@@ -1362,10 +1362,13 @@ proptest! {
                 prop_assert!(minimum > given && given == cap);
                 // The least turnover is reachable: a cap of exactly that is met, unless the
                 // expected returns are so close that the target's constraint is resolved no
-                // better than the rounding the cap allows.
+                // better than the rounding the cap allows. Rounding the target by an ulp of μ
+                // moves the weights by about that over the spread of μ, and the turnover with
+                // them, within a few times that over the solver's steps.
+                let resolution = f64::EPSILON * mu.amax() / (mu.max() - mu.min());
                 match allocator.allocate(&method(Some(minimum))) {
                     Ok(least) => prop_assert!(turnover(&least, &current) <= minimum + 2.0 * rounding),
-                    Err(CutupError::NotConverged) => prop_assert!(mu.max() - mu.min() < 1e-6 * mu.amax(), "{mu:?}"),
+                    Err(CutupError::NotConverged) => prop_assert!(resolution > rounding / 10.0, "{mu:?}"),
                     Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
                 }
                 return Ok(());
