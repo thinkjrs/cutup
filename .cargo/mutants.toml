@@ -1,0 +1,9 @@
+# cargo-mutants settings. docs/MUTATION.md describes the setup.
+
+# The nalgebra feature's constructors and conversions have tests too.
+all_features = true
+
+# The tests take a few seconds alone, but a mutant that slows the solvers down without
+# breaking them can take far longer, and on a busy machine the auto-set timeout of 20 s
+# reports such mutants as timeouts rather than as caught or missed.
+minimum_test_timeout = 60

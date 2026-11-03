@@ -1,4 +1,5 @@
 /target
+/mutants.out*
 
 # Python reference environment
 reference/.venv/
