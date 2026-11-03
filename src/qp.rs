@@ -327,7 +327,16 @@ impl Constraints {
         } else {
             let mut q_transpose = DMatrix::identity(n, n);
             range.clone().qr().q_tr_mul(&mut q_transpose);
-            q_transpose.rows(rank, n - rank).transpose()
+            let mut null = q_transpose.rows(rank, n - rank).transpose();
+            // Householder leaves Z orthogonal to Y only to rounding of 1, so a tiny entry of
+            // Z, where Y is near 1, can be wrong in all of its digits. That entry is a
+            // near-zero-variance variable's, and converting back to x divides it by that
+            // variable's tiny scale. Removing Y's part makes it accurate in itself: twice,
+            // since the first pass can only cancel an error much larger than the entry.
+            for _ in 0..2 {
+                null -= &range * (range.transpose() * &null);
+            }
+            null
         };
         Constraints {
             range,
