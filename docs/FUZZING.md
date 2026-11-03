@@ -54,7 +54,10 @@ Each finding gets a regression test in `src` and a CHANGELOG entry.
   its regularized variance was some 1e332 times smaller than the others'. The KKT
   solver checked its solution after rescaling each asset to unit variance, where
   that asset's rounding is tiny, and converting back multiplied it by about 1e50.
-  The budget is now also checked in the original units.
+  The rounding came from the solver's null-space basis, which was accurate only to
+  rounding of 1, so its entry for that asset, near 1e-62, was wrong in most of its
+  digits. It's now accurate in its tiny entries, and solutions are also checked
+  against their constraints in the original units.
 
 Fixing that one also turned up an overflow the fuzzer hadn't reached: long-short
 `MaxSharpe` compared norms of `1/σ` that overflow below a volatility of about
