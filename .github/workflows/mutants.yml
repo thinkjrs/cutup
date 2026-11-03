@@ -1,0 +1,110 @@
+name: Mutants
+
+# Mutation testing with cargo-mutants: each mutant is a small change to the code, such as `<`
+# for `<=`, and one that no test notices is a gap. On a PR, only the lines it changes are
+# mutated, so new code arrives with tests that pin it. The whole crate takes too long for
+# every PR, so it runs weekly, split across eight jobs, and reports what survives without
+# failing. GitHub runs schedules from main only. docs/MUTATION.md describes the setup and what
+# is excluded.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Diff against the base branch
+        run: git diff "origin/${{ github.base_ref }}...HEAD" > pr.diff
+
+      # A mutant that makes the tests time out, as one that loops forever does, counts as
+      # caught: cargo-mutants exits 3 for those, and 2 for missed ones, which fail the job.
+      - name: Mutate the changed lines
+        run: |
+          status=0
+          cargo mutants --cargo-arg=--locked --no-shuffle -j 2 --in-diff pr.diff || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+            exit "$status"
+          fi
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-diff
+          path: mutants.out
+
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # About 270 mutants a shard, some of them timing out at 60 s.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      # Report-only: some mutants no test can catch, such as `<` for `<=` on a tolerance, and
+      # docs/MUTATION.md lists them. cargo-mutants exits 2 for missed mutants and 3 for timeouts,
+      # which are reported here rather than failing the job; anything else is an error.
+      - name: Mutate shard ${{ matrix.shard }} of 8
+        run: |
+          status=0
+          cargo mutants --cargo-arg=--locked --no-shuffle -j 2 --shard ${{ matrix.shard }}/8 || status=$?
+          {
+            echo "### Shard ${{ matrix.shard }}: missed mutants"
+            echo '```'
+            cat mutants.out/missed.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+            exit "$status"
+          fi
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out
