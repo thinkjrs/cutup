@@ -385,15 +385,18 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     fn allocator() -> Returns {
-        Returns::returns_matrix(dmatrix![
+        Returns::returns_matrix(sample()).unwrap()
+    }
+
+    fn sample() -> DMatrix<f64> {
+        dmatrix![
              0.010, -0.020,  0.005;
             -0.004,  0.015,  0.002;
              0.007,  0.003, -0.006;
              0.002, -0.001,  0.004;
             -0.003,  0.006,  0.001;
              0.004,  0.002, -0.003
-        ])
-        .unwrap()
+        ]
     }
 
     fn close(a: &[f64], b: &[f64], tolerance: f64) -> bool {
@@ -638,6 +641,49 @@ mod tests {
             .expected_returns(&allocator)
             .unwrap();
         assert!(mu.iter().all(|m| m.is_finite()));
+    }
+
+    #[test]
+    fn nearly_riskless_views_are_degenerate_relative_to_their_assets() {
+        // Asset 1 is asset 0 plus `gap` times a noise, so going long 0 and short 1 has a
+        // variance about gap² times the assets'. Below 1e-12 of it, the view is degenerate.
+        let base = sample();
+        let returns = |gap: f64| {
+            Returns::returns_matrix(DMatrix::from_fn(6, 3, |i, j| match j {
+                1 => base[(i, 0)] + gap * base[(i, 2)],
+                _ => base[(i, j)],
+            }))
+            .unwrap()
+        };
+        let model = BlackLitterman::new([0.4, 0.4, 0.2], 2.5).view(View::relative(0, 1, 0.001));
+        assert!(model.expected_returns(&returns(1e-5)).is_ok());
+        assert_eq!(
+            model.expected_returns(&returns(1e-7)),
+            Err(CutupError::DegenerateViews)
+        );
+    }
+
+    #[test]
+    fn views_on_assets_with_tiny_variances_are_not_degenerate() {
+        let scaled = Returns::returns_matrix(sample() * 1e-7).unwrap();
+        let mu = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+            .view(View::absolute(0, 1e-9))
+            .expected_returns(&scaled)
+            .unwrap();
+        assert!(mu.iter().all(|m| m.is_finite()));
+    }
+
+    #[test]
+    fn a_zero_tau_is_rejected() {
+        assert_eq!(
+            BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+                .tau(0.0)
+                .expected_returns(&allocator()),
+            Err(CutupError::InvalidConfig {
+                field: "tau",
+                value: 0.0
+            })
+        );
     }
 
     #[test]
