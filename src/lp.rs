@@ -348,7 +348,8 @@ impl Problem {
                 step * change[row].abs() <= 1e-12 * self.x[k].abs().max(1.0)
             });
             stalled = if stalls { stalled + 1 } else { 0 };
-            self.x[j] += sign * step;
+            // The entering variable is set here only if it reaches its other bound: if it
+            // enters the basis, the next pivot solves for it with the other basic variables.
             match leaving {
                 // The entering variable reaches its other bound before anything blocks it.
                 None => {
