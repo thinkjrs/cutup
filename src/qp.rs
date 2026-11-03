@@ -991,6 +991,17 @@ mod tests {
     }
 
     #[test]
+    fn null_space_is_accurate_in_its_tiny_entries() {
+        // For E = (s, 1), Z ∝ (1, −s). Householder got −s to rounding of 1, so at s = 1e-12
+        // it was 2e-5 off relative to s, which converting back to x multiplies by 1/s.
+        for s in [1e-4, 1e-12, 1e-50, 1e-200] {
+            let z = Constraints::new(&DMatrix::from_column_slice(2, 1, &[s, 1.0])).null;
+            let ratio = -z[(1, 0)] / z[(0, 0)];
+            assert!((ratio - s).abs() <= 1e-14 * s, "s = {s:e}: {ratio:e}");
+        }
+    }
+
+    #[test]
     fn norm_does_not_overflow() {
         assert_eq!(norm(&dvector![3e300, 4e300]), 5e300);
         assert_eq!(norm(&dvector![3.0, 4.0]), 5.0);
