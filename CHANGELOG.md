@@ -31,8 +31,9 @@ All notable changes to this project are documented here. The format follows
   wrong in most of its digits, and converting back to weights multiplied it by about 1e50. It's
   now accurate in its tiny entries, and that input returns the near-riskless asset. Long-short
   `MinVariance` and rebalancing use the same solver. Found by fuzzing.
-- `MeanVariance`, `MinVariance` and rebalancing now check their solutions against the budget
-  and any target return in the original units, and return `SingularCovariance` if they miss.
+- `MeanVariance`, `MinVariance`, long-only `MaxSharpe` and `MaxDiversification`, and
+  rebalancing now check their solutions against the budget and any target return in the
+  original units, and return `SingularCovariance` if they miss.
   Bounded solves were only rescaled to sum to 1, which hid a missed budget, and a target return
   wasn't rechecked: long-only rebalancing to a target of 0 on the input above earned −1e8.
   Long-short, it now meets the target. Long-only, the two constraints are parallel to rounding
