@@ -3,7 +3,7 @@
 
 use crate::cvar::{tail_loss, tail_weight};
 use crate::{CutupError, Returns, Weights};
-use nalgebra::DVector;
+use nalgebra::{DMatrix, DVector};
 
 /// Statistics of one portfolio over the returns in a [`Returns`], from [`Returns::stats`].
 ///
@@ -68,9 +68,11 @@ impl PortfolioStats {
 
     /// The volatility `sqrt(wᵀΣw)`, with the sample covariance as `Σ`.
     ///
-    /// A volatility below `1e-10` of the portfolio's largest return in size counts as 0, as it
-    /// does for an asset: weights only on constant assets, such as cash, have none, but rounding
-    /// leaves them a trace. So does one too small to represent, below about `5e-324`.
+    /// A volatility below `1e-10` of the sizes of the positions' largest returns,
+    /// `Σᵢ|wᵢ| maxₜ|rₜᵢ|`, counts as 0: the rule for a constant asset, applied to each position.
+    /// Weights only on constant assets, such as cash, have none, though rounding leaves them a
+    /// trace, and neither do positions that cancel to within rounding. So does a volatility too
+    /// small to represent, below about `5e-324`.
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
@@ -171,11 +173,22 @@ impl Returns {
             weights.iter().map(|&w| pow2_scaled(w, -weight_exponent)),
         );
         let mut portfolio = returns * &w;
+        // The sizes of the positions' largest returns, Σᵢ|wᵢ| maxₜ|rₜᵢ|.
+        let positions = |returns: &DMatrix<f64>| -> f64 {
+            returns
+                .column_iter()
+                .zip(w.iter())
+                .map(|(column, w)| w.abs() * column.amax())
+                .sum()
+        };
+        let mut sizes = positions(returns);
         let mut exponent_sum = weight_exponent;
         if portfolio.iter().any(|r| !r.is_finite()) {
             // Returns near f64::MAX: scale them too.
             let returns_exponent = binary_exponent(returns.amax());
-            portfolio = returns.map(|r| pow2_scaled(r, -returns_exponent)) * &w;
+            let scaled_returns = returns.map(|r| pow2_scaled(r, -returns_exponent));
+            portfolio = &scaled_returns * &w;
+            sizes = positions(&scaled_returns);
             exponent_sum += returns_exponent;
         }
         let portfolio_exponent = binary_exponent(portfolio.amax());
@@ -187,16 +200,18 @@ impl Returns {
 
         let mean = scaled.iter().sum::<f64>() / t as f64;
         let deviation = standard_deviation(&scaled, mean);
-        // A volatility that underflows to 0 once unscaled counts as 0 too, so the ratios are
-        // `None` whenever `volatility()` is 0.
-        let deviation = if deviation <= 1e-10 * largest(scaled.iter().copied())
+        // The rule for a constant asset, applied to each position: if every asset held counts
+        // as constant, σ ≤ Σᵢ|wᵢ|σᵢ is within it. It's far above the rounding in the returns'
+        // sums, about nε of the positions, so it covers positions that cancel to within rounding
+        // too; and a deviation that underflows to 0 once unscaled counts as none, so the ratios
+        // are `None` whenever `volatility()` is 0.
+        let deviation = if deviation <= 1e-10 * pow2_scaled(sizes, -portfolio_exponent)
             || pow2_scaled(deviation, exponent) == 0.0
         {
             0.0
         } else {
             deviation
         };
-        let variance = deviation * deviation;
 
         let (diversification_ratio, risk_contributions) = if deviation == 0.0 {
             (None, None)
@@ -217,22 +232,24 @@ impl Returns {
                     contributions.push(0.0);
                     continue;
                 }
-                let covariance = asset
+                // wᵢ cov(rᵢ, r), with wᵢ and rᵢ in their own scales, over the portfolio's: each
+                // asset's part of the variance, times T − 1. The weight is rescaled first, exactly
+                // even when it's subnormal; a portfolio that isn't riskless keeps wᵢσᵢ/σ within
+                // about 1/(100nε), so it can't overflow.
+                let weight = pow2_scaled(w[i], weight_exponent + asset_exponent - exponent);
+                let comovement: f64 = asset
                     .iter()
                     .zip(&scaled)
                     .map(|(a, p)| (a - asset_mean) * (p - mean))
-                    .sum::<f64>()
-                    / (t - 1) as f64;
-                // wᵢ(Σw)ᵢ / wᵀΣw, with wᵢ, cov(rᵢ, r) and the variance in their own scales.
-                contributions.push(pow2_scaled(
-                    w[i] * covariance / variance,
-                    weight_exponent + asset_exponent - exponent,
-                ));
-                weighted_volatility += pow2_scaled(
-                    w[i] * asset_deviation / deviation,
-                    weight_exponent + asset_exponent - exponent,
-                );
+                    .sum();
+                contributions.push(weight * comovement);
+                weighted_volatility += weight * asset_deviation / deviation;
             }
+            // Their sum is the variance, times T − 1, but for the rounding in the portfolio's
+            // returns, which subnormal weights can leave in every bit: shares of their sum
+            // keep the promise that they sum to 1.
+            let total: f64 = contributions.iter().sum();
+            contributions.iter_mut().for_each(|c| *c /= total);
             (Some(weighted_volatility), Some(contributions))
         };
 
@@ -582,6 +599,68 @@ mod tests {
         assert_eq!(stats.sharpe_ratio(0.0), None);
         assert_eq!(stats.diversification_ratio(), None);
         assert_eq!(stats.risk_contributions(), None);
+    }
+
+    #[test]
+    fn risk_contributions_sum_to_1_when_subnormal_weights_lose_their_precision() {
+        // Found by fuzzing MinCvar: the weight of 1 is on an asset whose returns are 0, so the
+        // portfolio's returns come from weights of 3 and 45 times the smallest subnormal,
+        // whose products with the returns keep only a few bits.
+        let data = Returns::returns_matrix(dmatrix![
+            -1.0, -5.0, 0.0, 1280.0, -1.0, -1.0, -1.0, 694.0;
+            -20047.0, 177.0, 0.0, -20047.0, -20047.0, -20047.0, -20047.0, -20047.0
+        ])
+        .unwrap();
+        let tiny = f64::from_bits(1);
+        let weights = Weights::from(vec![0.0, 3.0 * tiny, 1.0, 45.0 * tiny, 0.0, 0.0, 0.0, 0.0]);
+        let stats = data.stats(&weights).unwrap();
+        let shares = stats.risk_contributions().unwrap();
+        assert!(
+            (shares.iter().sum::<f64>() - 1.0).abs() <= 1e-15,
+            "{shares:?}"
+        );
+        // With all of the risk on a weight of 3 times the smallest subnormal, its share,
+        // multiplied by it before being rescaled, underflowed to 0, and the shares summed to 0.
+        let data = Returns::returns_matrix(dmatrix![
+            -1.0, -5.0, 0.0, 1280.0, -1.0, -1.0, 11007.0, 23543.0;
+            -20047.0, 176.0, 0.0, -20047.0, -20047.0, -20047.0, -20047.0, 16049.0
+        ])
+        .unwrap();
+        let weights = Weights::from(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 3.0 * tiny]);
+        let stats = data.stats(&weights).unwrap();
+        let shares = stats.risk_contributions().unwrap();
+        assert_eq!(shares, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(stats.diversification_ratio(), Some(1.0));
+    }
+
+    #[test]
+    fn a_volatility_rounding_could_account_for_counts_as_none() {
+        // Found by fuzzing MinCvar: positions of about 1e132 cancel to returns near 1e116, below
+        // the rounding in their sum.
+        let returns = dmatrix![9984.0, -115.0, -1.0, -29299.0; -214.0, -115.0, 2047.0, 1792.0];
+        let data = Returns::returns_matrix(returns * 1e130).unwrap();
+        let weights = Weights::from(vec![
+            0.010781254606248916,
+            0.9355335723104862,
+            0.05368517308326488,
+            0.0,
+        ]);
+        let stats = data.stats(&weights).unwrap();
+        assert_eq!(stats.volatility(), 0.0, "{stats:?}");
+        assert_eq!(stats.risk_contributions(), None);
+        // Long 1 ± δ and short a constant 1, the portfolio's returns are ±δ, but its positions'
+        // largest returns sum to about 2: a spread of δ√2 under 2e-10 is within the rule, and
+        // there the long asset counts as constant too.
+        for (spread, riskless) in [(1.9e-10, true), (2.1e-10, false)] {
+            let delta = spread / 2f64.sqrt();
+            let data =
+                Returns::returns_matrix(dmatrix![1.0 + delta, 1.0; 1.0 - delta, 1.0]).unwrap();
+            let stats = data.stats(&Weights::from(vec![1.0, -1.0])).unwrap();
+            assert_eq!(stats.volatility() == 0.0, riskless, "{spread}: {stats:?}");
+            if !riskless {
+                assert_eq!(stats.risk_contributions(), Some(&[1.0, 0.0][..]));
+            }
+        }
     }
 
     #[test]
