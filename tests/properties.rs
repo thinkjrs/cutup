@@ -8,7 +8,7 @@
 use cutup::{
     Allocation, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinVariance, Returns, RiskParity, View, WeightBounds, Weights,
+    MinCvar, MinVariance, Returns, RiskParity, ShrinkageTarget, View, WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -55,6 +55,68 @@ fn covariance(returns: &DMatrix<f64>) -> DMatrix<f64> {
         returns[(t, j)] - mean[j]
     });
     centered.transpose() * &centered / (returns.nrows() as f64 - 1.0)
+}
+
+/// This file's Ledoit-Wolf estimate, written out from scikit-learn's `ledoit_wolf_shrinkage`
+/// and from Ledoit and Wolf's `covCor.m`, as differences of moments where cutup sums squares,
+/// applied to the ddof=1 sample covariance as cutup applies it.
+fn ledoit_wolf(returns: &DMatrix<f64>, target: ShrinkageTarget) -> DMatrix<f64> {
+    let (t, n) = (returns.nrows() as f64, returns.ncols());
+    let mean = returns.row_mean();
+    let x = DMatrix::from_fn(returns.nrows(), n, |s, j| returns[(s, j)] - mean[j]);
+    let sample = x.transpose() * &x / t;
+    let y = x.map(|v| v * v);
+    let pi = y.transpose() * &y / t - sample.map(|v| v * v);
+    let cov = covariance(returns);
+    let identity = DMatrix::<f64>::identity(n, n);
+    let constant_correlation = |cov: &DMatrix<f64>| {
+        let sd = cov.diagonal().map(f64::sqrt);
+        let correlation = DMatrix::from_fn(n, n, |i, j| cov[(i, j)] / (sd[i] * sd[j]));
+        let r_bar = (correlation.sum() - n as f64) / (n * (n - 1)) as f64;
+        let prior = DMatrix::from_fn(n, n, |i, j| {
+            if i == j {
+                cov[(i, i)]
+            } else {
+                r_bar * sd[i] * sd[j]
+            }
+        });
+        (prior, r_bar, sd)
+    };
+    let (intensity, prior) = match target {
+        ShrinkageTarget::ConstantVariance => {
+            let mu = sample.trace() / n as f64;
+            let beta = pi.sum() / (n as f64 * t);
+            let delta = (&sample - mu * &identity).norm_squared() / n as f64;
+            let intensity = if delta == 0.0 {
+                0.0
+            } else {
+                beta.min(delta) / delta
+            };
+            (intensity, cov.trace() / n as f64 * identity)
+        }
+        _ => {
+            let (prior, r_bar, sd) = constant_correlation(&sample);
+            let cubes = x.map(|v| v * v * v);
+            let theta = DMatrix::from_fn(n, n, |i, j| {
+                if i == j {
+                    0.0
+                } else {
+                    (cubes.column(i).dot(&x.column(j))) / t - sample[(i, i)] * sample[(i, j)]
+                }
+            });
+            let ratios = DMatrix::from_fn(n, n, |i, j| sd[j] / sd[i]);
+            let rho = pi.trace() + r_bar * ratios.component_mul(&theta).sum();
+            let gamma = (&sample - prior).norm_squared();
+            let kappa = (pi.sum() - rho) / gamma;
+            let intensity = if gamma == 0.0 {
+                0.0
+            } else {
+                (kappa / t).clamp(0.0, 1.0)
+            };
+            (intensity, constant_correlation(&cov).0)
+        }
+    };
+    intensity * prior + (1.0 - intensity) * cov
 }
 
 fn variance(cov: &DMatrix<f64>, weights: &Weights) -> f64 {
@@ -572,6 +634,40 @@ proptest! {
                 let (a, b) = (allocator.allocate(a.as_ref()).unwrap(), allocator.allocate(b.as_ref()).unwrap());
                 for (x, y) in a.iter().zip(&b) {
                     prop_assert!((x - y).abs() <= 1e-9, "{a:?} vs {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ledoit_wolf_matches_this_files_estimate(returns in returns(), exponent in -100i32..100) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let scaled = Returns::new_flat((&returns * 10f64.powi(exponent)).transpose().as_slice(), n)
+            .unwrap();
+        let allocator = returns_via_flat(returns.clone()).unwrap();
+        for target in [ShrinkageTarget::ConstantVariance, ShrinkageTarget::ConstantCorrelation] {
+            let mine = ledoit_wolf(&returns, target);
+            let given = CovarianceConfig::matrix_flat(mine.transpose().as_slice(), n).unwrap();
+            let estimated = CovarianceConfig::default().ledoit_wolf(target);
+            let methods = |c: CovarianceConfig| -> Vec<Box<dyn Allocation>> {
+                vec![
+                    Box::new(MinVariance::default().covariance(c.clone())),
+                    Box::new(MinVariance::default().allow_short().covariance(c.clone())),
+                    Box::new(MaxDiversification::default().covariance(c.clone())),
+                    Box::new(RiskParity::default().covariance(c)),
+                ]
+            };
+            for (method, mine) in methods(estimated).iter().zip(methods(given)) {
+                // Against this file's estimate, and at another scale, which changes nothing.
+                let a = allocator.allocate(method.as_ref()).unwrap();
+                for b in [
+                    allocator.allocate(mine.as_ref()).unwrap(),
+                    scaled.allocate(method.as_ref()).unwrap(),
+                ] {
+                    for (x, y) in a.iter().zip(&b) {
+                        prop_assert!((x - y).abs() <= 1e-9, "{target:?}: {a:?} vs {b:?}");
+                    }
                 }
             }
         }
