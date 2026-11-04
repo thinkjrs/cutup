@@ -1,7 +1,7 @@
 name: Reference
 
-# Recomputes tests/fixtures/expected.json from the pinned Python reference
-# implementations and fails if any weight drifts from the committed file beyond
+# Recomputes tests/fixtures/expected.json, lp.json and stats.json from the pinned Python
+# reference implementations and fails if any value drifts from the committed file beyond
 # floating-point noise, so the fixtures can't drift from what the reference
 # actually computes. The Rust side (tests/reference.rs) runs with the rest of the
 # tests in tests.yml.
@@ -34,3 +34,6 @@ jobs:
 
       - name: Check linear program fixtures against the reference
         run: uv run --project reference --locked python reference/lp.py --check
+
+      - name: Check portfolio statistics fixtures against the reference
+        run: uv run --project reference --locked python reference/stats.py --check
