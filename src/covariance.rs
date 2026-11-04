@@ -2,6 +2,7 @@
 //! you give, and adjustments to it.
 
 use crate::eigen::SymmetricEigen;
+use crate::stats::{binary_exponent, pow2_scaled};
 use crate::{CutupError, Returns};
 use nalgebra::DMatrix;
 use std::sync::Arc;
@@ -9,12 +10,13 @@ use std::sync::Arc;
 /// The covariance matrix a method uses, set with its `covariance` setter, such as
 /// [`MinVariance::covariance`](crate::MinVariance::covariance): the sample covariance of the
 /// returns, by default, or [one you give](CovarianceConfig::matrix), with adjustments applied
-/// to it. Each method also has `shrinkage` and `regularization` setters for each adjustment on
-/// its own.
+/// to it. Each method also has `shrinkage`, `ledoit_wolf` and `regularization` setters for each
+/// adjustment on its own.
 ///
 /// The default applies no adjustment, and an adjustment that isn't set isn't applied. With
 /// both, the covariance `Σ` becomes `λ·μ·I + (1 − λ)·Σ + ε·I`, which is the same whichever is
-/// applied first.
+/// applied first. [Ledoit-Wolf](CovarianceConfig::ledoit_wolf) shrinkage estimates `λ` from the
+/// data in place of a fixed one, and whichever of the two is set last applies.
 ///
 /// ```
 /// use cutup::{CovarianceConfig, MinVariance, Returns};
@@ -39,7 +41,31 @@ use std::sync::Arc;
 pub struct CovarianceConfig {
     estimate: Estimate,
     regularization: Option<f64>,
-    shrinkage: Option<f64>,
+    shrinkage: Option<Shrinkage>,
+}
+
+/// What [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf) shrinks the sample covariance
+/// toward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ShrinkageTarget {
+    /// The average variance times the identity, `μ·I` with `μ = trace(Σ) / n`: every asset
+    /// with the average variance and no correlation, as for
+    /// [`CovarianceConfig::shrinkage`]. From Ledoit and Wolf, "A well-conditioned estimator for
+    /// large-dimensional covariance matrices" (2004), as in scikit-learn's `LedoitWolf`.
+    ConstantVariance,
+    /// Each asset's own variance, and the average correlation `r̄` between every pair of
+    /// assets: `σᵢ²` on the diagonal and `r̄·σᵢ·σⱼ` off it. From Ledoit and Wolf, "Honey, I
+    /// shrunk the sample covariance matrix" (2004). With two assets it's the sample
+    /// covariance itself, so it changes nothing.
+    ConstantCorrelation,
+}
+
+/// The shrinkage intensity: fixed, or estimated from the returns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Shrinkage {
+    Fixed(f64),
+    LedoitWolf(ShrinkageTarget),
 }
 
 /// The covariance the adjustments apply to.
@@ -178,17 +204,75 @@ impl CovarianceConfig {
     /// Shrinks the covariance matrix toward a scaled identity with intensity `λ` in `[0, 1]`:
     /// it becomes `λ·μ·I + (1 − λ)·Σ`, where `μ = trace(Σ) / n` is the average variance, so
     /// the target is on the same scale as `Σ`. Shrinkage reduces the estimation error in a
-    /// sample covariance.
+    /// sample covariance. It replaces [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf),
+    /// if that was set.
     ///
     /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
     pub fn shrinkage(mut self, lambda: f64) -> Self {
-        self.shrinkage = Some(lambda);
+        self.shrinkage = Some(Shrinkage::Fixed(lambda));
         self
     }
 
-    /// The shrinkage intensity `λ` set with [`CovarianceConfig::shrinkage`], or `None`.
+    /// Shrinks the sample covariance `Σ` toward `target` with the intensity `δ` Ledoit and Wolf
+    /// estimate from the returns, the one that minimizes the expected squared error: it
+    /// becomes `δ·F + (1 − δ)·Σ`, for the target `F` built from `Σ`. It replaces a
+    /// [fixed intensity](CovarianceConfig::shrinkage), if one was set, and regularization
+    /// still applies on top.
+    ///
+    /// `δ` comes from the papers' formulas, on the `1/T` moments of the centered returns, and
+    /// is in `[0, 1]`. It's `0` for one asset, or when `Σ` already equals the target. With
+    /// [`ShrinkageTarget::ConstantVariance`] it's scikit-learn's `ledoit_wolf_shrinkage`, and
+    /// the result is the same as [`CovarianceConfig::shrinkage`] with `λ = δ`. The papers shrink
+    /// the `1/T` sample covariance, and cutup's has `T − 1`, so the result is `T / (T − 1)`
+    /// times theirs: the weights are the same for any method that doesn't depend on the
+    /// covariance's scale.
+    ///
+    /// # Errors
+    ///
+    /// A method using it returns:
+    ///
+    /// * [`CutupError::NotSupported`] with a [given covariance](CovarianceConfig::matrix),
+    ///   since the intensity is estimated from the returns that covariance would come from.
+    /// * [`CutupError::ZeroVariance`] for a constant asset with
+    ///   [`ShrinkageTarget::ConstantCorrelation`], which has no correlations to average, or
+    ///   with [`ShrinkageTarget::ConstantVariance`] if `δ` is `0`, unless regularization gives
+    ///   it a positive variance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MinVariance, Returns, ShrinkageTarget};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010,  0.021,  0.004],
+    ///      [-0.008, -0.015, -0.002],
+    ///      [ 0.004,  0.009,  0.006],
+    ///      [ 0.002, -0.004,  0.003],
+    /// ])?;
+    /// let shrunk = CovarianceConfig::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+    /// let weights = data.allocate(&MinVariance::default().covariance(shrunk))?;
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    ///
+    /// // The method's own setter does the same.
+    /// let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+    /// assert_eq!(data.allocate(&method)?, weights);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    ///
+    /// <https://en.wikipedia.org/wiki/Estimation_of_covariance_matrices#Shrinkage_estimation>
+    pub fn ledoit_wolf(mut self, target: ShrinkageTarget) -> Self {
+        self.shrinkage = Some(Shrinkage::LedoitWolf(target));
+        self
+    }
+
+    /// The fixed shrinkage intensity `λ` set with [`CovarianceConfig::shrinkage`], or `None`,
+    /// including under [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf), whose intensity
+    /// depends on the returns.
     pub fn lambda(&self) -> Option<f64> {
-        self.shrinkage
+        match self.shrinkage {
+            Some(Shrinkage::Fixed(lambda)) => Some(lambda),
+            _ => None,
+        }
     }
 
     /// The regularization `ε` set with [`CovarianceConfig::regularization`], or `None`.
@@ -197,7 +281,8 @@ impl CovarianceConfig {
     }
 
     /// Returns [`CutupError::InvalidConfig`] if the regularization is negative or not finite,
-    /// or the shrinkage is outside `[0, 1]`.
+    /// or the shrinkage is outside `[0, 1]`, and [`CutupError::NotSupported`] for Ledoit-Wolf
+    /// shrinkage of a given covariance.
     pub(crate) fn validate(&self) -> Result<(), CutupError> {
         if let Some(value) = self
             .regularization
@@ -208,13 +293,18 @@ impl CovarianceConfig {
                 value,
             });
         }
-        if let Some(value) = self
-            .shrinkage
-            .filter(|lambda| !(0.0..=1.0).contains(lambda))
-        {
+        if let Some(value) = self.lambda().filter(|lambda| !(0.0..=1.0).contains(lambda)) {
             return Err(CutupError::InvalidConfig {
                 field: "shrinkage",
                 value,
+            });
+        }
+        if let (Some(Shrinkage::LedoitWolf(_)), Estimate::Given(_)) =
+            (self.shrinkage, &self.estimate)
+        {
+            return Err(CutupError::NotSupported {
+                setting: "ledoit_wolf",
+                with: "a given covariance",
             });
         }
         Ok(())
@@ -226,7 +316,7 @@ impl Returns {
     ///
     /// Returns [`CutupError::DimensionMismatch`] for a given covariance of another size,
     /// [`CutupError::ZeroVariance`] for a constant asset, or one given a variance of 0, unless
-    /// shrinkage or regularization gives it a positive variance,
+    /// shrinkage toward a constant variance or regularization gives it a positive variance,
     /// [`CutupError::NonFiniteCovariance`] if the result isn't finite, and
     /// [`CutupError::SingularCovariance`] if it is zero.
     pub(crate) fn adjusted_covariance(
@@ -234,8 +324,13 @@ impl Returns {
         config: &CovarianceConfig,
     ) -> Result<DMatrix<f64>, CutupError> {
         config.validate()?;
-        let adjusted =
-            config.shrinkage.unwrap_or(0.0) > 0.0 || config.regularization.unwrap_or(0.0) > 0.0;
+        let shrinkage = match config.shrinkage {
+            None => None,
+            Some(Shrinkage::Fixed(lambda)) => Some((lambda, ShrinkageTarget::ConstantVariance)),
+            Some(Shrinkage::LedoitWolf(target)) => Some((self.ledoit_wolf(target)?, target)),
+        };
+        let adjusted = shrinkage.is_some_and(|(lambda, _)| lambda > 0.0)
+            || config.regularization.unwrap_or(0.0) > 0.0;
         let n = self.cov_matrix.ncols();
         let base = match &config.estimate {
             Estimate::Sample => {
@@ -265,11 +360,15 @@ impl Returns {
 
         let identity = DMatrix::identity(n, n);
 
-        let shrunk_cov = if let Some(lambda) = config.shrinkage {
-            let mean_variance = base.trace() / n as f64;
-            (lambda * mean_variance) * &identity + (1.0 - lambda) * base
-        } else {
-            base.clone()
+        let shrunk_cov = match shrinkage {
+            Some((lambda, ShrinkageTarget::ConstantVariance)) => {
+                let mean_variance = base.trace() / n as f64;
+                (lambda * mean_variance) * &identity + (1.0 - lambda) * base
+            }
+            Some((lambda, ShrinkageTarget::ConstantCorrelation)) => {
+                lambda * constant_correlation(base) + (1.0 - lambda) * base
+            }
+            None => base.clone(),
         };
 
         let adjusted = if let Some(eps) = config.regularization {
@@ -288,13 +387,122 @@ impl Returns {
         }
         Ok(adjusted)
     }
+
+    /// The Ledoit-Wolf shrinkage intensity toward `target`, in `[0, 1]`, from the `1/T`
+    /// moments of the centered returns.
+    ///
+    /// Both intensities are ratios of fourth moments, so the centered returns are first
+    /// divided by a power of two near the largest, which is exact and keeps their fourth
+    /// powers from overflowing or underflowing.
+    ///
+    /// Returns [`CutupError::ZeroVariance`] for a constant asset with
+    /// [`ShrinkageTarget::ConstantCorrelation`].
+    pub(crate) fn ledoit_wolf(&self, target: ShrinkageTarget) -> Result<f64, CutupError> {
+        if target == ShrinkageTarget::ConstantCorrelation {
+            if let Some(asset) = self.find_zero_variance() {
+                return Err(self.zero_variance(asset));
+            }
+        }
+        let n = self.returns.ncols();
+        let mean = self.returns.row_mean();
+        let mut x = DMatrix::from_fn(self.returns.nrows(), n, |t, i| {
+            self.returns[(t, i)] - mean[i]
+        });
+        let exponent = binary_exponent(x.amax());
+        x.apply(|v| *v = pow2_scaled(*v, -exponent));
+        let t = x.nrows() as f64;
+        let sample = x.transpose() * &x / t;
+
+        // π_ij, the variance of the sample covariance's entry ij, times T.
+        let mut pi = DMatrix::zeros(n, n);
+        for row in x.row_iter() {
+            for i in 0..n {
+                for j in 0..n {
+                    let d = row[i] * row[j] - sample[(i, j)];
+                    pi[(i, j)] += d * d;
+                }
+            }
+        }
+        let pi = pi / t;
+        let (error, distance) = match target {
+            ShrinkageTarget::ConstantVariance => {
+                let mean_variance = sample.trace() / n as f64;
+                let identity = DMatrix::<f64>::identity(n, n);
+                (
+                    pi.sum(),
+                    (&sample - mean_variance * identity).norm_squared(),
+                )
+            }
+            ShrinkageTarget::ConstantCorrelation => {
+                let r = average_correlation(&sample);
+                let sd = sample.diagonal().map(f64::sqrt);
+                // ρ, the target's covariance with the sample covariance: the variances' own
+                // π_ii, and off the diagonal θ_ij = Σ_t (x_ti² − s_ii)·x_ti·x_tj / T, the
+                // covariance of x_ti² with x_ti·x_tj. The squares are centered, so the products
+                // needn't be.
+                let mut rho = pi.trace();
+                for i in 0..n {
+                    for j in (0..n).filter(|&j| j != i) {
+                        let theta = x
+                            .row_iter()
+                            .map(|row| (row[i] * row[i] - sample[(i, i)]) * row[i] * row[j])
+                            .sum::<f64>()
+                            / t;
+                        rho += r * sd[j] / sd[i] * theta;
+                    }
+                }
+                let distance = (&sample - constant_correlation(&sample)).norm_squared();
+                (pi.sum() - rho, distance)
+            }
+        };
+        // δ = (estimation error / T) / (distance to the target), in [0, 1], and nothing to
+        // shrink if the sample is the target already.
+        Ok(if distance > 0.0 {
+            (error / t / distance).clamp(0.0, 1.0)
+        } else {
+            0.0
+        })
+    }
+}
+
+/// The average correlation between distinct assets in `cov`, which has at least two assets,
+/// none with a variance of 0.
+fn average_correlation(cov: &DMatrix<f64>) -> f64 {
+    let n = cov.ncols();
+    let sd = cov.diagonal().map(f64::sqrt);
+    let mut total = 0.0;
+    for i in 0..n {
+        for j in (0..n).filter(|&j| j != i) {
+            total += cov[(i, j)] / sd[i] / sd[j];
+        }
+    }
+    total / (n * (n - 1)) as f64
+}
+
+/// The constant correlation target for `cov`: its variances, and the average correlation
+/// times the two standard deviations off the diagonal.
+fn constant_correlation(cov: &DMatrix<f64>) -> DMatrix<f64> {
+    let n = cov.ncols();
+    if n == 1 {
+        return cov.clone();
+    }
+    let r = average_correlation(cov);
+    let sd = cov.diagonal().map(f64::sqrt);
+    DMatrix::from_fn(n, n, |i, j| {
+        if i == j {
+            cov[(i, i)]
+        } else {
+            r * sd[i] * sd[j]
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_weights_close, factor_returns, full_rank_prices, rank_one_returns, two_block_returns,
+        assert_weights_close, factor_returns, full_rank_prices, rank_one_returns,
+        two_block_returns, uncorrelated_returns,
     };
     use crate::{
         Allocation, BlackLitterman, EqualWeight, Herc, Hrp, MaxDiversification, MaxSharpe,
@@ -627,5 +835,324 @@ mod tests {
             data.allocate(&MinVariance::default().covariance(none)),
             Err(CutupError::SingularCovariance)
         );
+    }
+
+    const TARGETS: [ShrinkageTarget; 2] = [
+        ShrinkageTarget::ConstantVariance,
+        ShrinkageTarget::ConstantCorrelation,
+    ];
+
+    fn ledoit_wolf(target: ShrinkageTarget) -> CovarianceConfig {
+        CovarianceConfig::default().ledoit_wolf(target)
+    }
+
+    /// The datasets in `tests/fixtures/datasets.json`, by name.
+    fn datasets() -> Vec<(String, Returns)> {
+        let datasets: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/datasets.json")).unwrap();
+        let datasets = datasets.as_object().unwrap();
+        datasets
+            .iter()
+            .map(|(name, dataset)| {
+                let rows: Vec<Vec<f64>> = dataset["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        row.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|v| v.as_f64().unwrap())
+                            .collect()
+                    })
+                    .collect();
+                let data = match dataset["kind"].as_str().unwrap() {
+                    "prices" => Returns::from_prices(&rows),
+                    _ => Returns::new(&rows),
+                };
+                (name.clone(), data.unwrap())
+            })
+            .collect()
+    }
+
+    /// Against `tests/fixtures/covariance.json`, from `reference/covariance.py`: scikit-learn's
+    /// intensity toward a constant variance, and the paper's toward a constant correlation,
+    /// cross-checked against PyPortfolioOpt's.
+    #[test]
+    fn ledoit_wolf_matches_the_python_reference() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/covariance.json")).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        let datasets = datasets();
+        assert_eq!(cases.len(), datasets.len());
+        for case in cases {
+            let (name, data) = datasets
+                .iter()
+                .find(|(name, _)| case["dataset"] == name.as_str())
+                .unwrap();
+            for (target, key) in TARGETS
+                .into_iter()
+                .zip(["constant_variance", "constant_correlation"])
+            {
+                let expected = &case[key];
+                // Null where the target is the sample covariance but for rounding, which makes
+                // any intensity give the same covariance.
+                if let Some(want) = expected["intensity"].as_f64() {
+                    let got = data.ledoit_wolf(target).unwrap();
+                    assert!(
+                        (got - want).abs() <= 1e-12 * want,
+                        "{name} {key}: {got} vs {want}"
+                    );
+                }
+                let got = data.adjusted_covariance(&ledoit_wolf(target)).unwrap();
+                let want = DMatrix::from_row_iterator(
+                    got.nrows(),
+                    got.ncols(),
+                    expected["covariance"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|row| {
+                            row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())
+                        }),
+                );
+                assert!(
+                    (&got - &want).amax() <= 1e-12 * want.amax(),
+                    "{name} {key}: {got} vs {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constant_variance_ledoit_wolf_is_shrinkage_by_its_intensity() {
+        for (name, data) in datasets() {
+            let intensity = data.ledoit_wolf(ShrinkageTarget::ConstantVariance).unwrap();
+            assert!(intensity > 0.0 && intensity < 1.0, "{name}: {intensity}");
+            for (estimated, fixed) in [
+                (
+                    ledoit_wolf(ShrinkageTarget::ConstantVariance),
+                    CovarianceConfig::default().shrinkage(intensity),
+                ),
+                (
+                    ledoit_wolf(ShrinkageTarget::ConstantVariance).regularization(1e-6),
+                    CovarianceConfig::default()
+                        .shrinkage(intensity)
+                        .regularization(1e-6),
+                ),
+            ] {
+                assert_eq!(
+                    data.adjusted_covariance(&estimated),
+                    data.adjusted_covariance(&fixed),
+                    "{name}"
+                );
+                for (a, b) in methods(&estimated).iter().zip(methods(&fixed)) {
+                    assert_eq!(
+                        data.allocate(a.as_ref()),
+                        data.allocate(b.as_ref()),
+                        "{name}"
+                    );
+                }
+                let model = |c: CovarianceConfig| {
+                    BlackLitterman::new(vec![0.1; data.labels().len()], 2.5).covariance(c)
+                };
+                assert_eq!(
+                    model(estimated).prior_returns(&data),
+                    model(fixed).prior_returns(&data),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_last_shrinkage_setter_applies() {
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        for target in TARGETS {
+            let estimated = ledoit_wolf(target);
+            let fixed = CovarianceConfig::default().shrinkage(0.3);
+            assert_eq!(fixed.clone().ledoit_wolf(target), estimated);
+            assert_eq!(estimated.clone().shrinkage(0.3), fixed);
+            assert_eq!(estimated.lambda(), None);
+            assert_eq!(
+                data.allocate(&MinVariance::default().shrinkage(0.3).ledoit_wolf(target)),
+                data.allocate(&MinVariance::default().covariance(estimated.clone()))
+            );
+            assert_eq!(
+                data.allocate(&MinVariance::default().ledoit_wolf(target).shrinkage(0.3)),
+                data.allocate(&MinVariance::default().covariance(fixed))
+            );
+        }
+        // The two targets differ, and the intensity isn't the fixed one.
+        let [variance, correlation] =
+            TARGETS.map(|target| data.adjusted_covariance(&ledoit_wolf(target)).unwrap());
+        assert_ne!(variance, correlation);
+        let intensity = data
+            .ledoit_wolf(ShrinkageTarget::ConstantCorrelation)
+            .unwrap();
+        assert!(intensity > 0.0 && intensity < 1.0 && intensity != 0.3);
+    }
+
+    #[test]
+    fn ledoit_wolf_of_a_given_covariance_is_not_supported() {
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let given = CovarianceConfig::matrix(&rows(&data.cov_matrix)).unwrap();
+        for target in TARGETS {
+            for config in [
+                given.clone().ledoit_wolf(target),
+                ledoit_wolf(target).shrinkage(0.2).ledoit_wolf(target),
+            ] {
+                let config = match config.estimate {
+                    Estimate::Given(_) => config,
+                    Estimate::Sample => CovarianceConfig {
+                        estimate: given.estimate.clone(),
+                        ..config
+                    },
+                };
+                assert_eq!(
+                    data.allocate(&MinVariance::default().covariance(config)),
+                    Err(CutupError::NotSupported {
+                        setting: "ledoit_wolf",
+                        with: "a given covariance"
+                    })
+                );
+            }
+            // A fixed intensity after it is supported.
+            let fixed = given.clone().ledoit_wolf(target).shrinkage(0.2);
+            assert_eq!(
+                data.allocate(&MinVariance::default().covariance(fixed)),
+                data.allocate(&MinVariance::default().shrinkage(0.2))
+            );
+        }
+    }
+
+    #[test]
+    fn ledoit_wolf_with_a_constant_asset() {
+        let zero = Err(CutupError::ZeroVariance {
+            column: 0,
+            asset: "0".into(),
+        });
+        let returns = dmatrix![0.1, 0.01, 0.02; 0.1, -0.02, 0.01; 0.1, 0.03, -0.01];
+        let data = Returns::returns_matrix(returns).unwrap();
+        // The constant asset has no correlations to average, even with regularization.
+        let correlation = ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+        assert_eq!(
+            data.ledoit_wolf(ShrinkageTarget::ConstantCorrelation),
+            zero.clone()
+        );
+        for config in [correlation.clone(), correlation.regularization(1e-6)] {
+            assert_eq!(
+                data.allocate(&MinVariance::default().covariance(config))
+                    .err(),
+                zero.clone().err()
+            );
+        }
+        // Shrinking toward a constant variance gives it one.
+        let variance = ledoit_wolf(ShrinkageTarget::ConstantVariance);
+        assert!(data.ledoit_wolf(ShrinkageTarget::ConstantVariance).unwrap() > 0.0);
+        assert!(
+            data.allocate(&MinVariance::default().covariance(variance.clone()))
+                .is_ok()
+        );
+
+        // Over two periods each centered return is the other's negative, so every product of
+        // two is the same in both and the estimation error is 0: nothing is shrunk, and the
+        // constant asset keeps its variance of 0, unless regularization gives it one. Powers
+        // of two keep the centering exact.
+        let data = Returns::returns_matrix(dmatrix![0.125, 0.25, 0.5; 0.125, -0.25, 0.75]).unwrap();
+        assert_eq!(data.ledoit_wolf(ShrinkageTarget::ConstantVariance), Ok(0.0));
+        assert_eq!(
+            data.allocate(&MinVariance::default().covariance(variance.clone()))
+                .err(),
+            zero.err()
+        );
+        assert!(
+            data.allocate(&MinVariance::default().covariance(variance.regularization(1e-6)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn ledoit_wolf_leaves_one_asset_alone() {
+        let data = Returns::returns_matrix(dmatrix![0.01; -0.02; 0.03]).unwrap();
+        for target in TARGETS {
+            assert_eq!(data.ledoit_wolf(target), Ok(0.0));
+            assert_eq!(
+                data.adjusted_covariance(&ledoit_wolf(target)),
+                Ok(data.cov_matrix.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn ledoit_wolf_leaves_a_covariance_equal_to_its_target_alone() {
+        // Uncorrelated, so the average correlation is exactly 0 and the target is the sample
+        // covariance: there's an estimation error, but nothing to shrink toward.
+        let data = Returns::returns_matrix(uncorrelated_returns()).unwrap();
+        let off_diagonal = DMatrix::from_fn(3, 3, |i, j| if i == j { 0.0 } else { 1.0 });
+        assert_eq!(data.cov_matrix.component_mul(&off_diagonal).amax(), 0.0);
+        assert_eq!(
+            data.ledoit_wolf(ShrinkageTarget::ConstantCorrelation),
+            Ok(0.0)
+        );
+        assert!(data.ledoit_wolf(ShrinkageTarget::ConstantVariance).unwrap() > 0.0);
+
+        // The same variances too: the constant variance target is the sample covariance.
+        let s = 0.01;
+        let equal = dmatrix![s, s; -s, s; s, -s; -s, -s];
+        let data = Returns::returns_matrix(equal).unwrap();
+        assert_eq!(data.ledoit_wolf(ShrinkageTarget::ConstantVariance), Ok(0.0));
+    }
+
+    #[test]
+    fn ledoit_wolf_is_exactly_scale_invariant() {
+        // A power of two scales every centered return exactly, so the intensities are the
+        // same bit for bit, here at scales whose fourth powers would overflow or underflow
+        // unless the returns were scaled first.
+        let returns = factor_returns(4, 30, 7);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        for k in [-400, -40, 40, 400] {
+            let factor = 2f64.powi(k);
+            let scaled = Returns::returns_matrix(&returns * factor).unwrap();
+            for target in TARGETS {
+                assert_eq!(
+                    scaled.ledoit_wolf(target),
+                    data.ledoit_wolf(target),
+                    "2^{k}"
+                );
+                assert_eq!(
+                    scaled.adjusted_covariance(&ledoit_wolf(target)).unwrap(),
+                    data.adjusted_covariance(&ledoit_wolf(target)).unwrap() * (factor * factor),
+                    "2^{k}"
+                );
+            }
+        }
+        // Other scales, to rounding.
+        for factor in [1e-120, 1e120] {
+            let scaled = Returns::returns_matrix(&returns * factor).unwrap();
+            for target in TARGETS {
+                let (a, b) = (
+                    scaled.ledoit_wolf(target).unwrap(),
+                    data.ledoit_wolf(target).unwrap(),
+                );
+                assert!((a - b).abs() <= 1e-13 * b, "{factor}: {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn ledoit_wolf_of_returns_far_from_zero() {
+        // Centering comes before the fourth moments: shifting every return changes nothing
+        // but rounding.
+        let returns = factor_returns(4, 30, 3);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let shifted = Returns::returns_matrix(returns.add_scalar(1000.0)).unwrap();
+        for target in TARGETS {
+            let (a, b) = (
+                shifted.ledoit_wolf(target).unwrap(),
+                data.ledoit_wolf(target).unwrap(),
+            );
+            assert!((a - b).abs() <= 1e-9 * b, "{target:?}: {a} vs {b}");
+        }
     }
 }

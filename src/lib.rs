@@ -3,8 +3,8 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-/// The `covariance`, `shrinkage` and `regularization` setters, for a method with a
-/// `covariance: CovarianceConfig` field.
+/// The `covariance`, `shrinkage`, `ledoit_wolf` and `regularization` setters, for a method
+/// with a `covariance: CovarianceConfig` field.
 macro_rules! covariance_setters {
     () => {
         /// Applies `covariance` adjustments to the covariance matrix.
@@ -17,6 +17,13 @@ macro_rules! covariance_setters {
         /// [`CovarianceConfig::shrinkage`].
         pub fn shrinkage(mut self, lambda: f64) -> Self {
             self.covariance = self.covariance.shrinkage(lambda);
+            self
+        }
+
+        /// Shrinks the sample covariance toward `target` with the intensity Ledoit and Wolf
+        /// estimate from the returns. See [`CovarianceConfig::ledoit_wolf`].
+        pub fn ledoit_wolf(mut self, target: crate::ShrinkageTarget) -> Self {
+            self.covariance = self.covariance.ledoit_wolf(target);
             self
         }
 
@@ -76,7 +83,7 @@ pub use asset::{Asset, PerAsset};
 pub use black_litterman::{BlackLitterman, View};
 pub use bounds::WeightBounds;
 pub use cluster::Linkage;
-pub use covariance::CovarianceConfig;
+pub use covariance::{CovarianceConfig, ShrinkageTarget};
 pub use cvar::MinCvar;
 #[allow(deprecated)]
 pub use deprecated::PortfolioAllocator;

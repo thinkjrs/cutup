@@ -278,7 +278,7 @@ fn largest(values: impl Iterator<Item = f64>) -> f64 {
 }
 
 /// The exponent `k` of the power of two `2^k ≤ x < 2^(k+1)`, for a finite `x ≥ 0`, or 0 for 0.
-fn binary_exponent(x: f64) -> i32 {
+pub(crate) fn binary_exponent(x: f64) -> i32 {
     if x == 0.0 {
         return 0;
     }
@@ -299,7 +299,7 @@ fn pow2(k: i32) -> f64 {
 
 /// `x · 2^k`, exactly unless the result is subnormal or overflows, in steps that stay in the
 /// normal range.
-fn pow2_scaled(x: f64, k: i32) -> f64 {
+pub(crate) fn pow2_scaled(x: f64, k: i32) -> f64 {
     let step = k.clamp(-1022, 1023);
     let x = x * pow2(step);
     if step == k {
