@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-04
+
 ### Added
 
 - `Returns::stats(&weights)`, which returns a `PortfolioStats` of any weights over the data: the
@@ -588,7 +590,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.2...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.3...HEAD
+[0.3.3]: https://github.com/thinkjrs/cutup/compare/0.3.2...0.3.3
 [0.3.2]: https://github.com/thinkjrs/cutup/compare/0.3.1...0.3.2
 [0.3.1]: https://github.com/thinkjrs/cutup/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/thinkjrs/cutup/compare/0.2.8...0.3.0
