@@ -8,9 +8,9 @@
 
 use arbitrary::Arbitrary;
 use cutup::{
-    Allocation, Asset, BlackLitterman, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility,
-    Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance, PerAsset, Returns,
-    RiskParity, View, WeightBounds,
+    Allocation, Asset, BlackLitterman, CovarianceConfig, EqualWeight, Herc, Hrp, InverseVariance,
+    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
+    PerAsset, Returns, RiskParity, View, WeightBounds,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -87,6 +87,43 @@ impl From<Bounds> for WeightBounds {
 struct Covariance {
     shrinkage: Option<f64>,
     regularization: Option<f64>,
+    given: Option<Given>,
+}
+
+/// A covariance given in place of the sample one, for `CovarianceConfig::matrix_flat`.
+#[derive(Arbitrary, Debug)]
+enum Given {
+    /// `BBᵀ` for `B` of small integers times a power of ten, as for `Data`: semidefinite, but
+    /// for rounding.
+    Factors {
+        assets: u8,
+        values: Vec<i16>,
+        exponent: i16,
+    },
+    /// Arbitrary values, which the constructor must check without panicking.
+    Raw { assets: u8, values: Vec<f64> },
+}
+
+/// The covariance config for `given`, if its constructor accepts it.
+fn given(given: Given) -> Option<CovarianceConfig> {
+    let (assets, values) = match given {
+        Given::Factors {
+            assets,
+            values,
+            exponent,
+        } => {
+            let n = usize::from(assets) % MAX_ASSETS + 1;
+            let scale = 10f64.powi(i32::from(exponent % 330));
+            let k = (values.len() / n).min(MAX_ASSETS);
+            let b = |i: usize, j: usize| f64::from(values[i * k + j]) * scale;
+            let product = (0..n * n)
+                .map(|e| (0..k).map(|j| b(e / n, j) * b(e % n, j)).sum())
+                .collect();
+            (n, product)
+        }
+        Given::Raw { assets, values } => (usize::from(assets) % MAX_ASSETS + 1, values),
+    };
+    CovarianceConfig::matrix_flat(&values, assets).ok()
 }
 
 #[derive(Arbitrary, Debug)]
@@ -214,10 +251,14 @@ fn linkage(choice: u8) -> Linkage {
     }
 }
 
-/// Applies the covariance settings with any method's `shrinkage` and `regularization`.
+/// Applies the covariance settings with any method's `covariance`, `shrinkage` and
+/// `regularization`. A given covariance the constructor rejects is left out.
 macro_rules! covariance {
     ($method:expr, $covariance:expr) => {{
         let mut method = $method;
+        if let Some(config) = $covariance.given.and_then(given) {
+            method = method.covariance(config);
+        }
         if let Some(lambda) = $covariance.shrinkage {
             method = method.shrinkage(lambda);
         }
