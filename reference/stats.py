@@ -18,8 +18,9 @@ computation from the portfolio's return in each period:
 
 Each case is cross-checked against PyPortfolioOpt's portfolio_performance, to 1e-12, and
 against riskfolio-lib's Risk_Contribution with rm="MV", which uses central differences, to
-1e-6, and its CVaR_Hist, to 1e-12. A portfolio whose volatility is below 1e-10 of its largest
-return in size counts as riskless, as cutup counts it: its ratios and shares are null.
+1e-6, and its CVaR_Hist, to 1e-12. A portfolio whose volatility is below 1e-10 of the
+sizes of its positions' largest returns, Σᵢ|wᵢ| maxₜ|rₜᵢ|, counts as riskless, as cutup counts it: its ratios
+and shares are null.
 
 With --check, nothing is written: the cases are recomputed and compared with the committed
 file, failing if any value moved by more than 1e-12 of its size or any case changed shape.
@@ -64,7 +65,9 @@ def stats(returns: np.ndarray, weights: np.ndarray) -> dict:
     expected = float(mu @ weights)
     variance = float(weights @ cov @ weights)
     volatility = np.sqrt(max(variance, 0.0))
-    riskless = volatility <= 1e-10 * np.abs(portfolio).max()
+    # cutup's rule: below 1e-10 of the sizes of the positions' largest returns.
+    sizes = np.abs(weights) @ np.abs(returns).max(axis=0)
+    riskless = volatility <= 1e-10 * sizes
     out = {
         "expected_return": expected,
         "volatility": 0.0 if riskless else float(volatility),
