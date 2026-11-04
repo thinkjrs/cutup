@@ -19,6 +19,17 @@ All notable changes to this project are documented here. The format follows
   unless an adjustment gives it one.
 - `CutupError::AsymmetricCovariance` and `CutupError::IndefiniteCovariance`, for a given
   covariance that isn't symmetric or positive semidefinite beyond rounding.
+- Ledoit-Wolf shrinkage: `CovarianceConfig::ledoit_wolf(target)`, and a `ledoit_wolf` setter
+  on every covariance-based method, shrink the sample covariance with the intensity Ledoit and
+  Wolf estimate from the returns, in place of a fixed `λ`. Whichever of `shrinkage` and
+  `ledoit_wolf` is set last applies. `ShrinkageTarget::ConstantVariance` is the average
+  variance times the identity, the target of `shrinkage`, with scikit-learn's
+  `ledoit_wolf_shrinkage` intensity. `ShrinkageTarget::ConstantCorrelation` keeps each
+  variance and sets every correlation to the average, with the intensity from Ledoit and
+  Wolf's "Honey, I shrunk the sample covariance matrix". The intensity comes from the `1/T`
+  moments the papers use, and applies to cutup's `T − 1` sample covariance. With a given
+  covariance it's `NotSupported`, and a constant asset is `ZeroVariance` toward a constant
+  correlation, or when the intensity is 0.
 
 ### Fixed
 
