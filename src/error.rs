@@ -42,6 +42,21 @@ pub enum CutupError {
     NonFiniteCovariance,
     /// The covariance matrix is singular and no finite weights could be computed from it.
     SingularCovariance,
+    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
+    /// isn't symmetric: an entry differs from its transpose by more than rounding.
+    AsymmetricCovariance {
+        /// The entry's row.
+        row: usize,
+        /// The entry's column.
+        col: usize,
+    },
+    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
+    /// has a negative eigenvalue beyond rounding, so some portfolio would have a negative
+    /// variance.
+    IndefiniteCovariance {
+        /// The most negative eigenvalue.
+        eigenvalue: f64,
+    },
     /// A configuration value is out of range.
     InvalidConfig {
         /// Name of the offending field.
@@ -210,6 +225,15 @@ impl fmt::Display for CutupError {
             CutupError::SingularCovariance => write!(
                 f,
                 "covariance matrix is singular; no finite weights could be computed"
+            ),
+            CutupError::AsymmetricCovariance { row, col } => write!(
+                f,
+                "covariance matrix isn't symmetric: entry ({row}, {col}) differs from ({col}, {row})"
+            ),
+            CutupError::IndefiniteCovariance { eigenvalue } => write!(
+                f,
+                "covariance matrix has a negative eigenvalue, {eigenvalue}, so some portfolio \
+                 would have a negative variance"
             ),
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
@@ -381,6 +405,15 @@ mod tests {
             }
             .to_string(),
             "there is no asset in column 3"
+        );
+        assert_eq!(
+            CutupError::AsymmetricCovariance { row: 0, col: 2 }.to_string(),
+            "covariance matrix isn't symmetric: entry (0, 2) differs from (2, 0)"
+        );
+        assert_eq!(
+            CutupError::IndefiniteCovariance { eigenvalue: -0.5 }.to_string(),
+            "covariance matrix has a negative eigenvalue, -0.5, so some portfolio would have a \
+             negative variance"
         );
         assert_eq!(
             CutupError::InvalidAssetValue {

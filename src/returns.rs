@@ -202,7 +202,7 @@ impl Returns {
     }
 
     /// Builds the matrix for rows, checking that they all have the first row's length.
-    fn rows_matrix<R: AsRef<[f64]>>(rows: &[R]) -> Result<DMatrix<f64>, CutupError> {
+    pub(crate) fn rows_matrix<R: AsRef<[f64]>>(rows: &[R]) -> Result<DMatrix<f64>, CutupError> {
         let assets = rows.first().map_or(0, |row| row.as_ref().len());
         if let Some((row, values)) = rows
             .iter()
@@ -224,7 +224,7 @@ impl Returns {
     }
 
     /// Builds the matrix for flat, row-major values, checking that they fill whole rows.
-    fn flat_matrix(values: &[f64], assets: usize) -> Result<DMatrix<f64>, CutupError> {
+    pub(crate) fn flat_matrix(values: &[f64], assets: usize) -> Result<DMatrix<f64>, CutupError> {
         if assets == 0 {
             return Err(CutupError::NoAssets);
         }
@@ -467,7 +467,10 @@ impl Returns {
     }
 
     /// Returns the `(row, col)` of the first value matching `predicate`, scanning row by row.
-    fn find(data: &DMatrix<f64>, predicate: impl Fn(f64) -> bool) -> Option<(usize, usize)> {
+    pub(crate) fn find(
+        data: &DMatrix<f64>,
+        predicate: impl Fn(f64) -> bool,
+    ) -> Option<(usize, usize)> {
         (0..data.nrows())
             .flat_map(|row| (0..data.ncols()).map(move |col| (row, col)))
             .find(|&(row, col)| predicate(data[(row, col)]))
