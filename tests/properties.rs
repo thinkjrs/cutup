@@ -426,6 +426,49 @@ proptest! {
     }
 
     #[test]
+    fn cleaning_drops_small_weights_and_keeps_the_ratios_of_the_rest(
+        returns in returns(),
+        fraction in prop_oneof![Just(0.0), 0.0f64..1.0],
+    ) {
+        prop_assume!(well_posed(&returns));
+        let mean = returns.mean() * 1.5;
+        let allocator = returns_via_flat(returns).unwrap();
+        for (name, weights) in all_methods(&allocator, mean) {
+            let largest = weights.iter().fold(0.0f64, |m, w| m.max(w.abs()));
+            let cutoff = fraction * largest;
+            let kept: f64 = weights.iter().filter(|w| w.abs() >= cutoff).sum();
+            let cleaned = match weights.clean(cutoff) {
+                Ok(cleaned) => cleaned,
+                // Only when the shorts it keeps outweigh the longs.
+                Err(CutupError::InvalidConfig { field: "cutoff", .. }) => {
+                    prop_assert!(kept <= 0.0, "{name}: {weights:?} keeps {kept}");
+                    continue;
+                }
+                Err(other) => return Err(TestCaseError::fail(format!("{name}: {other:?}"))),
+            };
+            prop_assert_eq!(cleaned.labels(), weights.labels());
+            let total: f64 = cleaned.iter().sum();
+            prop_assert!((total - 1.0).abs() <= 1e-12 * largest.max(1.0) / kept, "{name} sums to {total}");
+            for (c, w) in cleaned.iter().zip(&weights) {
+                if w.abs() < cutoff {
+                    prop_assert_eq!(*c, 0.0);
+                } else {
+                    // Each kept weight is rescaled by the same factor.
+                    prop_assert!((c * kept - w).abs() <= 1e-15 * largest, "{name}: {c} vs {w}");
+                }
+            }
+            if weights.iter().all(|&w| w >= 0.0) {
+                // Long-only, the kept weights only grow, so cleaning again changes nothing more.
+                prop_assert!(cleaned.iter().all(|&c| c == 0.0 || c >= cutoff), "{name}: {cleaned:?}");
+                let again = cleaned.clean(cutoff).unwrap();
+                for (a, c) in again.iter().zip(&cleaned) {
+                    prop_assert!((a - c).abs() <= 1e-15, "{name}: {again:?} vs {cleaned:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn long_only_methods_never_short(returns in returns()) {
         prop_assume!(well_posed(&returns));
         let allocator = returns_via_flat(returns).unwrap();
