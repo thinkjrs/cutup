@@ -13,7 +13,8 @@ All notable changes to this project are documented here. The format follows
   PyPortfolioOpt's `clean_weights`, it rescales, so the weights can be passed back as current
   weights; that can move a weight just past its bounds or a turnover cap. It returns
   `InvalidConfig` for a cutoff that's negative or not finite, or one that leaves weights that
-  can't be rescaled: it drops them all, or the shorts it keeps outweigh the longs.
+  can't be rescaled: it drops them all, or the shorts it keeps outweigh or all but cancel the
+  longs. A weight that's NaN or infinite returns `NonFiniteWeight`.
 
 ## [0.3.2] - 2026-11-03
 
