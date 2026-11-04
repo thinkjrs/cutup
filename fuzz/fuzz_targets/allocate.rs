@@ -10,7 +10,7 @@ use arbitrary::Arbitrary;
 use cutup::{
     Allocation, Asset, BlackLitterman, CovarianceConfig, EqualWeight, Herc, Hrp, InverseVariance,
     InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    PerAsset, Returns, RiskParity, View, WeightBounds,
+    PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -88,6 +88,24 @@ struct Covariance {
     shrinkage: Option<f64>,
     regularization: Option<f64>,
     given: Option<Given>,
+    ledoit_wolf: Option<LedoitWolf>,
+}
+
+/// Ledoit-Wolf shrinkage, set before or after a fixed intensity: the last one set applies.
+#[derive(Arbitrary, Debug)]
+struct LedoitWolf {
+    constant_correlation: bool,
+    last: bool,
+}
+
+impl LedoitWolf {
+    fn target(&self) -> ShrinkageTarget {
+        if self.constant_correlation {
+            ShrinkageTarget::ConstantCorrelation
+        } else {
+            ShrinkageTarget::ConstantVariance
+        }
+    }
 }
 
 /// A covariance given in place of the sample one, for `CovarianceConfig::matrix_flat`.
@@ -251,18 +269,26 @@ fn linkage(choice: u8) -> Linkage {
     }
 }
 
-/// Applies the covariance settings with any method's `covariance`, `shrinkage` and
-/// `regularization`. A given covariance the constructor rejects is left out.
+/// Applies the covariance settings with any method's `covariance`, `shrinkage`, `ledoit_wolf`
+/// and `regularization`. A given covariance the constructor rejects is left out.
 macro_rules! covariance {
     ($method:expr, $covariance:expr) => {{
         let mut method = $method;
-        if let Some(config) = $covariance.given.and_then(given) {
+        let covariance = $covariance;
+        if let Some(config) = covariance.given.and_then(given) {
             method = method.covariance(config);
         }
-        if let Some(lambda) = $covariance.shrinkage {
+        let ledoit_wolf = covariance.ledoit_wolf;
+        if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| !lw.last) {
+            method = method.ledoit_wolf(lw.target());
+        }
+        if let Some(lambda) = covariance.shrinkage {
             method = method.shrinkage(lambda);
         }
-        if let Some(epsilon) = $covariance.regularization {
+        if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| lw.last) {
+            method = method.ledoit_wolf(lw.target());
+        }
+        if let Some(epsilon) = covariance.regularization {
             method = method.regularization(epsilon);
         }
         method
