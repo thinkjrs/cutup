@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `CovarianceConfig::matrix(rows)`, `matrix_flat(values, assets)` and, with the `nalgebra`
+  feature, `from_matrix`, for a covariance estimate of your own in place of the sample
+  covariance, with one row and column per asset in column order. Every covariance-based method
+  takes it through `.covariance(..)`, and shrinkage and regularization apply on top. It must be
+  symmetric and positive semidefinite to rounding: entries within `1e-12` of the largest of
+  their transposes are averaged, and eigenvalues down to `−10nε` of the largest are allowed.
+  HRP and HERC still cluster on the returns' correlations. A covariance of another size than
+  the data returns `DimensionMismatch`, and an asset given a variance of 0 `ZeroVariance`,
+  unless an adjustment gives it one.
+- `CutupError::AsymmetricCovariance` and `CutupError::IndefiniteCovariance`, for a given
+  covariance that isn't symmetric or positive semidefinite beyond rounding.
+
+### Fixed
+
+- `InverseVariance` and `InverseVolatility` no longer return weights of 0 or NaN on variances
+  near the smallest normal number, about 1e-308. Their inverses summed past `f64::MAX`, so every
+  weight was 0, or, smaller, overflowed themselves, which returned `NonFiniteWeight`. Each
+  variance is now divided by the smallest first. Found by fuzzing.
+- `Returns::stats` counts a portfolio as riskless when its volatility is below `1e-10` of the
+  sizes of its positions' largest returns, `Σᵢ|wᵢ| maxₜ|rₜᵢ|`: the rule for a constant asset,
+  applied to each position. It was `1e-10` of the portfolio's own largest return, which is the
+  same for one asset, but missed positions that cancel to within rounding. On returns near
+  1e134, `MinCvar` weights that cancel to returns near 1e116 had a volatility and risk shares
+  made of rounding, some of them infinite, and a hedge of an asset that counts as constant had
+  risk shares of NaN. Found by fuzzing.
+- `Returns::stats` risk contributions sum to 1 when subnormal weights carry the portfolio's
+  return. Their products with the returns lose most of their bits, so weights of 1e-322 gave
+  shares summing to 0.9995, and a share was multiplied by its weight before being rescaled, so
+  one of 1.5e-323 underflowed to 0 and every share was NaN. Each weight is now rescaled first,
+  and the shares divided by their sum. Found by fuzzing.
+
 ## [0.3.3] - 2026-11-04
 
 ### Added
