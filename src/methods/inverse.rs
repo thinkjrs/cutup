@@ -85,12 +85,19 @@ impl Allocation for InverseVariance {
 }
 
 impl Returns {
-    /// Weights each asset in proportion to `f(σᵢ²)`, normalized to sum to 1.
+    /// Weights each asset in proportion to `f(σᵢ²)`, normalized to sum to 1, for an `f` that
+    /// scales with a power of its argument, as `1/x` and `1/√x` do.
+    ///
+    /// `f` is applied to each variance over the smallest, which is the same once normalized,
+    /// and keeps every term in (0, 1]: on variances near 1e-308, `1/σᵢ²` itself, or the sum of
+    /// several, would overflow.
     fn weight_by_variance(&self, f: impl Fn(f64) -> f64) -> Result<Weights, CutupError> {
         if let Some(asset) = self.find_zero_variance() {
             return Err(self.zero_variance(asset));
         }
-        let raw: Vec<f64> = self.cov_matrix.diagonal().iter().map(|&v| f(v)).collect();
+        let variances = self.cov_matrix.diagonal();
+        let smallest = variances.min();
+        let raw: Vec<f64> = variances.iter().map(|&v| f(v / smallest)).collect();
         let total: f64 = raw.iter().sum();
         Ok(self.weights(raw.iter().map(|w| w / total).collect()))
     }
@@ -219,5 +226,24 @@ mod tests {
                 asset: "0".into()
             })
         );
+    }
+
+    #[test]
+    fn test_inverse_weights_on_variances_near_the_smallest_normal() {
+        // Found by fuzzing: on returns near 1e-155, inverse variances near 1e308 summed past
+        // f64::MAX, and every weight was 0; smaller, they overflowed themselves.
+        let returns = Returns::compute_returns(&full_rank_prices());
+        let base = Returns::returns_matrix(returns.clone()).unwrap();
+        for scale in [1e-150, 1e-153, 1e-154, 1e-155, 1e-156] {
+            let tiny = Returns::returns_matrix(&returns * scale).unwrap();
+            for method in [&InverseVariance as &dyn Allocation, &InverseVolatility] {
+                // Subnormal variances keep fewer bits.
+                assert_weights_close(
+                    &tiny.allocate(method).unwrap(),
+                    &base.allocate(method).unwrap(),
+                    1e-6,
+                );
+            }
+        }
     }
 }
