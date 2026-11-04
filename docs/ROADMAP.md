@@ -360,10 +360,11 @@ larger than the 0.3.1 tooling.
 
 ## 0.3.3: portfolio statistics and `Weights::clean`
 
-- **`Weights::stats(&data)`:** expected return, volatility, Sharpe ratio,
-  diversification ratio, each asset's risk contribution, and CVaR at a given
-  confidence. The methods already compute most of these internally; today
-  users recompute them.
+- **`Returns::stats(&weights)`:** expected return, volatility, Sharpe ratio,
+  diversification ratio, each asset's share of the variance, and CVaR at a
+  given confidence, in a `PortfolioStats`. On `Returns`, like `cvar` and
+  `allocate`, since it needs the data. They use the sample mean and
+  covariance; once 0.3.4 adds covariance input, `stats` can take it too.
 - **`Weights::clean(cutoff)`:** sets weights below `cutoff` to zero and
   rescales the rest to sum to 1, so results don't carry weights like 0.0003.
   PyPortfolioOpt's `clean_weights` only sets them to zero, and riskfolio-lib
