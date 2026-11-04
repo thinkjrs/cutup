@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Weights::clean(cutoff)`, which sets every weight smaller in size than `cutoff` to 0 and
+  rescales the rest to sum to 1, so results don't carry weights like 0.0003. Unlike
+  PyPortfolioOpt's `clean_weights`, it rescales, so the weights can be passed back as current
+  weights; that can move a weight just past its bounds or a turnover cap. It returns
+  `InvalidConfig` for a cutoff that's negative or not finite, or one that leaves weights that
+  can't be rescaled: it drops them all, or the shorts it keeps outweigh the longs.
+
 ## [0.3.2] - 2026-11-03
 
 ### Fixed
