@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `Returns::stats(&weights)`, which returns a `PortfolioStats` of any weights over the data: the
+  expected return, the volatility, the Sharpe ratio at a risk-free rate, the diversification
+  ratio, each asset's share of the variance, and CVaR at a confidence, the same as
+  `Returns::cvar`. They're per period, with the sample mean and covariance, and computed from the
+  portfolio's return in each period, scaled by powers of two, so they don't overflow and the
+  variance can't round below 0. A volatility below `1e-10` of the portfolio's largest return
+  counts as 0, as it does for an asset, and then the ratios and shares are `None`. It returns
+  `DimensionMismatch` or `LabelMismatch` for weights that don't fit the data, as `cvar` does, and
+  `NonFiniteWeight` for a weight that's NaN or infinite.
 - `Weights::clean(cutoff)`, which sets every weight smaller in size than `cutoff` to 0 and
   rescales the rest to sum to 1, so results don't carry weights like 0.0003. Unlike
   PyPortfolioOpt's `clean_weights`, it rescales, so the weights can be passed back as current
