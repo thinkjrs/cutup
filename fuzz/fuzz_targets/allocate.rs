@@ -1,6 +1,8 @@
 //! Every allocation method, with arbitrary settings, on returns built from arbitrary data. Any
 //! of them may return an error, but none may panic, and weights they return must be finite, one
-//! per asset, and sum to 1.
+//! per asset, and sum to 1. Their statistics must not be NaN, and their ratios and risk
+//! contributions must be finite, with the contributions summing to 1. The expected return,
+//! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do.
 
 #![no_main]
 
@@ -422,4 +424,29 @@ fuzz_target!(|input: Input| {
         "weights sum to {}: {weights:?}",
         sum * largest
     );
+
+    let stats = data
+        .stats(&weights)
+        .expect("weights from allocate fit their data");
+    assert!(!stats.expected_return().is_nan(), "{stats:?}");
+    assert!(stats.volatility() >= 0.0, "{stats:?}");
+    assert!(stats.cvar(0.9).is_ok_and(|c| !c.is_nan()), "{stats:?}");
+    assert_eq!(stats.sharpe_ratio(0.0).is_some(), stats.volatility() > 0.0);
+    assert!(
+        stats.sharpe_ratio(0.0).is_none_or(f64::is_finite),
+        "{stats:?}"
+    );
+    assert!(
+        stats.diversification_ratio().is_none_or(f64::is_finite),
+        "{stats:?}"
+    );
+    if let Some(shares) = stats.risk_contributions() {
+        assert!(shares.iter().all(|s| s.is_finite()), "{stats:?}");
+        let largest = shares.iter().fold(1.0, |m: f64, s| m.max(s.abs()));
+        let total: f64 = shares.iter().sum();
+        assert!(
+            (total - 1.0).abs() <= 1e-6 * largest,
+            "risk contributions sum to {total}"
+        );
+    }
 });
