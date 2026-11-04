@@ -65,6 +65,7 @@ mod lp;
 mod methods;
 mod qp;
 mod returns;
+mod stats;
 #[cfg(test)]
 mod test_support;
 mod turnover;
@@ -85,4 +86,5 @@ pub use methods::{
     MeanVariance, MinVariance, RiskParity,
 };
 pub use returns::Returns;
+pub use stats::PortfolioStats;
 pub use weights::Weights;
