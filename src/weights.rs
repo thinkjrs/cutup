@@ -1,5 +1,6 @@
 //! [`Weights`], what every allocation method returns.
 
+use crate::CutupError;
 use crate::asset;
 #[cfg(feature = "nalgebra")]
 use nalgebra::DVector;
@@ -99,6 +100,67 @@ impl Weights {
     /// Consumes the weights and returns them as a `Vec`, in column order.
     pub fn into_vec(self) -> Vec<f64> {
         self.values
+    }
+
+    /// Returns these weights with every weight smaller in size than `cutoff` set to 0, and the
+    /// rest rescaled to sum to 1, so a result doesn't carry weights like 0.0003. A weight of
+    /// exactly `cutoff` is kept, and a cutoff of 0 only rescales.
+    ///
+    /// Unlike PyPortfolioOpt's `clean_weights`, which only sets them to 0, this rescales the rest,
+    /// so the weights still sum to 1 and can be passed back as
+    /// [current weights](crate::MinVariance::current_weights). Rescaling moves every kept weight,
+    /// so they're no longer exactly the optimum: a weight at its upper bound, or held to a turnover
+    /// cap, can end up just past it. Dropping long positions scales the rest up; dropping short
+    /// ones scales them down, which can leave a kept weight below `cutoff`.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::InvalidConfig`] for the `cutoff` if it's negative or not finite, or if the
+    /// weights it keeps don't sum to a positive, finite number: it drops every weight, or the
+    /// short positions it keeps outweigh the long ones.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Weights;
+    ///
+    /// let weights = Weights::from(vec![0.6, 0.3, 0.0997, 0.0003]);
+    /// let cleaned = weights.clean(0.001)?;
+    ///
+    /// assert_eq!(cleaned[3], 0.0);
+    /// assert!((cleaned[0] - 0.6 / 0.9997).abs() < 1e-15);
+    /// assert!((cleaned.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn clean(&self, cutoff: f64) -> Result<Weights, CutupError> {
+        let invalid = CutupError::InvalidConfig {
+            field: "cutoff",
+            value: cutoff,
+        };
+        if !(cutoff >= 0.0 && cutoff.is_finite()) {
+            return Err(invalid);
+        }
+        let mut kept: Vec<f64> = self
+            .values
+            .iter()
+            .map(|&w| if w.abs() < cutoff { 0.0 } else { w })
+            .collect();
+        // Weights large enough that their sum overflows are first divided by the largest, as
+        // the methods do: dividing them by an infinite sum would make each one 0. Only a
+        // nonzero weight can overflow, so the largest isn't 0.
+        let largest = kept.iter().fold(0.0f64, |m, w| m.max(w.abs()));
+        if !kept.iter().sum::<f64>().is_finite() && largest.is_finite() {
+            kept.iter_mut().for_each(|w| *w /= largest);
+        }
+        let total: f64 = kept.iter().sum();
+        if !(total > 0.0 && total.is_finite()) {
+            return Err(invalid);
+        }
+        kept.iter_mut().for_each(|w| *w /= total);
+        Ok(Weights {
+            values: kept,
+            labels: Arc::clone(&self.labels),
+        })
     }
 
     fn position(&self, label: &str) -> Option<usize> {
@@ -252,6 +314,92 @@ mod tests {
         );
         assert_eq!(weights.labeled().len(), 3);
         assert_eq!(weights.labeled().next_back(), Some(("GLD", weights[2])));
+    }
+
+    #[test]
+    fn test_clean_drops_small_weights_and_rescales_the_rest() {
+        let weights = labeled().allocate(&InverseVariance).unwrap();
+        let smallest = weights.iter().cloned().fold(f64::INFINITY, f64::min);
+        let cleaned = weights.clean(smallest * 1.000001).unwrap();
+        assert_eq!(cleaned.labels(), weights.labels());
+        let kept = 1.0 - smallest;
+        for (c, w) in cleaned.iter().zip(&weights) {
+            let expected = if *w == smallest { 0.0 } else { w / kept };
+            assert!((c - expected).abs() < 1e-15, "{cleaned:?}");
+        }
+        assert!((cleaned.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_clean_keeps_a_weight_of_exactly_the_cutoff() {
+        let weights = Weights::from(vec![0.5, 0.25, 0.25]);
+        assert_eq!(weights.clean(0.25).unwrap(), weights);
+        let cleaned = weights.clean(0.25 + 1e-12).unwrap();
+        assert_eq!(cleaned.as_slice(), &[1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_clean_with_no_cutoff_only_rescales() {
+        let weights = Weights::from(vec![0.5, 1.5, 0.0]);
+        assert_eq!(weights.clean(0.0).unwrap().as_slice(), &[0.25, 0.75, 0.0]);
+    }
+
+    #[test]
+    fn test_clean_long_short() {
+        // Dropping a long scales the rest up.
+        let cleaned = Weights::from(vec![1.2, -0.3, 0.1]).clean(0.2).unwrap();
+        for (c, e) in cleaned.iter().zip([1.2 / 0.9, -0.3 / 0.9, 0.0]) {
+            assert!((c - e).abs() < 1e-15, "{cleaned:?}");
+        }
+        // Dropping a short scales them down, here leaving 0.4 below the cutoff.
+        let cleaned = Weights::from(vec![0.7, 0.4, -0.1]).clean(0.38).unwrap();
+        for (c, e) in cleaned.iter().zip([0.7 / 1.1, 0.4 / 1.1, 0.0]) {
+            assert!((c - e).abs() < 1e-15, "{cleaned:?}");
+        }
+        assert!(cleaned[1] < 0.38);
+        // Without its longs, what's left is short.
+        assert!(Weights::from(vec![0.6, 0.6, -0.2]).clean(0.7).is_err());
+    }
+
+    #[test]
+    fn test_clean_rejects_invalid_cutoffs() {
+        let weights = Weights::from(vec![0.5, 0.5]);
+        for cutoff in [-1e-9, f64::NAN, f64::INFINITY] {
+            match weights.clean(cutoff) {
+                Err(CutupError::InvalidConfig { field, value }) => {
+                    assert_eq!(field, "cutoff");
+                    assert!(value.to_bits() == cutoff.to_bits());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_clean_rejects_dropping_every_weight() {
+        let invalid = |value| {
+            Err(CutupError::InvalidConfig {
+                field: "cutoff",
+                value,
+            })
+        };
+        assert_eq!(Weights::from(vec![0.5, 0.5]).clean(0.6), invalid(0.6));
+        // Weights that sum to 0 can't be rescaled to 1 either.
+        assert_eq!(Weights::from(vec![0.5, -0.5]).clean(0.0), invalid(0.0));
+        assert_eq!(Weights::from(Vec::new()).clean(0.0), invalid(0.0));
+    }
+
+    #[test]
+    fn test_clean_rejects_weights_that_are_not_finite() {
+        assert!(Weights::from(vec![0.5, f64::NAN]).clean(0.1).is_err());
+        assert!(Weights::from(vec![0.5, f64::INFINITY]).clean(0.1).is_err());
+    }
+
+    #[test]
+    fn test_clean_weights_whose_sum_overflows() {
+        let weights = Weights::from(vec![f64::MAX, f64::MAX, -f64::MAX, 1.0]);
+        let cleaned = weights.clean(2.0).unwrap();
+        assert_eq!(cleaned.as_slice(), &[1.0, 1.0, -1.0, 0.0]);
     }
 
     #[test]
