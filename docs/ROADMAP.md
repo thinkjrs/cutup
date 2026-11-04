@@ -30,11 +30,12 @@ This plans the releases from 0.3.0 to 1.0.0.
 | 0.3.2 | Measurement: benchmarks, mutation testing and fuzzing | No |
 | 0.3.3 | Portfolio statistics and `Weights::clean` | No |
 | 0.3.4 | Covariance input and estimators | No |
-| 0.3.5 | Efficient frontier and target volatility | No |
-| 0.3.6 | Solver work: costs with a target return, LP speed | No |
-| 0.3.7 | Group constraints | No |
-| 0.3.8 | Rolling allocation and the `serde` feature | No |
-| 0.3.9 | Sample campaign allocation app, native and WebAssembly | No |
+| 0.3.5 | Expected-return estimators and log returns | No |
+| 0.3.6 | Efficient frontier and target volatility | No |
+| 0.3.7 | Solver work: costs with a target return, LP speed | No |
+| 0.3.8 | Group constraints | No |
+| 0.3.9 | Rolling allocation and the `serde` feature | No |
+| 0.3.10 | Sample campaign allocation app, native and WebAssembly | No |
 | Later 0.3.x or 1.x | Mean absolute deviation and CDaR, NCO, examples and the selection guide | No |
 | 1.0.0 | API freeze | No |
 
@@ -341,7 +342,7 @@ larger than the 0.3.1 tooling.
 
 - **Benchmarks** with `criterion`, for the active-set solver, the LP, the
   clustering methods and risk parity, at 10, 100 and 500 assets. Moved here
-  from the 1.0.0 list so 0.3.6's solver work is measured before and after.
+  from the 1.0.0 list so 0.3.7's solver work is measured before and after.
   `docs/BENCHMARKS.md` has the 0.3.1 baseline:
   - `MinVariance` takes 18 s at 500 assets;
   - `MinCvar` was benchmarked only up to 100 assets, since at 200 its LP's
@@ -364,7 +365,7 @@ larger than the 0.3.1 tooling.
   diversification ratio, each asset's share of the variance, and CVaR at a
   given confidence, in a `PortfolioStats`. On `Returns`, like `cvar` and
   `allocate`, since it needs the data. They use the sample mean and
-  covariance; once 0.3.4 adds covariance input, `stats` can take it too.
+  covariance; 0.3.4 adds `stats_with` for a covariance config.
 - **`Weights::clean(cutoff)`:** sets weights below `cutoff` to zero and
   rescales the rest to sum to 1, so results don't carry weights like 0.0003.
   PyPortfolioOpt's `clean_weights` only sets them to zero, and riskfolio-lib
@@ -376,22 +377,38 @@ larger than the 0.3.1 tooling.
 
 ## 0.3.4: covariance input and estimators
 
-- **Covariance input:** a way to give a method a covariance estimate rather
-  than only adjustments to the sample covariance.
-- **Covariance estimators** on that input:
-  - Ledoit-Wolf, which estimates the shrinkage intensity from the data
-    rather than taking a fixed λ, toward the identity and constant-correlation
-    targets. Moved here from the 1.x candidates.
-  - an exponentially weighted (EWMA) covariance;
-  - semicovariance, for downside risk.
+Everything that sets the covariance a method uses goes on `CovarianceConfig`,
+which every covariance-based method already takes, so a setting reaches all of
+them at once and two methods on the same data can use different estimates.
+
+- **Covariance input:** `CovarianceConfig::matrix(rows)`, `matrix_flat` and,
+  with `nalgebra`, `from_matrix`, for a covariance estimate of your own in
+  place of the sample covariance. It's checked for symmetry and positive
+  semidefiniteness to rounding, and shrinkage and regularization apply on top.
+- **Ledoit-Wolf**, which estimates the shrinkage intensity from the data
+  rather than taking a fixed λ, toward the identity and constant-correlation
+  targets. It takes the place of a fixed λ: whichever is set last applies.
+  Moved here from the 1.x candidates.
+- **An exponentially weighted (EWMA) covariance**, and **semicovariance**, for
+  downside risk, as bases in place of the sample covariance.
 - **The Black-Litterman posterior covariance**,
-  `Σ_BL = Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` ("note 2", deferred since 0.2.7).
+  `Σ_BL = Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` ("note 2", deferred since 0.2.7),
+  to pass to `CovarianceConfig::matrix`.
+- **Statistics under a covariance config:** `data.stats_with(&weights,
+  &config)`, alongside the sample statistics of `data.stats`.
+
+## 0.3.5: expected-return estimators and log returns
+
+Split from 0.3.4, so that release is about the covariance alone.
+
 - **Expected-return estimators:** an exponentially weighted mean, CAPM
-  implied returns, and James-Stein shrinkage.
+  implied returns, and James-Stein shrinkage, returning one expected return
+  per asset to pass to `.expected_returns(..)`, like
+  `BlackLitterman::expected_returns`.
 - **Log returns**, as an option on the data type. Simple returns stay the
   default.
 
-## 0.3.5: efficient frontier and target volatility
+## 0.3.6: efficient frontier and target volatility
 
 - **`MeanVariance::frontier(n)`:** `n` portfolios along the efficient
   frontier, from the minimum variance portfolio to the highest reachable
@@ -400,7 +417,7 @@ larger than the 0.3.1 tooling.
   volatility of `σ`, PyPortfolioOpt's `efficient_risk`, found by searching
   over the risk aversion.
 
-## 0.3.6: solver work
+## 0.3.7: solver work
 
 - **Costs with a target return:** transaction costs as a net-return target,
   `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`, so `MeanVariance::target_return(..)` takes
@@ -416,7 +433,7 @@ larger than the 0.3.1 tooling.
 - **Factorization reuse** in the active-set solver, if the benchmarks show it
   matters.
 
-## 0.3.7: group constraints
+## 0.3.8: group constraints
 
 - **Caps and floors on groups of assets**, such as sectors or ad channels:
   "Search campaigns at most 40%", "Video at least 20%". Groups are given by
@@ -427,7 +444,7 @@ larger than the 0.3.1 tooling.
 - **Which methods:** the QP methods first, `MinVariance` and `MeanVariance`,
   then `MinCvar` through the LP.
 
-## 0.3.8: rolling allocation and `serde`
+## 0.3.9: rolling allocation and `serde`
 
 - **Rolling allocation:** weights recomputed over rolling windows of the
   data, for example `data.rolling(60).allocate(&method)`, giving weights over
@@ -436,7 +453,7 @@ larger than the 0.3.1 tooling.
   `CutupError`. Moved here from the 1.0.0 list, since the sample app's
   backends pass JSON.
 
-## 0.3.9: sample campaign allocation app
+## 0.3.10: sample campaign allocation app
 
 A Next.js app that allocates a budget across a basket of ad campaigns. The
 same Rust allocation code runs either on Vercel's servers as a native binary or
@@ -525,7 +542,7 @@ apps/campaigns/
 - **Data:** an anonymized sample of the campaign data, committed to the repo.
 - **Settings that fit:**
   - `WeightBounds` for a minimum and maximum share per campaign;
-  - group constraints (0.3.7) for channel caps;
+  - group constraints (0.3.8) for channel caps;
   - rebalancing from the current budget split, with `max_turnover` limiting
     how much budget moves at once;
   - `MinCvar` against the worst periods;
@@ -539,8 +556,8 @@ apps/campaigns/
 - **UI:**
   - load the sample, then pick the metric, method, constraints and engine;
   - see each campaign's metrics over time, the budget weights with their
-    statistics (0.3.3), the efficient frontier (0.3.5), and the weights over
-    time (0.3.8);
+    statistics (0.3.3), the efficient frontier (0.3.6), and the weights over
+    time (0.3.9);
   - a table compares methods.
 - **Tests:** unit tests for the engine and the handler, the parity test, and
   a TypeScript typecheck.
@@ -566,7 +583,7 @@ apps/campaigns/
 
 Worked through during 0.3.x. Nothing new lands in 1.0.0 itself.
 `cargo-semver-checks` moved to 0.3.1, the benchmarks to 0.3.2, and `serde`
-to 0.3.8.
+to 0.3.9.
 
 - **An MSRV policy in the README:**
   - the MSRV is 1.85 from 0.3.0, and stays there through 0.3.x and 1.0.0;
@@ -603,4 +620,4 @@ to 0.3.8.
 
 ## Open decisions
 
-- **The sample app's data and model:** settled when 0.3.9 starts.
+- **The sample app's data and model:** settled when 0.3.10 starts.
