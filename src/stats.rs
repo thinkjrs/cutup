@@ -47,7 +47,6 @@ use nalgebra::DVector;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub struct PortfolioStats {
     expected_return: f64,
     volatility: f64,
@@ -71,7 +70,7 @@ impl PortfolioStats {
     ///
     /// A volatility below `1e-10` of the portfolio's largest return in size counts as 0, as it
     /// does for an asset: weights only on constant assets, such as cash, have none, but rounding
-    /// leaves them a trace.
+    /// leaves them a trace. So does one too small to represent, below about `5e-324`.
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
@@ -175,11 +174,11 @@ impl Returns {
         let mut exponent_sum = weight_exponent;
         if portfolio.iter().any(|r| !r.is_finite()) {
             // Returns near f64::MAX: scale them too.
-            let returns_exponent = binary_exponent(largest(returns.iter().copied()));
+            let returns_exponent = binary_exponent(returns.amax());
             portfolio = returns.map(|r| pow2_scaled(r, -returns_exponent)) * &w;
             exponent_sum += returns_exponent;
         }
-        let portfolio_exponent = binary_exponent(largest(portfolio.iter().copied()));
+        let portfolio_exponent = binary_exponent(portfolio.amax());
         let scaled: Vec<f64> = portfolio
             .iter()
             .map(|&r| pow2_scaled(r, -portfolio_exponent))
@@ -188,7 +187,11 @@ impl Returns {
 
         let mean = scaled.iter().sum::<f64>() / t as f64;
         let deviation = standard_deviation(&scaled, mean);
-        let deviation = if deviation <= 1e-10 * largest(scaled.iter().copied()) {
+        // A volatility that underflows to 0 once unscaled counts as 0 too, so the ratios are
+        // `None` whenever `volatility()` is 0.
+        let deviation = if deviation <= 1e-10 * largest(scaled.iter().copied())
+            || pow2_scaled(deviation, exponent) == 0.0
+        {
             0.0
         } else {
             deviation
@@ -202,12 +205,11 @@ impl Returns {
             // and its covariance with the portfolio stay finite.
             let mut weighted_volatility = 0.0;
             let mut contributions = Vec::with_capacity(w.len());
+            let mut asset = Vec::with_capacity(t);
             for (i, column) in returns.column_iter().enumerate() {
                 let asset_exponent = binary_exponent(column.amax());
-                let asset: Vec<f64> = column
-                    .iter()
-                    .map(|&r| pow2_scaled(r, -asset_exponent))
-                    .collect();
+                asset.clear();
+                asset.extend(column.iter().map(|&r| pow2_scaled(r, -asset_exponent)));
                 let asset_mean = asset.iter().sum::<f64>() / t as f64;
                 let asset_deviation = standard_deviation(&asset, asset_mean);
                 // A constant asset, such as cash, adds no risk, though rounding leaves it a trace.
@@ -556,9 +558,9 @@ mod tests {
 
     #[test]
     fn a_spread_within_1e_10_of_the_largest_return_counts_as_none() {
-        // Scaled by 2, the returns are about 1.9, and their spread about 0.95e-10: under 1e-10
-        // of 1.9, but over 1e-10 / 1.9.
-        let e = 0.5e-10 / 2f64.sqrt();
+        // Scaled by 2, the returns are about 1.9, and their spread about 1.5e-10: under 1e-10
+        // of 1.9, but over 1e-10 and 1e-10 / 1.9.
+        let e = 0.8e-10 / 2f64.sqrt();
         let data = Returns::returns_matrix(dmatrix![
             0.02, 0.95 * (1.0 + e);
             -0.01, 0.95 * (1.0 - e)
@@ -568,6 +570,18 @@ mod tests {
         assert_eq!(stats.volatility(), 0.0);
         let stats = data.stats(&Weights::from(vec![0.5, 0.5])).unwrap();
         assert_eq!(stats.risk_contributions().unwrap()[1], 0.0);
+    }
+
+    #[test]
+    fn a_volatility_that_underflows_counts_as_none() {
+        // Half the smallest subnormal's spread rounds to 0 once unscaled.
+        let tiny = f64::from_bits(1);
+        let data = Returns::returns_matrix(dmatrix![0.0, 0.0; tiny, 0.0; 0.0, 0.0]).unwrap();
+        let stats = data.stats(&Weights::from(vec![0.5, 0.5])).unwrap();
+        assert_eq!(stats.volatility(), 0.0);
+        assert_eq!(stats.sharpe_ratio(0.0), None);
+        assert_eq!(stats.diversification_ratio(), None);
+        assert_eq!(stats.risk_contributions(), None);
     }
 
     #[test]
