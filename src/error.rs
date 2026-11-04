@@ -42,21 +42,6 @@ pub enum CutupError {
     NonFiniteCovariance,
     /// The covariance matrix is singular and no finite weights could be computed from it.
     SingularCovariance,
-    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
-    /// isn't symmetric: an entry differs from its transpose by more than rounding.
-    AsymmetricCovariance {
-        /// The entry's row.
-        row: usize,
-        /// The entry's column.
-        col: usize,
-    },
-    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
-    /// has a negative eigenvalue beyond rounding, so some portfolio would have a negative
-    /// variance.
-    IndefiniteCovariance {
-        /// The most negative eigenvalue.
-        eigenvalue: f64,
-    },
     /// A configuration value is out of range.
     InvalidConfig {
         /// Name of the offending field.
@@ -196,6 +181,21 @@ pub enum CutupError {
         setting: &'static str,
         /// What it can't be combined with.
         with: &'static str,
+    },
+    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
+    /// isn't symmetric: an entry differs from its transpose by more than rounding.
+    AsymmetricCovariance {
+        /// The entry's row.
+        row: usize,
+        /// The entry's column.
+        col: usize,
+    },
+    /// A covariance given to [`CovarianceConfig::matrix`](crate::CovarianceConfig::matrix)
+    /// has a negative eigenvalue beyond rounding, so some portfolio would have a negative
+    /// variance.
+    IndefiniteCovariance {
+        /// The most negative eigenvalue.
+        eigenvalue: f64,
     },
 }
 
