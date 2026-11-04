@@ -549,6 +549,57 @@ proptest! {
     }
 
     #[test]
+    fn a_given_covariance_is_used_like_the_sample_one(returns in returns(), lambda in 0.0f64..1.0) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        // This file's covariance, equal to cutup's to rounding.
+        let cov = covariance(&returns);
+        let given = CovarianceConfig::matrix_flat(cov.transpose().as_slice(), n).unwrap();
+        let allocator = returns_via_flat(returns).unwrap();
+        for (adjust, sample) in [
+            (given.clone(), CovarianceConfig::default()),
+            (given.shrinkage(lambda), CovarianceConfig::default().shrinkage(lambda)),
+        ] {
+            let methods = |c: CovarianceConfig| -> Vec<Box<dyn Allocation>> {
+                vec![
+                    Box::new(MinVariance::default().covariance(c.clone())),
+                    Box::new(MinVariance::default().allow_short().covariance(c.clone())),
+                    Box::new(MaxDiversification::default().covariance(c.clone())),
+                    Box::new(RiskParity::default().covariance(c)),
+                ]
+            };
+            for (a, b) in methods(adjust.clone()).iter().zip(methods(sample)) {
+                let (a, b) = (allocator.allocate(a.as_ref()).unwrap(), allocator.allocate(b.as_ref()).unwrap());
+                for (x, y) in a.iter().zip(&b) {
+                    prop_assert!((x - y).abs() <= 1e-9, "{a:?} vs {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn products_of_factors_are_covariances(
+        factors in prop::collection::vec(-1.0f64..1.0, 36),
+        n in 1usize..=6,
+        k in 1usize..=6,
+        exponent in -150i32..150,
+    ) {
+        // BBᵀ is semidefinite, of rank k at most, at any scale.
+        let b = DMatrix::from_fn(n, k, |i, j| factors[i * 6 + j] * 10f64.powi(exponent));
+        let product = &b * b.transpose();
+        let rows: Vec<Vec<f64>> = product.row_iter().map(|r| r.iter().copied().collect()).collect();
+        prop_assert!(CovarianceConfig::matrix(&rows).is_ok(), "{product}");
+        // Taking twice the largest variance off one leaves a portfolio with negative variance.
+        let mut indefinite = rows.clone();
+        let largest = product.diagonal().amax();
+        prop_assume!(largest > 0.0);
+        indefinite[0][0] -= 2.0 * largest;
+        let result = CovarianceConfig::matrix(&indefinite);
+        let negative = matches!(result, Err(CutupError::IndefiniteCovariance { eigenvalue }) if eigenvalue < 0.0);
+        prop_assert!(negative, "{result:?}");
+    }
+
+    #[test]
     fn long_only_methods_never_short(returns in returns()) {
         prop_assume!(well_posed(&returns));
         let allocator = returns_via_flat(returns).unwrap();
