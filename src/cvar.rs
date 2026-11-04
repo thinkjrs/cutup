@@ -213,48 +213,38 @@ impl Returns {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn cvar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
-        let (t, n) = self.returns.shape();
-        let cap = tail_weight(beta, t)?;
-        if weights.len() != n {
-            return Err(CutupError::DimensionMismatch {
-                field: "weights",
-                expected: n,
-                actual: weights.len(),
-            });
-        }
-        let labels = weights.labels();
-        let by_column = labels.iter().enumerate().all(|(i, l)| *l == i.to_string());
-        if !by_column {
-            if let Some(column) = (0..n).find(|&i| labels[i] != self.labels()[i]) {
-                return Err(CutupError::LabelMismatch {
-                    column,
-                    expected: self.labels()[column].clone(),
-                    actual: labels[column].clone(),
-                });
-            }
-        }
+        let cap = tail_weight(beta, self.returns.nrows())?;
+        self.check_weights(weights)?;
         let w = DVector::from_column_slice(weights.as_slice());
-        let mut losses: Vec<f64> = (-(&self.returns * w)).iter().copied().collect();
-        // Only the worst ⌈1/cap⌉ losses are in the tail, one more for rounding: those go
-        // first, and only they're sorted.
-        let tail = ((1.0 / cap).ceil() as usize + 1).min(t);
-        if tail < t {
-            losses.select_nth_unstable_by(tail, |a, b| b.total_cmp(a));
-        }
-        losses[..tail].sort_by(|a, b| b.total_cmp(a));
-        // Each scenario in the tail weighs cap, up to a total of 1.
-        let mut left = 1.0f64;
-        let mut total = 0.0;
-        for &loss in &losses[..tail] {
-            let share = cap.min(left);
-            total += share * loss;
-            left -= share;
-            if left <= 0.0 {
-                break;
-            }
-        }
-        Ok(total)
+        Ok(tail_loss(
+            (-(&self.returns * w)).iter().copied().collect(),
+            cap,
+        ))
     }
+}
+
+/// The average of the worst `losses`, each weighing `cap` up to a total of 1: their CVaR, for
+/// `cap` from [`tail_weight`].
+pub(crate) fn tail_loss(mut losses: Vec<f64>, cap: f64) -> f64 {
+    let t = losses.len();
+    // Only the worst ⌈1/cap⌉ losses are in the tail, one more for rounding: those go first, and
+    // only they're sorted.
+    let tail = ((1.0 / cap).ceil() as usize + 1).min(t);
+    if tail < t {
+        losses.select_nth_unstable_by(tail, |a, b| b.total_cmp(a));
+    }
+    losses[..tail].sort_by(|a, b| b.total_cmp(a));
+    let mut left = 1.0f64;
+    let mut total = 0.0;
+    for &loss in &losses[..tail] {
+        let share = cap.min(left);
+        total += share * loss;
+        left -= share;
+        if left <= 0.0 {
+            break;
+        }
+    }
+    total
 }
 
 /// The scenarios whose `zₜ` start at `cap` in [`MinCvar`]'s LP: those where the equal-weight
@@ -282,7 +272,7 @@ fn starting_tail(returns: &DMatrix<f64>, cap: f64) -> Vec<usize> {
 }
 
 /// The weight `1/((1 − β)T)` of each of `t` scenarios in the tail at confidence `beta`.
-fn tail_weight(beta: f64, t: usize) -> Result<f64, CutupError> {
+pub(crate) fn tail_weight(beta: f64, t: usize) -> Result<f64, CutupError> {
     if !(beta > 0.0 && beta < 1.0) {
         return Err(CutupError::InvalidConfig {
             field: "confidence",
@@ -311,6 +301,16 @@ mod tests {
              0.001,  0.002, -0.004
         ])
         .unwrap()
+    }
+
+    #[test]
+    fn tail_loss_counts_the_scenario_rounding_leaves_in_the_tail() {
+        // At β = 0.5 over 10 scenarios each of the worst 5 weighs 0.2, which leaves about
+        // 5.6e-17 of the tail for the sixth.
+        let cap = tail_weight(0.5, 10).unwrap();
+        let mut losses = vec![0.0; 5];
+        losses.extend([-1e300; 5]);
+        assert!(tail_loss(losses, cap) < -1e283);
     }
 
     #[test]

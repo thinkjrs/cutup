@@ -393,6 +393,32 @@ impl Returns {
         }
     }
 
+    /// Checks that `weights` has one weight per asset, labeled with the data's labels in column
+    /// order. Weights labeled by column, such as `Weights::from(vec)`, are taken in column
+    /// order.
+    pub(crate) fn check_weights(&self, weights: &Weights) -> Result<(), CutupError> {
+        let n = self.returns.ncols();
+        if weights.len() != n {
+            return Err(CutupError::DimensionMismatch {
+                field: "weights",
+                expected: n,
+                actual: weights.len(),
+            });
+        }
+        let labels = weights.labels();
+        let by_column = labels.iter().enumerate().all(|(i, l)| *l == i.to_string());
+        if !by_column {
+            if let Some(column) = (0..n).find(|&i| labels[i] != self.labels[i]) {
+                return Err(CutupError::LabelMismatch {
+                    column,
+                    expected: self.labels[column].clone(),
+                    actual: labels[column].clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// `values`, one per asset in column order, as weights labeled with the data's labels.
     pub(crate) fn weights(&self, values: Vec<f64>) -> Weights {
         Weights::new(values, Arc::clone(&self.labels))
