@@ -365,8 +365,13 @@ larger than the 0.3.1 tooling.
   confidence. The methods already compute most of these internally; today
   users recompute them.
 - **`Weights::clean(cutoff)`:** sets weights below `cutoff` to zero and
-  renormalizes, like PyPortfolioOpt's `clean_weights`, so results don't carry
-  weights like 0.0003.
+  rescales the rest to sum to 1, so results don't carry weights like 0.0003.
+  PyPortfolioOpt's `clean_weights` only sets them to zero, and riskfolio-lib
+  and skfolio don't clean weights after solving at all; skfolio's
+  `threshold_long` and `threshold_short` keep small positions out in the
+  solver, with a mixed-integer program. Rescaling keeps the sum at 1, so the
+  result can be passed back as current weights, at the cost of moving weights
+  at a bound just past it.
 
 ## 0.3.4: covariance input and estimators
 
