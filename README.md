@@ -30,7 +30,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 ## Features
 
-- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`, which every covariance-based method takes, or a covariance of your own with `CovarianceConfig::matrix`.
+- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
@@ -246,6 +246,29 @@ fn main() -> Result<(), CutupError> {
 
     let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
     println!("Black-Litterman weights: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Ledoit-Wolf shrinkage
+
+`.shrinkage(λ)` takes a fixed intensity. `.ledoit_wolf(target)` estimates it from the returns instead, with Ledoit and Wolf's formulas for the intensity that minimizes the expected error, toward one of two targets: `ShrinkageTarget::ConstantVariance`, the average variance with no correlation, as `.shrinkage(λ)` uses, or `ShrinkageTarget::ConstantCorrelation`, each asset's own variance with the average correlation between them. Whichever of the two is set last applies. The estimate needs the returns, so it isn't supported with a covariance of your own.
+
+```rust
+use cutup::{CutupError, MinVariance, Returns, ShrinkageTarget};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.006,  0.008, -0.003],
+    ];
+    let data = Returns::new(&returns)?;
+    let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+    let weights = data.allocate(&method)?;
+    println!("Min variance, shrunk: {:?}", weights.as_slice());
     Ok(())
 }
 ```
