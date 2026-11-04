@@ -11,8 +11,9 @@ fixtures in `tests/fixtures/`.
 | `generate.py` | Computes the expected weights for every case and writes `tests/fixtures/expected.json`. |
 | `lp.py` | Solves random linear programs with `scipy.optimize.linprog` (HiGHS) and writes `tests/fixtures/lp.json`, which the unit tests in `src/lp.rs` check cutup's simplex solver against: the outcome (optimal, infeasible or unbounded) and the optimal objective, to 1e-9. |
 | `stats.py` | Computes the portfolio statistics of fixed weights on every dataset and writes `tests/fixtures/stats.json`, which `tests/reference.rs` checks `Returns::stats` against. |
+| `covariance.py` | Computes the Ledoit-Wolf intensities and shrunk covariances on every dataset and writes `tests/fixtures/covariance.json`, which the unit tests in `src/covariance.rs` check `CovarianceConfig::ledoit_wolf` against, to 1e-12. |
 | `fixtures.py` | Shared paths and JSON formatting. |
-| `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy, PyPortfolioOpt and riskfolio-lib. |
+| `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy, PyPortfolioOpt and riskfolio-lib, and scikit-learn through them. |
 
 ## References
 
@@ -33,6 +34,7 @@ fixtures in `tests/fixtures/`.
 | Rebalancing (turnover and costs) | Support enumeration with five states per asset: at its lower bound, at its upper bound, at its current weight `w₀ᵢ`, or free above or below it, where the cost `cᵢ|wᵢ − w₀ᵢ|` is the linear term `±cᵢ`. With a turnover cap, each support also gets a candidate with the cap as an equality. The best feasible candidate is the optimum. The objective is written from each method's definition, not cutup's. Each result is cross-checked against PyPortfolioOpt, with an L1 cost, a squared-distance objective and an L1 constraint on cvxpy with Clarabel at tight tolerances, to 1e-6. A cap below the turnover needed to move `w₀` into the bounds is an expected error. With a target return, mean-variance is min variance with `μᵀw = ρ` as a second equality in each support, the least turnover that reaches the target comes from `scipy.optimize.linprog`, and the cross-check adds the same equality to PyPortfolioOpt's `min_volatility`. |
 | Min CVaR | `scipy.optimize.linprog` (HiGHS) on the primal Rockafellar-Uryasev program, with a constraint per scenario, independent of the dual cutup solves. The optimum needn't be unique, so the test compares CVaR: HiGHS stops within about 1e-10, so cutup's must be no worse than the reference weights' CVaR, and no more than 1e-9 better. Each case without a target is cross-checked against PyPortfolioOpt's `EfficientCVaR` and, without bounds, riskfolio-lib's `rm="CVaR"`, by CVaR, to 1e-6. |
 | Portfolio statistics | Closed forms on NumPy's sample mean and covariance (`np.cov`, `ddof=1`), independent of cutup's computation from the portfolio's return in each period: `μᵀw`, `sqrt(wᵀΣw)`, the Sharpe ratio at two risk-free rates, `σᵀw / sqrt(wᵀΣw)`, each asset's share of the variance, and CVaR at three confidences, written out from its definition. Each case is cross-checked against PyPortfolioOpt's `portfolio_performance` to 1e-12, riskfolio-lib's `Risk_Contribution` with `rm="MV"`, which uses central differences, to 1e-6, and its `CVaR_Hist` to 1e-12. Weights are equal, long-short summing to 1, and unnormalized, plus a riskless hedge on `collinear2`. The test compares them to about 1e-12. |
+| Ledoit-Wolf shrinkage | Toward a constant variance, scikit-learn's `ledoit_wolf_shrinkage`, with the shrunk covariance checked against its `ledoit_wolf` to 1e-12. Toward a constant correlation, the intensity written out from Ledoit and Wolf's `covCor.m`, checked against PyPortfolioOpt's `_ledoit_wolf_constant_correlation` given the `1/T` sample covariance the paper uses, to 1e-12: on its own it uses the `ddof=1` one with `1/T` moments, which moves the intensity by O(1/T). Both shrink NumPy's `ddof=1` covariance, as cutup does, so each case is `T / (T − 1)` times the papers' estimate. Where the constant correlation target is the sample covariance but for rounding, as it always is for two assets, the intensity is null and only the covariance is compared. |
 | Black-Litterman | PyPortfolioOpt `market_implied_prior_returns` and `BlackLittermanModel.bl_returns`, with absolute, relative and portfolio views, and its `"default"` (He-Litterman) and `"idzorek"` view uncertainties. Cases that mix kinds of uncertainty pass a diagonal Ω built row by row with `BlackLittermanModel.default_omega` and `idzorek_method`. These cases hold expected returns rather than weights, checked to 1e-15. |
 
 Every covariance-based reference works in correlation units `u = diag(σ)w`, as cutup
@@ -59,6 +61,7 @@ Requires [uv](https://docs.astral.sh/uv/). Run from the repository root.
 uv run --project reference python reference/generate.py --check
 uv run --project reference python reference/lp.py --check
 uv run --project reference python reference/stats.py --check
+uv run --project reference python reference/covariance.py --check
 
 # Rewrite the expected weights after adding or changing a case
 uv run --project reference python reference/generate.py
@@ -67,7 +70,8 @@ uv run --project reference python reference/generate.py
 uv run --project reference python reference/inputs.py
 ```
 
-Then run `cargo test --test reference` to check cutup against the new fixtures.
+Then run `cargo test --test reference`, and `cargo test --lib` for `lp.json` and
+`covariance.json`, to check cutup against the new fixtures.
 
 ## Adding a method
 
