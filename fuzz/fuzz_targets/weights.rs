@@ -1,5 +1,5 @@
 //! `Weights`, `PerAsset` and `Asset` from arbitrary values and labels: lookups by column and
-//! by label, iteration and `Display` mustn't panic, and must agree with each other.
+//! by label, iteration, `Display` and `clean` mustn't panic, and must agree with each other.
 
 #![no_main]
 
@@ -20,6 +20,7 @@ struct Input {
     labels: Option<Vec<String>>,
     lookups: Vec<Lookup>,
     precision: Option<u8>,
+    cutoff: f64,
 }
 
 fuzz_target!(|input: Input| {
@@ -58,6 +59,20 @@ fuzz_target!(|input: Input| {
             }
         };
         let _ = (asset.label(), asset.column(), asset.to_string());
+    }
+
+    // Cleaned weights are finite, keep their labels and signs, and are 0 where the weight was
+    // below the cutoff.
+    if let Ok(cleaned) = weights.clean(input.cutoff) {
+        assert_eq!(cleaned.labels(), weights.labels());
+        for (c, w) in cleaned.iter().zip(&weights) {
+            assert!(c.is_finite(), "{cleaned:?}");
+            if w.abs() < input.cutoff {
+                assert_eq!(*c, 0.0);
+            } else {
+                assert!(*c == 0.0 || c.signum() == w.signum(), "{c} from {w}");
+            }
+        }
     }
 
     let _ = PerAsset::from(&weights);
