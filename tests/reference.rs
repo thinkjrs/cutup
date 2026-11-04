@@ -471,7 +471,7 @@ fn stats_match_python_reference() {
             );
         }
         if case["diversification_ratio"].is_null() {
-            if volatility != 0.0
+            if stats.volatility() != 0.0
                 || stats.diversification_ratio().is_some()
                 || stats.risk_contributions().is_some()
             {
