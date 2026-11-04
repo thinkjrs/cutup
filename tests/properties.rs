@@ -469,6 +469,86 @@ proptest! {
     }
 
     #[test]
+    fn stats_match_their_closed_forms(returns in returns(), rate in -0.002f64..0.002) {
+        prop_assume!(well_posed(&returns));
+        let mean = returns.mean() * 1.5;
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let volatilities = cov.diagonal().map(f64::sqrt);
+        let allocator = returns_via_flat(returns).unwrap();
+        for (name, weights) in all_methods(&allocator, mean) {
+            let stats = allocator.stats(&weights).unwrap();
+            let w = DVector::from_column_slice(weights.as_slice());
+            // Long-short weights can be in the thousands, so the return is checked against the
+            // size of the positions, and everything else relative to itself.
+            let gross: f64 = w.iter().map(|w| w.abs()).sum();
+            let expected = mu.dot(&w);
+            prop_assert!((stats.expected_return() - expected).abs() <= 1e-12 * gross * mu.amax(), "{name}");
+            let volatility = variance(&cov, &weights).sqrt();
+            prop_assert!((stats.volatility() - volatility).abs() <= 1e-9 * volatility, "{name}: {} vs {volatility}", stats.volatility());
+            let ratio = stats.sharpe_ratio(rate).unwrap();
+            let exact = (expected - rate) / volatility;
+            prop_assert!((ratio - exact).abs() <= 1e-9 * exact.abs() + 1e-12 * gross * mu.amax() / volatility, "{name}: {ratio} vs {exact}");
+            let ratio = stats.diversification_ratio().unwrap();
+            let exact = volatilities.dot(&w) / volatility;
+            prop_assert!((ratio - exact).abs() <= 1e-9 * gross * volatilities.amax() / volatility, "{name}: {ratio} vs {exact}");
+            let shares = stats.risk_contributions().unwrap();
+            let marginal = &cov * &w;
+            for (i, share) in shares.iter().enumerate() {
+                let exact = w[i] * marginal[i] / (volatility * volatility);
+                prop_assert!((share - exact).abs() <= 1e-9 * gross * gross, "{name}: {shares:?}");
+            }
+            let total: f64 = shares.iter().sum();
+            prop_assert!((total - 1.0).abs() <= 1e-9 * gross * gross, "{name}: {total}");
+            for beta in [0.5, 0.9] {
+                prop_assert_eq!(stats.cvar(beta), allocator.cvar(&weights, beta));
+            }
+        }
+    }
+
+    #[test]
+    fn stats_favor_the_methods_that_optimize_them(returns in returns()) {
+        prop_assume!(well_posed(&returns));
+        let allocator = returns_via_flat(returns).unwrap();
+        let stats = |method: &dyn Allocation| allocator.stats(&allocator.allocate(method).unwrap()).unwrap();
+        let lowest = stats(&MinVariance::default()).volatility();
+        let highest = stats(&MaxDiversification::default()).diversification_ratio().unwrap();
+        let best = stats(&low_rate()).sharpe_ratio(-1.0).unwrap();
+        let least = stats(&MinCvar::default()).cvar(0.95).unwrap();
+        for weights in long_only_methods(&allocator) {
+            let other = allocator.stats(&weights).unwrap();
+            prop_assert!(lowest <= other.volatility() * (1.0 + 1e-9), "{weights:?}");
+            prop_assert!(other.diversification_ratio().unwrap() <= highest * (1.0 + 1e-9), "{weights:?}");
+            prop_assert!(other.sharpe_ratio(-1.0).unwrap() <= best * (1.0 + 1e-9), "{weights:?}");
+            prop_assert!(least <= other.cvar(0.95).unwrap() + 1e-12 * least.abs().max(1e-3), "{weights:?}");
+        }
+        let n = allocator.labels().len() as f64;
+        for share in stats(&RiskParity::default()).risk_contributions().unwrap() {
+            prop_assert!((share - 1.0 / n).abs() <= 1e-9, "{share}");
+        }
+    }
+
+    #[test]
+    fn stats_scale_with_the_returns(returns in returns(), scale in 0.1f64..10.0) {
+        prop_assume!(well_posed(&returns));
+        let allocator = returns_via_flat(returns.clone()).unwrap();
+        let scaled = returns_via_flat(&returns * scale).unwrap();
+        let weights = allocator.allocate(&RiskParity::default()).unwrap();
+        let (a, b) = (allocator.stats(&weights).unwrap(), scaled.stats(&weights).unwrap());
+        let close = |x: f64, y: f64| (x - y).abs() <= 1e-12 * x.abs().max(y.abs());
+        prop_assert!((b.expected_return() - a.expected_return() * scale).abs() <= 1e-12 * scale * returns.amax());
+        prop_assert!(close(b.volatility(), a.volatility() * scale));
+        prop_assert!((b.cvar(0.9).unwrap() - a.cvar(0.9).unwrap() * scale).abs() <= 1e-12 * scale * returns.amax());
+        prop_assert!(close(b.diversification_ratio().unwrap(), a.diversification_ratio().unwrap()));
+        let rate = 1e-4;
+        let (x, y) = (a.sharpe_ratio(rate).unwrap(), b.sharpe_ratio(rate * scale).unwrap());
+        prop_assert!((x - y).abs() <= 1e-10 * x.abs().max(1.0), "{x} vs {y}");
+        for (x, y) in a.risk_contributions().unwrap().iter().zip(b.risk_contributions().unwrap()) {
+            prop_assert!((x - y).abs() <= 1e-12, "{x} vs {y}");
+        }
+    }
+
+    #[test]
     fn long_only_methods_never_short(returns in returns()) {
         prop_assume!(well_posed(&returns));
         let allocator = returns_via_flat(returns).unwrap();
