@@ -148,6 +148,8 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
+Solvers can leave weights like 0.0003 on assets they barely use. `weights.clean(0.001)` sets every weight smaller in size than 0.001 to 0 and rescales the rest to sum to 1. Unlike PyPortfolioOpt's `clean_weights`, it rescales, so the result can be passed back as current weights. Rescaling can move a weight just past its bounds or a turnover cap.
+
 ### Labels
 
 Name the assets with `labeled`, for example with their tickers. The weights carry the labels, and every setting that takes an asset or a value per asset takes them too: bounds, Black-Litterman views and market weights, current weights, expected returns, risk budgets and transaction costs. Values per asset can be in column order, as before, or pairs of a label and a value, in any order, as an array, a `Vec` or a `HashMap`. Without labels, each asset's label is its column: `"0"`, `"1"`, and so on.
