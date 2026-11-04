@@ -30,7 +30,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 ## Features
 
-- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`.
+- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage and regularization via `CovarianceConfig`, which every covariance-based method takes, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
@@ -246,6 +246,35 @@ fn main() -> Result<(), CutupError> {
 
     let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
     println!("Black-Litterman weights: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Your own covariance
+
+Every covariance-based method uses the sample covariance of your returns unless you give it another estimate, such as one from a factor model or another library, with `CovarianceConfig::matrix`. It takes one row and one column per asset, in column order, and checks the matrix is symmetric and positive semidefinite, to rounding. Shrinkage and regularization still apply on top of it.
+
+```rust
+use cutup::{CovarianceConfig, CutupError, MinVariance, Returns, RiskParity};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+    ];
+    let data = Returns::new(&returns)?;
+    let covariance = CovarianceConfig::matrix(&[
+        [1.0e-4, 2.0e-5, 0.0],
+        [2.0e-5, 4.0e-4, 1.0e-5],
+        [0.0, 1.0e-5, 9.0e-5],
+    ])?;
+
+    let min_variance = data.allocate(&MinVariance::default().covariance(covariance.clone()))?;
+    let risk_parity = data.allocate(&RiskParity::default().covariance(covariance.shrinkage(0.1)))?;
+    println!("Min variance: {:?}", min_variance.as_slice());
+    println!("Risk parity: {:?}", risk_parity.as_slice());
     Ok(())
 }
 ```
