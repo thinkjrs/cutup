@@ -151,7 +151,8 @@ pub enum CutupError {
         /// The sum of the upper bounds.
         upper_sum: f64,
     },
-    /// An [`Allocation`](crate::Allocation) returned a weight that is NaN or infinite.
+    /// A weight is NaN or infinite: one an [`Allocation`](crate::Allocation) returned, or one
+    /// given to [`Weights::clean`](crate::Weights::clean).
     NonFiniteWeight {
         /// The asset's column.
         column: usize,

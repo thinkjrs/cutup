@@ -115,9 +115,12 @@ impl Weights {
     ///
     /// # Errors
     ///
-    /// [`CutupError::InvalidConfig`] for the `cutoff` if it's negative or not finite, or if the
-    /// weights it keeps don't sum to a positive, finite number: it drops every weight, or the
-    /// short positions it keeps outweigh the long ones.
+    /// * [`CutupError::InvalidConfig`] for the `cutoff` if it's negative or not finite, or if the
+    ///   weights it keeps don't sum to a positive number, or to one so small that rescaling by it
+    ///   overflows: it drops every weight, or the short positions it keeps outweigh or all but
+    ///   cancel the long ones.
+    /// * [`CutupError::NonFiniteWeight`] if a weight is NaN or infinite, as one from
+    ///   `Weights::from(vec)` can be.
     ///
     /// # Example
     ///
@@ -140,6 +143,12 @@ impl Weights {
         if !(cutoff >= 0.0 && cutoff.is_finite()) {
             return Err(invalid);
         }
+        if let Some(column) = self.values.iter().position(|w| !w.is_finite()) {
+            return Err(CutupError::NonFiniteWeight {
+                column,
+                asset: self.labels[column].clone(),
+            });
+        }
         let mut kept: Vec<f64> = self
             .values
             .iter()
@@ -147,16 +156,22 @@ impl Weights {
             .collect();
         // Weights large enough that their sum overflows are first divided by the largest, as
         // the methods do: dividing them by an infinite sum would make each one 0. Only a
-        // nonzero weight can overflow, so the largest isn't 0.
-        let largest = kept.iter().fold(0.0f64, |m, w| m.max(w.abs()));
-        if !kept.iter().sum::<f64>().is_finite() && largest.is_finite() {
+        // nonzero weight can overflow, so the largest isn't 0, and every weight is finite.
+        let mut total: f64 = kept.iter().sum();
+        if !total.is_finite() {
+            let largest = kept.iter().fold(0.0f64, |m, w| m.max(w.abs()));
             kept.iter_mut().for_each(|w| *w /= largest);
+            total = kept.iter().sum();
         }
-        let total: f64 = kept.iter().sum();
-        if !(total > 0.0 && total.is_finite()) {
+        if total <= 0.0 {
             return Err(invalid);
         }
         kept.iter_mut().for_each(|w| *w /= total);
+        // Longs and shorts that nearly cancel leave a sum so small that dividing by it can
+        // overflow.
+        if kept.iter().any(|w| !w.is_finite()) {
+            return Err(invalid);
+        }
         Ok(Weights {
             values: kept,
             labels: Arc::clone(&self.labels),
@@ -391,8 +406,24 @@ mod tests {
 
     #[test]
     fn test_clean_rejects_weights_that_are_not_finite() {
-        assert!(Weights::from(vec![0.5, f64::NAN]).clean(0.1).is_err());
-        assert!(Weights::from(vec![0.5, f64::INFINITY]).clean(0.1).is_err());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            // Even one the cutoff would drop.
+            for cutoff in [0.1, f64::MAX] {
+                assert_eq!(
+                    Weights::from(vec![0.5, bad]).clean(cutoff),
+                    Err(CutupError::NonFiniteWeight {
+                        column: 1,
+                        asset: "1".into()
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_clean_rejects_weights_whose_rescaling_overflows() {
+        let weights = Weights::from(vec![1e300, -1e300, 1e-10]);
+        assert!(weights.clean(0.0).is_err());
     }
 
     #[test]
