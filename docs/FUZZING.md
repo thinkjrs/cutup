@@ -8,7 +8,7 @@ error, but none may panic.
 | --- | --- |
 | `returns` | Every `Returns` constructor on arbitrary shapes and floats, including NaN, infinities, subnormals and huge values, then labeling, `cvar` and label lookups |
 | `allocate` | Every allocation method with arbitrary settings, including bounds, current weights, turnover, costs, risk budgets, Black-Litterman views, covariance settings and clustering. Weights it returns must be finite, one per asset, and sum to 1 |
-| `weights` | `Weights`, `PerAsset` and `Asset` from arbitrary values and labels: lookups by column and label, iteration and `Display`, which must agree |
+| `weights` | `Weights`, `PerAsset` and `Asset` from arbitrary values and labels: lookups by column and label, iteration, `Display` and `clean`, which must agree |
 
 ## Running
 
