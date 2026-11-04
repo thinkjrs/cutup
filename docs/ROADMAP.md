@@ -386,9 +386,9 @@ them at once and two methods on the same data can use different estimates.
   place of the sample covariance. It's checked for symmetry and positive
   semidefiniteness to rounding, and shrinkage and regularization apply on top.
 - **Ledoit-Wolf**, which estimates the shrinkage intensity from the data
-  rather than taking a fixed λ, toward the identity and constant-correlation
-  targets. It takes the place of a fixed λ: whichever is set last applies.
-  Moved here from the 1.x candidates.
+  rather than taking a fixed λ, toward the constant-variance (`μ·I`) and
+  constant-correlation targets. It takes the place of a fixed λ: whichever is
+  set last applies. Moved here from the 1.x candidates.
 - **An exponentially weighted (EWMA) covariance**, and **semicovariance**, for
   downside risk, as bases in place of the sample covariance.
 - **The Black-Litterman posterior covariance**,
