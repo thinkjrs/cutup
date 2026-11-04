@@ -45,6 +45,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
+- **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
 ## Choosing a method
@@ -245,6 +246,43 @@ fn main() -> Result<(), CutupError> {
 
     let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
     println!("Black-Litterman weights: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Portfolio statistics
+
+`data.stats(&weights)` measures any weights on the same returns: the expected return, the volatility, the Sharpe ratio at a risk-free rate, the diversification ratio, each asset's share of the variance, and CVaR at a confidence. They're per period, in the units of the returns, with the sample mean and covariance, so methods are compared on the same footing whatever settings produced their weights. A riskless portfolio, such as cash, has a volatility of 0, and no Sharpe ratio, diversification ratio or risk shares.
+
+```rust
+use cutup::{CutupError, Hrp, MinVariance, Returns, RiskParity};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+
+    for (name, weights) in [
+        ("min variance", data.allocate(&MinVariance::default())?),
+        ("risk parity", data.allocate(&RiskParity::default())?),
+        ("HRP", data.allocate(&Hrp::default())?),
+    ] {
+        let stats = data.stats(&weights)?;
+        println!(
+            "{name}: return {:.5}, volatility {:.5}, Sharpe {:.2}, risk shares {:.2?}, CVaR {:.5}",
+            stats.expected_return(),
+            stats.volatility(),
+            // 4% a year, for daily returns.
+            stats.sharpe_ratio(0.04 / 252.0).unwrap_or(f64::NAN),
+            stats.risk_contributions().unwrap_or_default(),
+            stats.cvar(0.8)?,
+        );
+    }
     Ok(())
 }
 ```
