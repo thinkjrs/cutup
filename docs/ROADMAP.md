@@ -395,8 +395,9 @@ them at once and two methods on the same data can use different estimates.
   `exponentially_weighted_decay(λ)`, pandas' `ewm().cov()`, and
   `semicovariance()` below each mean or `semicovariance_below(threshold)`.
 - **The Black-Litterman posterior covariance**,
-  `Σ_BL = Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` ("note 2", deferred since 0.2.7),
-  to pass to `CovarianceConfig::matrix`.
+  `Σ_BL = Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` ("note 2", deferred since 0.2.7):
+  `BlackLitterman::posterior_covariance(&data)`, a `CovarianceConfig` to pass
+  to a method's `covariance` setter.
 - **Statistics under a covariance config:** `data.stats_with(&weights,
   &config)`, alongside the sample statistics of `data.stats`.
 
