@@ -194,11 +194,12 @@ def moved(old: dict, new: dict) -> str | None:
     An intensity or parameter is compared to 1e-12 of its size, and a covariance entry to
     1e-12 of the covariance's largest entry.
     """
-    for key in old.keys() - {"covariance"}:
-        if (old[key] is None) != (new.get(key) is None):
+    for key in sorted((old.keys() | new.keys()) - {"covariance"}):
+        a, b = old.get(key), new.get(key)
+        if (a is None) != (b is None):
             return key
-        if old[key] is not None and not (old[key] == new[key] or close(old[key], new[key], 1e-12)):
-            return f"{key} {old[key]} -> {new[key]}"
+        if a is not None and not (a == b or close(a, b, 1e-12)):
+            return f"{key} {a} -> {b}"
     a, b = np.array(old["covariance"]), np.array(new["covariance"])
     if a.shape != b.shape:
         return "shape"
