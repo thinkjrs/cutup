@@ -28,7 +28,8 @@ sample covariance but for rounding, as it always is for two assets, δ is made o
 rounding, so it's null and the covariance is the sample one.
 
 With --check, nothing is written: the cases are recomputed and compared with the committed
-file, failing if any value moved by more than 1e-12 of its size or any case changed shape.
+file, failing if an intensity moved by more than 1e-12 of its size, a covariance entry by
+more than 1e-12 of the covariance's largest, or any case changed shape.
 """
 
 import json
@@ -121,14 +122,24 @@ def cases() -> list[dict]:
     return out
 
 
-def values(case: dict) -> list:
-    """Every number in a case, in order, with None for an intensity left out."""
-    flat = []
-    for target in TARGETS:
-        flat.append(case[target]["intensity"])
-        for row in case[target]["covariance"]:
-            flat.extend(row)
-    return flat
+def moved(old: dict, new: dict) -> str | None:
+    """What moved between two cases' estimates for a target, or None.
+
+    An intensity is compared to 1e-12 of its size, and a covariance entry to 1e-12 of the
+    covariance's largest entry: entries near 0 next to it, such as the exact zeros of
+    orthogonal3, are rounding that differs between BLAS builds.
+    """
+    if (old["intensity"] is None) != (new["intensity"] is None):
+        return "intensity"
+    if old["intensity"] is not None and not close(old["intensity"], new["intensity"], 1e-12):
+        return f"intensity {old['intensity']} -> {new['intensity']}"
+    a, b = np.array(old["covariance"]), np.array(new["covariance"])
+    if a.shape != b.shape:
+        return "shape"
+    gap = np.abs(a - b).max()
+    if gap > 1e-12 * np.abs(a).max():
+        return f"covariance by {gap:.3g} of {np.abs(a).max():.3g}"
+    return None
 
 
 def drift(committed: list, fresh: list) -> list[str]:
@@ -136,11 +147,13 @@ def drift(committed: list, fresh: list) -> list[str]:
         return ["case count"]
     problems = []
     for old, new in zip(committed, fresh):
-        a, b = values(old), values(new)
-        if old["dataset"] != new["dataset"] or len(a) != len(b):
+        if old["dataset"] != new["dataset"]:
             problems.append(f"{new['dataset']} changed shape")
-        elif any((x is None) != (y is None) or (x is not None and not close(x, y, 1e-12) and abs(x - y) > 1e-300) for x, y in zip(a, b)):
-            problems.append(f"{new['dataset']} drifted")
+            continue
+        for target in TARGETS:
+            what = moved(old[target], new[target])
+            if what is not None:
+                problems.append(f"{new['dataset']} {target}: {what}")
     return problems
 
 
@@ -151,7 +164,8 @@ def main() -> None:
         problems = drift(committed["cases"], fresh["cases"])
         for problem in problems:
             print(problem)
-        print(f"{len(problems)} of {len(fresh['cases'])} cases drifted from {OUTPUT}")
+        drifted = len({problem.split()[0] for problem in problems})
+        print(f"{drifted} of {len(fresh['cases'])} cases drifted from {OUTPUT}")
         sys.exit(1 if problems else 0)
     write_json(OUTPUT, fresh)
     print(f"wrote {len(fresh['cases'])} cases to {OUTPUT}")
