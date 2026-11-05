@@ -119,6 +119,41 @@ fn ledoit_wolf(returns: &DMatrix<f64>, target: ShrinkageTarget) -> DMatrix<f64> 
     intensity * prior + (1.0 - intensity) * cov
 }
 
+/// This file's exponentially weighted covariance, pandas' `ewm(halflife=h).cov()`: weights
+/// normalized to sum to 1 and the correction `1 / (1 − Σwₜ²)`.
+fn exponentially_weighted(returns: &DMatrix<f64>, half_life: f64) -> DMatrix<f64> {
+    let (t, n) = returns.shape();
+    let raw: Vec<f64> = (0..t)
+        .map(|s| 0.5f64.powf((t - 1 - s) as f64 / half_life))
+        .collect();
+    let total: f64 = raw.iter().sum();
+    let w: Vec<f64> = raw.iter().map(|x| x / total).collect();
+    let mean: Vec<f64> = (0..n)
+        .map(|i| (0..t).map(|s| w[s] * returns[(s, i)]).sum())
+        .collect();
+    let correction = 1.0 - w.iter().map(|x| x * x).sum::<f64>();
+    DMatrix::from_fn(n, n, |i, j| {
+        (0..t)
+            .map(|s| w[s] * (returns[(s, i)] - mean[i]) * (returns[(s, j)] - mean[j]))
+            .sum::<f64>()
+            / correction
+    })
+}
+
+/// This file's semicovariance below each mean, over `T − 1`, or below `threshold`, over `T`.
+fn semicovariance(returns: &DMatrix<f64>, threshold: Option<f64>) -> DMatrix<f64> {
+    let (t, n) = returns.shape();
+    let mean = returns.row_mean();
+    let shortfall = |s: usize, i: usize| (returns[(s, i)] - threshold.unwrap_or(mean[i])).min(0.0);
+    let divisor = if threshold.is_some() { t } else { t - 1 } as f64;
+    DMatrix::from_fn(n, n, |i, j| {
+        (0..t)
+            .map(|s| shortfall(s, i) * shortfall(s, j))
+            .sum::<f64>()
+            / divisor
+    })
+}
+
 fn variance(cov: &DMatrix<f64>, weights: &Weights) -> f64 {
     let w = DVector::from_column_slice(weights.as_slice());
     w.dot(&(cov * &w))
@@ -668,6 +703,52 @@ proptest! {
                     for (x, y) in a.iter().zip(&b) {
                         prop_assert!((x - y).abs() <= 1e-9, "{target:?}: {a:?} vs {b:?}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn computed_estimates_match_this_files(
+        returns in returns(),
+        half_life in 0.5f64..50.0,
+        threshold in -0.02f64..0.02,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let allocator = returns_via_flat(returns.clone()).unwrap();
+        for (config, mine) in [
+            (
+                CovarianceConfig::exponentially_weighted(half_life),
+                exponentially_weighted(&returns, half_life),
+            ),
+            (
+                CovarianceConfig::exponentially_weighted_decay(0.5f64.powf(1.0 / half_life)),
+                exponentially_weighted(&returns, half_life),
+            ),
+            (CovarianceConfig::semicovariance(), semicovariance(&returns, None)),
+            (
+                CovarianceConfig::semicovariance_below(threshold),
+                semicovariance(&returns, Some(threshold)),
+            ),
+        ] {
+            // Positive semidefinite, and conditioned well enough for a 1e-9 comparison.
+            let eigenvalues = mine.clone().symmetric_eigen().eigenvalues;
+            prop_assert!(eigenvalues.min() >= -1e-12 * eigenvalues.max(), "{mine}");
+            if mine.diagonal().min() < 1e-6 || eigenvalues.max() > 1e8 * eigenvalues.min() {
+                continue;
+            }
+            let given = CovarianceConfig::matrix_flat(mine.transpose().as_slice(), n).unwrap();
+            for (a, b) in [
+                (MinVariance::default().covariance(config.clone()), MinVariance::default().covariance(given.clone())),
+                (
+                    MinVariance::default().allow_short().covariance(config.clone()),
+                    MinVariance::default().allow_short().covariance(given),
+                ),
+            ] {
+                let (a, b) = (allocator.allocate(&a).unwrap(), allocator.allocate(&b).unwrap());
+                for (x, y) in a.iter().zip(&b) {
+                    prop_assert!((x - y).abs() <= 1e-9, "{config:?}: {a:?} vs {b:?}");
                 }
             }
         }
