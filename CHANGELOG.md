@@ -44,6 +44,12 @@ All notable changes to this project are documented here. The format follows
     threshold is `InvalidConfig` when a method uses it, Ledoit-Wolf shrinkage of any of them is
     `NotSupported`, and an asset whose estimated variance is 0, such as one never below the
     threshold, is `ZeroVariance` unless an adjustment gives it one.
+- `BlackLitterman::posterior_covariance(&data)`, the posterior covariance of the returns,
+  `Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` (He and Litterman, 1999), as PyPortfolioOpt's `bl_cov` and
+  riskfolio-lib's `black_litterman` compute it. It returns a `CovarianceConfig` holding it as a
+  given covariance, to pass to a method's `covariance` setter alongside the posterior returns,
+  with shrinkage and regularization still available on top. With no views it's `(1 + τ)Σ`. Its
+  errors are those of `expected_returns`, and `NonFiniteCovariance` if it overflows.
 
 ### Fixed
 
