@@ -30,6 +30,20 @@ All notable changes to this project are documented here. The format follows
   moments the papers use, and applies to cutup's `T − 1` sample covariance. With a given
   covariance it's `NotSupported`, and a constant asset is `ZeroVariance` toward a constant
   correlation, or when the intensity is 0.
+- Exponentially weighted covariances and semicovariances, as estimates in place of the sample
+  covariance, which every covariance-based method takes through `.covariance(..)`, with
+  shrinkage and regularization on top:
+  - `CovarianceConfig::exponentially_weighted(half_life)`, or
+    `exponentially_weighted_decay(λ)` with `λ = 2^(−1/half_life)`, weights the last row most.
+    It's pandas' `ewm().cov()`, as in riskfolio-lib and skfolio: a weighted mean and the
+    unbiased correction for the weights, so a long half-life gives the sample covariance.
+  - `CovarianceConfig::semicovariance()` counts returns below each asset's mean, over `T − 1`,
+    as riskfolio-lib does, and `semicovariance_below(threshold)` those below a fixed
+    threshold, over `T`, as PyPortfolioOpt does.
+  - HRP and HERC still cluster on the returns' correlations. An invalid half-life, decay or
+    threshold is `InvalidConfig` when a method uses it, Ledoit-Wolf shrinkage of any of them is
+    `NotSupported`, and an asset whose estimated variance is 0, such as one never below the
+    threshold, is `ZeroVariance` unless an adjustment gives it one.
 
 ### Fixed
 
@@ -49,6 +63,11 @@ All notable changes to this project are documented here. The format follows
   shares summing to 0.9995, and a share was multiplied by its weight before being rescaled, so
   one of 1.5e-323 underflowed to 0 and every share was NaN. Each weight is now rescaled first,
   and the shares divided by their sum. Found by fuzzing.
+- `Hrp` and `Herc` no longer return weights of 0 on covariances with variances near the smallest
+  normal number, about 1e-308: the same overflow as in `InverseVariance` above, in the
+  inverse-variance weights they split by within each cluster. Each cluster's smallest variance
+  is now divided by each asset's, which keeps every term in (0, 1]. Found by fuzzing, on a
+  semicovariance of 0 regularized by 1.4e-308, but a given covariance reached it too.
 
 ## [0.3.3] - 2026-11-04
 
