@@ -177,8 +177,16 @@ pub(crate) fn cluster_variance(cov: &DMatrix<f64>, cluster: &[usize]) -> f64 {
 
 /// Returns the inverse-variance weights under `cov` of the assets in `cluster`, summing
 /// to 1.
+///
+/// Each is the smallest variance over the asset's own, the same once normalized as `1 / σ²`,
+/// but in `(0, 1]`: inverses of variances near the smallest normal number would overflow, or
+/// sum past `f64::MAX` and leave every weight 0.
 pub(crate) fn inverse_variance_weights(cov: &DMatrix<f64>, cluster: &[usize]) -> Vec<f64> {
-    let inverse: Vec<f64> = cluster.iter().map(|&i| 1.0 / cov[(i, i)]).collect();
+    let smallest = cluster
+        .iter()
+        .map(|&i| cov[(i, i)])
+        .fold(f64::INFINITY, f64::min);
+    let inverse: Vec<f64> = cluster.iter().map(|&i| smallest / cov[(i, i)]).collect();
     let total: f64 = inverse.iter().sum();
     inverse.iter().map(|w| w / total).collect()
 }

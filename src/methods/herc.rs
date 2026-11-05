@@ -209,6 +209,7 @@ mod tests {
     use super::*;
     use crate::test_support::{assert_weights_close, collinear_returns, two_block_returns};
     use crate::{Hrp, InverseVariance};
+    use nalgebra::DMatrix;
     use nalgebra::dmatrix;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -260,6 +261,51 @@ mod tests {
             assert_weights_close(&allocator.allocate(&herc).unwrap(), &iv, 1e-15);
         }
         assert_weights_close(&allocator.allocate(&Herc::default()).unwrap(), &iv, 1e-15);
+    }
+
+    #[test]
+    fn test_hierarchical_weights_on_variances_near_the_smallest_normal() {
+        // A diagonal covariance gives the same weights at any scale, but near 1e-308 the
+        // inverses of the variances summed past f64::MAX, which left every weight 0.
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let ratios = [1.0, 2.0, 1.0, 2.0, 1.0];
+        let methods = |scale: f64| -> Vec<Box<dyn Allocation>> {
+            let diagonal =
+                DMatrix::from_fn(5, 5, |i, j| if i == j { ratios[i] * scale } else { 0.0 });
+            let rows: Vec<Vec<f64>> = diagonal
+                .row_iter()
+                .map(|r| r.iter().copied().collect())
+                .collect();
+            let given = CovarianceConfig::matrix(&rows).unwrap();
+            vec![
+                Box::new(Hrp::default().covariance(given.clone())),
+                Box::new(Herc::default().covariance(given.clone())),
+                Box::new(Herc::default().clusters(5).covariance(given)),
+            ]
+        };
+        // Uncorrelated, so HRP is inverse variance.
+        let inverse_variance = Weights::from(vec![0.25, 0.125, 0.25, 0.125, 0.25]);
+        let at_one: Vec<Weights> = methods(1.0)
+            .iter()
+            .map(|method| data.allocate(method.as_ref()).unwrap())
+            .collect();
+        assert_weights_close(&at_one[0], &inverse_variance, 1e-15);
+        for scale in [1.4e-308, 1e-307, 1e-300] {
+            for (method, want) in methods(scale).iter().zip(&at_one) {
+                let weights = data.allocate(method.as_ref()).unwrap();
+                assert_weights_close(&weights, want, 1e-12);
+            }
+        }
+        // As the fuzzer found it: every return is above the threshold, so the semicovariance is
+        // 0, and regularization leaves it at 1.4e-308 · I.
+        let tiny = CovarianceConfig::semicovariance_below(-1.2e193).regularization(1.4e-308);
+        let equal = data.allocate(&crate::EqualWeight).unwrap();
+        for method in [
+            Box::new(Hrp::default().covariance(tiny.clone())) as Box<dyn Allocation>,
+            Box::new(Herc::default().covariance(tiny)),
+        ] {
+            assert_weights_close(&data.allocate(method.as_ref()).unwrap(), &equal, 1e-12);
+        }
     }
 
     #[test]
