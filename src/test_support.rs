@@ -131,3 +131,32 @@ pub(crate) fn labeled() -> Returns {
         .labeled(["SPY", "TLT", "GLD"])
         .unwrap()
 }
+
+/// The datasets in `tests/fixtures/datasets.json`, by name, as `tests/reference.rs` reads them.
+pub(crate) fn datasets() -> Vec<(String, Returns)> {
+    let datasets: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/datasets.json")).unwrap();
+    let datasets = datasets.as_object().unwrap();
+    datasets
+        .iter()
+        .map(|(name, dataset)| {
+            let rows: Vec<Vec<f64>> = dataset["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    row.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_f64().unwrap())
+                        .collect()
+                })
+                .collect();
+            let data = match dataset["kind"].as_str().unwrap() {
+                "prices" => Returns::from_prices(&rows),
+                _ => Returns::new(&rows),
+            };
+            (name.clone(), data.unwrap())
+        })
+        .collect()
+}

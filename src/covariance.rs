@@ -333,6 +333,15 @@ impl CovarianceConfig {
         }
     }
 
+    /// Uses `matrix`, computed by the crate to be symmetric and positive semidefinite, as a
+    /// given covariance, without checking it again.
+    pub(crate) fn computed(matrix: DMatrix<f64>) -> Self {
+        CovarianceConfig {
+            estimate: Estimate::Given(Arc::new(matrix)),
+            ..CovarianceConfig::default()
+        }
+    }
+
     /// Checks `matrix` is a covariance, made exactly symmetric, and uses it.
     fn given(matrix: DMatrix<f64>) -> Result<Self, CutupError> {
         let n = matrix.nrows();
@@ -754,7 +763,7 @@ fn constant_correlation(cov: &DMatrix<f64>) -> DMatrix<f64> {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_weights_close, factor_returns, full_rank_prices, rank_one_returns,
+        assert_weights_close, datasets, factor_returns, full_rank_prices, rank_one_returns,
         two_block_returns, uncorrelated_returns,
     };
     use crate::{
@@ -1097,35 +1106,6 @@ mod tests {
 
     fn ledoit_wolf(target: ShrinkageTarget) -> CovarianceConfig {
         CovarianceConfig::default().ledoit_wolf(target)
-    }
-
-    /// The datasets in `tests/fixtures/datasets.json`, by name.
-    fn datasets() -> Vec<(String, Returns)> {
-        let datasets: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/datasets.json")).unwrap();
-        let datasets = datasets.as_object().unwrap();
-        datasets
-            .iter()
-            .map(|(name, dataset)| {
-                let rows: Vec<Vec<f64>> = dataset["data"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|row| {
-                        row.as_array()
-                            .unwrap()
-                            .iter()
-                            .map(|v| v.as_f64().unwrap())
-                            .collect()
-                    })
-                    .collect();
-                let data = match dataset["kind"].as_str().unwrap() {
-                    "prices" => Returns::from_prices(&rows),
-                    _ => Returns::new(&rows),
-                };
-                (name.clone(), data.unwrap())
-            })
-            .collect()
     }
 
     /// Each case in `tests/fixtures/covariance.json`, from `reference/covariance.py`, with its
