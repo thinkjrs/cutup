@@ -610,29 +610,35 @@ impl Returns {
                     / total
             })
             .collect();
-        // Each centered return times the square root of its weight, so the covariance is a
-        // product XᵀX: symmetric and positive semidefinite.
-        let x = DMatrix::from_fn(periods, n, |t, i| {
-            (self.returns[(t, i)] - mean[i]) * weights[t].sqrt()
-        });
         // Σw − Σw²/Σw, from its closed form 2λ(1 − λ^(T−1)) / (1 − λ²), with each 1 − λ^k as
         // −expm1(k·ln λ), so neither cancels for λ near 0 or 1.
         let lambda = log_decay.exp();
         let denominator = 2.0 * lambda * -((periods - 1) as f64 * log_decay).exp_m1()
             / -(2.0 * log_decay).exp_m1();
-        x.transpose() * x / denominator
+        // Each weight over the denominator: for λ near 0 both are about λ, and dividing only
+        // the product would take the deviations times λ through subnormal numbers first.
+        let scales: Vec<f64> = weights.iter().map(|w| (w / denominator).sqrt()).collect();
+        // Each centered return times the square root of its scaled weight, so the covariance
+        // is a product XᵀX: symmetric and positive semidefinite.
+        let x = DMatrix::from_fn(periods, n, |t, i| {
+            (self.returns[(t, i)] - mean[i]) * scales[t]
+        });
+        x.tr_mul(&x)
     }
 
     /// The semicovariance below each asset's mean, divided by `T − 1`, for `None`, or below a
     /// fixed threshold, divided by `T`.
     fn semicovariance(&self, threshold: Option<f64>) -> DMatrix<f64> {
         let (periods, n) = self.returns.shape();
-        let mean = self.returns.row_mean();
+        let floor = match threshold {
+            Some(threshold) => vec![threshold; n],
+            None => self.returns.row_mean().iter().copied().collect(),
+        };
         let below = DMatrix::from_fn(periods, n, |t, i| {
-            (self.returns[(t, i)] - threshold.unwrap_or(mean[i])).min(0.0)
+            (self.returns[(t, i)] - floor[i]).min(0.0)
         });
         let degrees = periods - usize::from(threshold.is_none());
-        below.transpose() * below / degrees as f64
+        below.tr_mul(&below) / degrees as f64
     }
 
     /// The Ledoit-Wolf shrinkage intensity toward `target`, in `[0, 1]`, from the `1/T`
@@ -1574,6 +1580,20 @@ mod tests {
                 "{got} vs {want}"
             );
         }
+        // At the shortest half-life λ is about 3.3e-308, so the deviations' squares times λ
+        // would be subnormal, or 0, for returns this small.
+        let shortest = std::f64::consts::LN_2 / 708.0 * (1.0 + 1e-15);
+        let small = &returns * 1e-9;
+        let data = Returns::returns_matrix(small.clone()).unwrap();
+        let last_two = Returns::returns_matrix(small.rows(18, 2).into_owned()).unwrap();
+        let got = data
+            .adjusted_covariance(&CovarianceConfig::exponentially_weighted(shortest))
+            .unwrap();
+        let want = &last_two.cov_matrix;
+        assert!(
+            (&got - want).amax() <= 1e-12 * want.amax(),
+            "{got} vs {want}"
+        );
     }
 
     #[test]
