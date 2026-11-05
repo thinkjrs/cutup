@@ -67,7 +67,10 @@ All notable changes to this project are documented here. The format follows
   normal number, about 1e-308: the same overflow as in `InverseVariance` above, in the
   inverse-variance weights they split by within each cluster. Each cluster's smallest variance
   is now divided by each asset's, which keeps every term in (0, 1]. Found by fuzzing, on a
-  semicovariance of 0 regularized by 1.4e-308, but a given covariance reached it too.
+  semicovariance of 0 regularized by 1.4e-308, but a given covariance reached it too. And
+  where shrinkage underflows and leaves an asset with a variance of 0, as a shrinkage of 1e-30
+  toward an average variance near 1e-300 does, the assets in its cluster with none now split
+  its weight, the limit of `1 / σ²`, where `Herc` returned `NonFiniteWeight`.
 
 ## [0.3.3] - 2026-11-04
 
