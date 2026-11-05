@@ -390,7 +390,10 @@ them at once and two methods on the same data can use different estimates.
   constant-correlation targets. It takes the place of a fixed λ: whichever is
   set last applies. Moved here from the 1.x candidates.
 - **An exponentially weighted (EWMA) covariance**, and **semicovariance**, for
-  downside risk, as bases in place of the sample covariance.
+  downside risk, as bases in place of the sample covariance:
+  `CovarianceConfig::exponentially_weighted(half_life)` or
+  `exponentially_weighted_decay(λ)`, pandas' `ewm().cov()`, and
+  `semicovariance()` below each mean or `semicovariance_below(threshold)`.
 - **The Black-Litterman posterior covariance**,
   `Σ_BL = Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` ("note 2", deferred since 0.2.7),
   to pass to `CovarianceConfig::matrix`.
