@@ -30,7 +30,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 ## Features
 
-- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, or a covariance of your own with `CovarianceConfig::matrix`.
+- **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
@@ -252,7 +252,7 @@ fn main() -> Result<(), CutupError> {
 
 ### Ledoit-Wolf shrinkage
 
-`.shrinkage(λ)` takes a fixed intensity. `.ledoit_wolf(target)` estimates it from the returns instead, with Ledoit and Wolf's formulas for the intensity that minimizes the expected error, toward one of two targets: `ShrinkageTarget::ConstantVariance`, the average variance with no correlation, as `.shrinkage(λ)` uses, or `ShrinkageTarget::ConstantCorrelation`, each asset's own variance with the average correlation between them. Whichever of the two is set last applies. The estimate needs the returns, so it isn't supported with a covariance of your own.
+`.shrinkage(λ)` takes a fixed intensity. `.ledoit_wolf(target)` estimates it from the returns instead, with Ledoit and Wolf's formulas for the intensity that minimizes the expected error, toward one of two targets: `ShrinkageTarget::ConstantVariance`, the average variance with no correlation, as `.shrinkage(λ)` uses, or `ShrinkageTarget::ConstantCorrelation`, each asset's own variance with the average correlation between them. Whichever of the two is set last applies. Its intensity is for the sample covariance, so it isn't supported with the other estimates below or a covariance of your own.
 
 ```rust
 use cutup::{CutupError, MinVariance, Returns, ShrinkageTarget};
@@ -269,6 +269,35 @@ fn main() -> Result<(), CutupError> {
     let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
     let weights = data.allocate(&method)?;
     println!("Min variance, shrunk: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Exponentially weighted covariance and semicovariance
+
+In place of the sample covariance, `CovarianceConfig::exponentially_weighted(half_life)` weights recent periods more: each period's weight halves every `half_life` periods back from the last row. `exponentially_weighted_decay(λ)` takes the decay instead, such as RiskMetrics' daily 0.94, a half-life of about 11.2 periods. It's pandas' `ewm().cov()`, so a long half-life gives the sample covariance.
+
+For downside risk, `CovarianceConfig::semicovariance()` counts only the returns below each asset's mean, and `semicovariance_below(threshold)` only those below a threshold such as 0 or a risk-free rate per period. Shrinkage and regularization apply on top of each.
+
+```rust
+use cutup::{CovarianceConfig, CutupError, MinVariance, Returns, RiskParity};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.006,  0.008, -0.003],
+    ];
+    let data = Returns::new(&returns)?;
+    let recent = CovarianceConfig::exponentially_weighted(3.0);
+    let downside = CovarianceConfig::semicovariance_below(0.0).shrinkage(0.1);
+
+    let min_variance = data.allocate(&MinVariance::default().covariance(recent))?;
+    let risk_parity = data.allocate(&RiskParity::default().covariance(downside))?;
+    println!("Min variance, recent: {:?}", min_variance.as_slice());
+    println!("Risk parity, downside: {:?}", risk_parity.as_slice());
     Ok(())
 }
 ```
