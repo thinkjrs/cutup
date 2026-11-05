@@ -88,7 +88,28 @@ struct Covariance {
     shrinkage: Option<f64>,
     regularization: Option<f64>,
     given: Option<Given>,
+    computed: Option<Computed>,
     ledoit_wolf: Option<LedoitWolf>,
+}
+
+/// A covariance estimated from the returns in place of the sample one, with any parameter.
+#[derive(Arbitrary, Debug)]
+enum Computed {
+    HalfLife(f64),
+    Decay(f64),
+    Semicovariance,
+    Below(f64),
+}
+
+impl Computed {
+    fn config(self) -> CovarianceConfig {
+        match self {
+            Computed::HalfLife(h) => CovarianceConfig::exponentially_weighted(h),
+            Computed::Decay(lambda) => CovarianceConfig::exponentially_weighted_decay(lambda),
+            Computed::Semicovariance => CovarianceConfig::semicovariance(),
+            Computed::Below(threshold) => CovarianceConfig::semicovariance_below(threshold),
+        }
+    }
 }
 
 /// Ledoit-Wolf shrinkage, set before or after a fixed intensity: the last one set applies.
@@ -270,11 +291,15 @@ fn linkage(choice: u8) -> Linkage {
 }
 
 /// Applies the covariance settings with any method's `covariance`, `shrinkage`, `ledoit_wolf`
-/// and `regularization`. A given covariance the constructor rejects is left out.
+/// and `regularization`. A given covariance takes the place of a computed one, and one the
+/// constructor rejects is left out.
 macro_rules! covariance {
     ($method:expr, $covariance:expr) => {{
         let mut method = $method;
         let covariance = $covariance;
+        if let Some(computed) = covariance.computed {
+            method = method.covariance(computed.config());
+        }
         if let Some(config) = covariance.given.and_then(given) {
             method = method.covariance(config);
         }
