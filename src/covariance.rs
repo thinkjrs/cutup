@@ -76,6 +76,53 @@ enum Estimate {
     Sample,
     /// A covariance given in column order, checked when it was given.
     Given(Arc<DMatrix<f64>>),
+    /// The exponentially weighted covariance, with the decay as it was given.
+    ExponentiallyWeighted(Decay),
+    /// The semicovariance below each asset's mean, for `None`, or below a fixed threshold.
+    Semi(Option<f64>),
+}
+
+impl Estimate {
+    /// What [`CutupError::NotSupported`] calls the estimate, if it isn't the sample one.
+    fn name(&self) -> Option<&'static str> {
+        match self {
+            Estimate::Sample => None,
+            Estimate::Given(_) => Some("a given covariance"),
+            Estimate::ExponentiallyWeighted(_) => Some("an exponentially weighted covariance"),
+            Estimate::Semi(_) => Some("a semicovariance"),
+        }
+    }
+}
+
+/// How fast the weights of an exponentially weighted covariance decay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Decay {
+    HalfLife(f64),
+    Lambda(f64),
+}
+
+impl Decay {
+    /// The smallest `ln λ`: `e^−708`, about 3.3e-308, is above `f64::MIN_POSITIVE`, so `λ` is
+    /// a normal number and the weights `λ^k` it gives can only underflow to 0 or stay exact
+    /// enough.
+    const MIN_LOG: f64 = -708.0;
+
+    /// `ln λ`, after checking it's in `[−708, 0)`. From a half-life it's `−ln 2 / h`, without
+    /// rounding `λ` first.
+    fn log(self) -> Result<f64, CutupError> {
+        let (field, value, log) = match self {
+            Decay::HalfLife(h) => ("half_life", h, -std::f64::consts::LN_2 / h),
+            Decay::Lambda(lambda) => ("decay", lambda, lambda.ln()),
+        };
+        // Outside it are NaN, a half-life of 0 or below, whose log is −∞ or positive, or of
+        // infinity, whose log is −0, a λ of 0 or below, or 1 or above, and a half-life or λ so
+        // small that λ would be subnormal.
+        if (Decay::MIN_LOG..0.0).contains(&log) {
+            Ok(log)
+        } else {
+            Err(CutupError::InvalidConfig { field, value })
+        }
+    }
 }
 
 impl CovarianceConfig {
@@ -148,6 +195,142 @@ impl CovarianceConfig {
     #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_matrix(matrix: DMatrix<f64>) -> Result<Self, CutupError> {
         CovarianceConfig::given(matrix)
+    }
+
+    /// Uses the exponentially weighted covariance of the returns in place of the sample
+    /// covariance, so recent periods count for more: the weight of each period halves every
+    /// `half_life` periods back from the last row. It's the same estimate as
+    /// [`CovarianceConfig::exponentially_weighted_decay`] with `λ = 2^(−1/half_life)`; RiskMetrics'
+    /// daily `λ = 0.94` is a half-life of about 11.2 periods.
+    ///
+    /// The weights `wₜ = λ^(T−1−t)` give a weighted mean `m = Σwₜrₜ / Σwₜ`, and the covariance is
+    /// `Σwₜ(rₜ − m)(rₜ − m)ᵀ / (Σwₜ − Σwₜ² / Σwₜ)`, the unbiased estimate for these weights. It's
+    /// pandas' `ewm(alpha=1 − λ).cov()`, which riskfolio-lib's `"ewma1"` and skfolio's
+    /// `EWCovariance` use. With equal weights the denominator is `T − 1`, so as the half-life
+    /// grows the estimate becomes the sample covariance.
+    ///
+    /// Shrinkage and regularization apply on top of it. HRP and HERC still cluster on the
+    /// correlations of the returns: like a [given covariance](CovarianceConfig::matrix), it
+    /// changes only how they split the weight.
+    ///
+    /// # Errors
+    ///
+    /// A method using it returns:
+    ///
+    /// * [`CutupError::InvalidConfig`] if `half_life` isn't finite and positive, or is so short,
+    ///   below `ln 2 / 708`, about 0.001 periods, that `λ` would be below about 3.3e-308.
+    /// * [`CutupError::ZeroVariance`] for an asset whose weighted variance is 0, to rounding,
+    ///   unless an adjustment gives it a positive variance.
+    /// * [`CutupError::NotSupported`] with [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf),
+    ///   whose intensity is for the sample covariance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MinVariance, Returns};
+    ///
+    /// // The second asset was calm, then turned volatile.
+    /// let data = Returns::new(&[
+    ///      [ 0.010,  0.001],
+    ///      [-0.012, -0.001],
+    ///      [ 0.011,  0.001],
+    ///      [-0.010,  0.030],
+    ///      [ 0.012, -0.028],
+    /// ])?;
+    /// let sample = data.allocate(&MinVariance::default())?;
+    /// let recent = CovarianceConfig::exponentially_weighted(1.0);
+    /// let weighted = data.allocate(&MinVariance::default().covariance(recent))?;
+    /// // Weighting recent periods more holds less of it.
+    /// assert!(weighted[1] < sample[1]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    ///
+    /// <https://en.wikipedia.org/wiki/Exponential_smoothing>
+    pub fn exponentially_weighted(half_life: f64) -> Self {
+        CovarianceConfig {
+            estimate: Estimate::ExponentiallyWeighted(Decay::HalfLife(half_life)),
+            ..CovarianceConfig::default()
+        }
+    }
+
+    /// Uses the exponentially weighted covariance of the returns with decay `λ`, in `(0, 1)`:
+    /// each period back from the last row weighs `λ` times the one after it, as riskfolio-lib's
+    /// `d`. Otherwise it's the same as [`CovarianceConfig::exponentially_weighted`], with a
+    /// half-life of `−ln 2 / ln λ`.
+    ///
+    /// # Errors
+    ///
+    /// As for [`CovarianceConfig::exponentially_weighted`], with
+    /// [`CutupError::InvalidConfig`] if `λ` isn't in `(0, 1)`, or is below `e^−708`, about
+    /// 3.3e-308.
+    pub fn exponentially_weighted_decay(lambda: f64) -> Self {
+        CovarianceConfig {
+            estimate: Estimate::ExponentiallyWeighted(Decay::Lambda(lambda)),
+            ..CovarianceConfig::default()
+        }
+    }
+
+    /// Uses the semicovariance of the returns below each asset's mean in place of the sample
+    /// covariance, for downside risk: each return above its asset's mean counts as the mean.
+    /// With `dₜᵢ = min(rₜᵢ − r̄ᵢ, 0)` it's `Σₜ dₜᵢ dₜⱼ / (T − 1)`, riskfolio-lib's `"semi"`.
+    ///
+    /// Shrinkage and regularization apply on top of it. HRP and HERC still cluster on the
+    /// correlations of the returns: like a [given covariance](CovarianceConfig::matrix), it
+    /// changes only how they split the weight.
+    ///
+    /// # Errors
+    ///
+    /// A method using it returns:
+    ///
+    /// * [`CutupError::ZeroVariance`] for a constant asset, unless an adjustment gives it a
+    ///   positive variance.
+    /// * [`CutupError::NotSupported`] with [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf),
+    ///   whose intensity is for the sample covariance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MinVariance, Returns};
+    ///
+    /// // The same spread, but the first asset's large moves are gains and the second's losses.
+    /// let data = Returns::new(&[
+    ///      [ 0.030, -0.010],
+    ///      [-0.010,  0.010],
+    ///      [-0.010, -0.030],
+    ///      [-0.010,  0.010],
+    /// ])?;
+    /// let downside = CovarianceConfig::semicovariance();
+    /// let weights = data.allocate(&MinVariance::default().covariance(downside))?;
+    /// assert!(weights[0] > weights[1]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    ///
+    /// <https://en.wikipedia.org/wiki/Downside_risk>
+    pub fn semicovariance() -> Self {
+        CovarianceConfig {
+            estimate: Estimate::Semi(None),
+            ..CovarianceConfig::default()
+        }
+    }
+
+    /// Uses the semicovariance of the returns below `threshold`, such as 0 or a risk-free rate
+    /// per period, in place of the sample covariance: each return above it counts as the
+    /// threshold. With `dₜᵢ = min(rₜᵢ − threshold, 0)` it's `Σₜ dₜᵢ dₜⱼ / T`, PyPortfolioOpt's
+    /// `semicovariance` with `benchmark=threshold`. Nothing is estimated, so it divides by `T`,
+    /// unlike [`CovarianceConfig::semicovariance`], whose mean takes a degree of freedom.
+    ///
+    /// A constant asset below the threshold has a semivariance: each period loses against it.
+    ///
+    /// # Errors
+    ///
+    /// As for [`CovarianceConfig::semicovariance`], with [`CutupError::InvalidConfig`] if
+    /// `threshold` isn't finite, and [`CutupError::ZeroVariance`] for an asset that's never
+    /// below it, to rounding, which has no downside to measure.
+    pub fn semicovariance_below(threshold: f64) -> Self {
+        CovarianceConfig {
+            estimate: Estimate::Semi(Some(threshold)),
+            ..CovarianceConfig::default()
+        }
     }
 
     /// Checks `matrix` is a covariance, made exactly symmetric, and uses it.
@@ -281,8 +464,9 @@ impl CovarianceConfig {
     }
 
     /// Returns [`CutupError::InvalidConfig`] if the regularization is negative or not finite,
-    /// or the shrinkage is outside `[0, 1]`, and [`CutupError::NotSupported`] for Ledoit-Wolf
-    /// shrinkage of a given covariance.
+    /// the shrinkage is outside `[0, 1]`, or the decay or threshold of the estimate is invalid,
+    /// and [`CutupError::NotSupported`] for Ledoit-Wolf shrinkage of anything but the sample
+    /// covariance.
     pub(crate) fn validate(&self) -> Result<(), CutupError> {
         if let Some(value) = self
             .regularization
@@ -299,12 +483,23 @@ impl CovarianceConfig {
                 value,
             });
         }
-        if let (Some(Shrinkage::LedoitWolf(_)), Estimate::Given(_)) =
-            (self.shrinkage, &self.estimate)
+        match self.estimate {
+            Estimate::ExponentiallyWeighted(decay) => {
+                decay.log()?;
+            }
+            Estimate::Semi(Some(value)) if !value.is_finite() => {
+                return Err(CutupError::InvalidConfig {
+                    field: "threshold",
+                    value,
+                });
+            }
+            _ => {}
+        }
+        if let (Some(Shrinkage::LedoitWolf(_)), Some(with)) = (self.shrinkage, self.estimate.name())
         {
             return Err(CutupError::NotSupported {
                 setting: "ledoit_wolf",
-                with: "a given covariance",
+                with,
             });
         }
         Ok(())
@@ -315,8 +510,9 @@ impl Returns {
     /// The covariance `config` sets, adjusted, after checking its values.
     ///
     /// Returns [`CutupError::DimensionMismatch`] for a given covariance of another size,
-    /// [`CutupError::ZeroVariance`] for a constant asset, or one given a variance of 0, unless
-    /// shrinkage toward a constant variance or regularization gives it a positive variance,
+    /// [`CutupError::ZeroVariance`] for an asset whose estimated variance is 0, to rounding, or
+    /// one given a variance of 0, unless shrinkage toward a constant variance or regularization
+    /// gives it a positive variance,
     /// [`CutupError::NonFiniteCovariance`] if the result isn't finite, and
     /// [`CutupError::SingularCovariance`] if it is zero.
     pub(crate) fn adjusted_covariance(
@@ -332,15 +528,9 @@ impl Returns {
         let adjusted = shrinkage.is_some_and(|(lambda, _)| lambda > 0.0)
             || config.regularization.unwrap_or(0.0) > 0.0;
         let n = self.cov_matrix.ncols();
+        let estimated;
         let base = match &config.estimate {
-            Estimate::Sample => {
-                if !adjusted {
-                    if let Some(asset) = self.find_zero_variance() {
-                        return Err(self.zero_variance(asset));
-                    }
-                }
-                &self.cov_matrix
-            }
+            Estimate::Sample => &self.cov_matrix,
             Estimate::Given(matrix) => {
                 if matrix.nrows() != n {
                     return Err(CutupError::DimensionMismatch {
@@ -349,14 +539,27 @@ impl Returns {
                         actual: matrix.nrows(),
                     });
                 }
-                if !adjusted {
-                    if let Some(asset) = (0..n).find(|&i| matrix[(i, i)] == 0.0) {
-                        return Err(self.zero_variance(asset));
-                    }
-                }
                 matrix.as_ref()
             }
+            Estimate::ExponentiallyWeighted(decay) => {
+                estimated = self.exponentially_weighted(decay.log()?);
+                &estimated
+            }
+            Estimate::Semi(threshold) => {
+                estimated = self.semicovariance(*threshold);
+                &estimated
+            }
         };
+        if !adjusted {
+            // A given variance is exact; one estimated from the returns is 0 to rounding.
+            let zero = match &config.estimate {
+                Estimate::Given(_) => (0..n).find(|&i| base[(i, i)] == 0.0),
+                _ => self.find_zero_variance_in(base),
+            };
+            if let Some(asset) = zero {
+                return Err(self.zero_variance(asset));
+            }
+        }
 
         let identity = DMatrix::identity(n, n);
 
@@ -386,6 +589,50 @@ impl Returns {
             return Err(CutupError::SingularCovariance);
         }
         Ok(adjusted)
+    }
+
+    /// The exponentially weighted covariance for the decay `λ = e^log_decay`, the last row
+    /// weighted most.
+    fn exponentially_weighted(&self, log_decay: f64) -> DMatrix<f64> {
+        let (periods, n) = self.returns.shape();
+        let weights: Vec<f64> = (0..periods)
+            .map(|t| ((periods - 1 - t) as f64 * log_decay).exp())
+            .collect();
+        let total: f64 = weights.iter().sum();
+        let mean: Vec<f64> = (0..n)
+            .map(|i| {
+                let column = self.returns.column(i);
+                weights
+                    .iter()
+                    .zip(column.iter())
+                    .map(|(w, r)| w * r)
+                    .sum::<f64>()
+                    / total
+            })
+            .collect();
+        // Each centered return times the square root of its weight, so the covariance is a
+        // product XᵀX: symmetric and positive semidefinite.
+        let x = DMatrix::from_fn(periods, n, |t, i| {
+            (self.returns[(t, i)] - mean[i]) * weights[t].sqrt()
+        });
+        // Σw − Σw²/Σw, from its closed form 2λ(1 − λ^(T−1)) / (1 − λ²), with each 1 − λ^k as
+        // −expm1(k·ln λ), so neither cancels for λ near 0 or 1.
+        let lambda = log_decay.exp();
+        let denominator = 2.0 * lambda * -((periods - 1) as f64 * log_decay).exp_m1()
+            / -(2.0 * log_decay).exp_m1();
+        x.transpose() * x / denominator
+    }
+
+    /// The semicovariance below each asset's mean, divided by `T − 1`, for `None`, or below a
+    /// fixed threshold, divided by `T`.
+    fn semicovariance(&self, threshold: Option<f64>) -> DMatrix<f64> {
+        let (periods, n) = self.returns.shape();
+        let mean = self.returns.row_mean();
+        let below = DMatrix::from_fn(periods, n, |t, i| {
+            (self.returns[(t, i)] - threshold.unwrap_or(mean[i])).min(0.0)
+        });
+        let degrees = periods - usize::from(threshold.is_none());
+        below.transpose() * below / degrees as f64
     }
 
     /// The Ledoit-Wolf shrinkage intensity toward `target`, in `[0, 1]`, from the `1/T`
@@ -875,21 +1122,55 @@ mod tests {
             .collect()
     }
 
-    /// Against `tests/fixtures/covariance.json`, from `reference/covariance.py`: scikit-learn's
-    /// intensity toward a constant variance, and the paper's toward a constant correlation,
-    /// cross-checked against PyPortfolioOpt's.
-    #[test]
-    fn ledoit_wolf_matches_the_python_reference() {
+    /// Each case in `tests/fixtures/covariance.json`, from `reference/covariance.py`, with its
+    /// dataset's name and returns.
+    fn reference_cases() -> Vec<(serde_json::Value, String, Returns)> {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/covariance.json")).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
         let datasets = datasets();
         assert_eq!(cases.len(), datasets.len());
-        for case in cases {
-            let (name, data) = datasets
+        cases
+            .iter()
+            .map(|case| {
+                let (name, data) = datasets
+                    .iter()
+                    .find(|(name, _)| case["dataset"] == name.as_str())
+                    .unwrap();
+                (case.clone(), name.clone(), data.clone())
+            })
+            .collect()
+    }
+
+    /// Asserts `config`'s covariance on `data` is the fixture's `expected["covariance"]`, to
+    /// 1e-12 of its largest entry.
+    fn assert_reference(
+        data: &Returns,
+        config: &CovarianceConfig,
+        expected: &serde_json::Value,
+        what: &str,
+    ) {
+        let got = data.adjusted_covariance(config).unwrap();
+        let want = DMatrix::from_row_iterator(
+            got.nrows(),
+            got.ncols(),
+            expected["covariance"]
+                .as_array()
+                .unwrap()
                 .iter()
-                .find(|(name, _)| case["dataset"] == name.as_str())
-                .unwrap();
+                .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())),
+        );
+        assert!(
+            (&got - &want).amax() <= 1e-12 * want.amax(),
+            "{what}: {got} vs {want}"
+        );
+    }
+
+    /// Against the fixture: scikit-learn's intensity toward a constant variance, and the
+    /// paper's toward a constant correlation, cross-checked against PyPortfolioOpt's.
+    #[test]
+    fn ledoit_wolf_matches_the_python_reference() {
+        for (case, name, data) in reference_cases() {
             for (target, key) in TARGETS
                 .into_iter()
                 .zip(["constant_variance", "constant_correlation"])
@@ -904,23 +1185,37 @@ mod tests {
                         "{name} {key}: {got} vs {want}"
                     );
                 }
-                let got = data.adjusted_covariance(&ledoit_wolf(target)).unwrap();
-                let want = DMatrix::from_row_iterator(
-                    got.nrows(),
-                    got.ncols(),
-                    expected["covariance"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .flat_map(|row| {
-                            row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())
-                        }),
-                );
-                assert!(
-                    (&got - &want).amax() <= 1e-12 * want.amax(),
-                    "{name} {key}: {got} vs {want}"
+                assert_reference(
+                    &data,
+                    &ledoit_wolf(target),
+                    expected,
+                    &format!("{name} {key}"),
                 );
             }
+        }
+    }
+
+    /// Against the fixture: the exponentially weighted covariance, cross-checked against
+    /// pandas and riskfolio-lib, and the semicovariances, against riskfolio-lib and
+    /// PyPortfolioOpt.
+    #[test]
+    fn estimates_match_the_python_reference() {
+        for (case, name, data) in reference_cases() {
+            for expected in case["exponentially_weighted"].as_array().unwrap() {
+                let half_life = expected["half_life"].as_f64().unwrap();
+                let what = format!("{name} half-life {half_life}");
+                let config = CovarianceConfig::exponentially_weighted(half_life);
+                assert_reference(&data, &config, expected, &what);
+                let decay =
+                    CovarianceConfig::exponentially_weighted_decay(2f64.powf(-1.0 / half_life));
+                assert_reference(&data, &decay, expected, &what);
+            }
+            let expected = &case["semicovariance"];
+            assert_reference(&data, &CovarianceConfig::semicovariance(), expected, &name);
+            let expected = &case["semicovariance_below"];
+            let threshold = expected["threshold"].as_f64().unwrap();
+            let config = CovarianceConfig::semicovariance_below(threshold);
+            assert_reference(&data, &config, expected, &name);
         }
     }
 
@@ -994,35 +1289,41 @@ mod tests {
     }
 
     #[test]
-    fn ledoit_wolf_of_a_given_covariance_is_not_supported() {
+    fn ledoit_wolf_is_only_for_the_sample_covariance() {
         let data = Returns::returns_matrix(two_block_returns()).unwrap();
         let given = CovarianceConfig::matrix(&rows(&data.cov_matrix)).unwrap();
-        for target in TARGETS {
-            for config in [
-                given.clone().ledoit_wolf(target),
-                ledoit_wolf(target).shrinkage(0.2).ledoit_wolf(target),
-            ] {
-                let config = match config.estimate {
-                    Estimate::Given(_) => config,
-                    Estimate::Sample => CovarianceConfig {
-                        estimate: given.estimate.clone(),
-                        ..config
-                    },
-                };
+        for (base, with) in [
+            (given, "a given covariance"),
+            (
+                CovarianceConfig::exponentially_weighted(10.0),
+                "an exponentially weighted covariance",
+            ),
+            (CovarianceConfig::semicovariance(), "a semicovariance"),
+            (
+                CovarianceConfig::semicovariance_below(0.0),
+                "a semicovariance",
+            ),
+        ] {
+            for target in TARGETS {
+                for config in [
+                    base.clone().ledoit_wolf(target),
+                    base.clone().shrinkage(0.2).ledoit_wolf(target),
+                ] {
+                    assert_eq!(
+                        data.allocate(&MinVariance::default().covariance(config)),
+                        Err(CutupError::NotSupported {
+                            setting: "ledoit_wolf",
+                            with
+                        })
+                    );
+                }
+                // A fixed intensity after it is supported.
+                let fixed = base.clone().ledoit_wolf(target).shrinkage(0.2);
                 assert_eq!(
-                    data.allocate(&MinVariance::default().covariance(config)),
-                    Err(CutupError::NotSupported {
-                        setting: "ledoit_wolf",
-                        with: "a given covariance"
-                    })
+                    data.allocate(&MinVariance::default().covariance(fixed)),
+                    data.allocate(&MinVariance::default().covariance(base.clone().shrinkage(0.2)))
                 );
             }
-            // A fixed intensity after it is supported.
-            let fixed = given.clone().ledoit_wolf(target).shrinkage(0.2);
-            assert_eq!(
-                data.allocate(&MinVariance::default().covariance(fixed)),
-                data.allocate(&MinVariance::default().shrinkage(0.2))
-            );
         }
     }
 
@@ -1154,5 +1455,327 @@ mod tests {
             );
             assert!((a - b).abs() <= 1e-9 * b, "{target:?}: {a} vs {b}");
         }
+    }
+
+    /// The computed estimates, by name.
+    fn estimates() -> Vec<(&'static str, CovarianceConfig)> {
+        vec![
+            ("half-life 3", CovarianceConfig::exponentially_weighted(3.0)),
+            (
+                "decay 0.9",
+                CovarianceConfig::exponentially_weighted_decay(0.9),
+            ),
+            ("semicovariance", CovarianceConfig::semicovariance()),
+            ("below 0", CovarianceConfig::semicovariance_below(0.0)),
+        ]
+    }
+
+    #[test]
+    fn computed_estimates_are_used_like_given_ones() {
+        // Given back as a matrix, each estimate gives the same weights for every method, with
+        // and without adjustments: HRP and HERC included, which cluster on the returns'
+        // correlations either way.
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        for (name, config) in estimates() {
+            let matrix = data.adjusted_covariance(&config).unwrap();
+            let given = CovarianceConfig::matrix(&rows(&matrix)).unwrap();
+            assert_ne!(matrix, data.cov_matrix, "{name}");
+            for (estimated, given) in [
+                (config.clone(), given.clone()),
+                (config.clone().shrinkage(0.3), given.clone().shrinkage(0.3)),
+                (config.regularization(1e-6), given.regularization(1e-6)),
+            ] {
+                let estimated_methods = methods(&estimated);
+                assert!(
+                    data.allocate(estimated_methods[0].as_ref()).is_ok(),
+                    "{name}"
+                );
+                for (a, b) in estimated_methods.iter().zip(methods(&given)) {
+                    assert_eq!(
+                        data.allocate(a.as_ref()),
+                        data.allocate(b.as_ref()),
+                        "{name}"
+                    );
+                }
+                let model =
+                    |c: CovarianceConfig| BlackLitterman::new(vec![0.2; 5], 2.5).covariance(c);
+                assert_eq!(
+                    model(estimated).prior_returns(&data),
+                    model(given).prior_returns(&data),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exponentially_weighted_by_hand() {
+        // λ = 1/2 over three periods: weights 1/4, 1/2 and 1, the last period most.
+        let returns = dmatrix![0.01, 0.03; -0.02, 0.01; 0.04, -0.02];
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let w = [0.25, 0.5, 1.0];
+        let total: f64 = w.iter().sum();
+        let squares: f64 = w.iter().map(|w| w * w).sum();
+        let mean = |i: usize| (0..3).map(|t| w[t] * returns[(t, i)]).sum::<f64>() / total;
+        let want = DMatrix::from_fn(2, 2, |i, j| {
+            let products: f64 = (0..3)
+                .map(|t| w[t] * (returns[(t, i)] - mean(i)) * (returns[(t, j)] - mean(j)))
+                .sum();
+            products / (total - squares / total)
+        });
+        for config in [
+            CovarianceConfig::exponentially_weighted(1.0),
+            CovarianceConfig::exponentially_weighted_decay(0.5),
+        ] {
+            let got = data.adjusted_covariance(&config).unwrap();
+            assert!(
+                (&got - &want).amax() <= 1e-15 * want.amax(),
+                "{got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_half_lives_give_the_sample_covariance() {
+        // Equal weights, and a denominator of T − 1, even where λ rounds to 1.
+        let data = Returns::returns_matrix(factor_returns(4, 30, 5)).unwrap();
+        // At a half-life of 1e12 the weights are 1 − O(T / 1e12), and the estimate moves as
+        // much.
+        for (half_life, tolerance) in [(1e12, 1e-9), (1e300, 1e-12), (f64::MAX, 1e-12)] {
+            let got = data
+                .adjusted_covariance(&CovarianceConfig::exponentially_weighted(half_life))
+                .unwrap();
+            let gap = (&got - &data.cov_matrix).amax();
+            assert!(
+                gap <= tolerance * data.cov_matrix.amax(),
+                "{half_life}: {gap}"
+            );
+        }
+        let near_one = CovarianceConfig::exponentially_weighted_decay(1.0 - f64::EPSILON);
+        let got = data.adjusted_covariance(&near_one).unwrap();
+        assert!((&got - &data.cov_matrix).amax() <= 1e-12 * data.cov_matrix.amax());
+    }
+
+    #[test]
+    fn short_half_lives_give_the_last_two_periods() {
+        // λ near 0 weighs the last period and, by λ, the one before, whose deviations carry
+        // the covariance: the sample covariance of the last two periods, to O(λ).
+        let returns = factor_returns(3, 20, 9);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let last_two = Returns::returns_matrix(returns.rows(18, 2).into_owned()).unwrap();
+        for config in [
+            CovarianceConfig::exponentially_weighted(0.01),
+            CovarianceConfig::exponentially_weighted_decay(1e-300),
+        ] {
+            let got = data.adjusted_covariance(&config).unwrap();
+            let want = &last_two.cov_matrix;
+            assert!(
+                (&got - want).amax() <= 1e-12 * want.amax(),
+                "{got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn decays_must_be_in_range() {
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let invalid = |field, value| Err(CutupError::InvalidConfig { field, value });
+        for h in [0.0, -0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, 1e-4] {
+            let config = CovarianceConfig::exponentially_weighted(h);
+            assert_eq!(config.validate(), invalid("half_life", h), "{h}");
+            assert_eq!(
+                data.allocate(&MinVariance::default().covariance(config))
+                    .err(),
+                invalid("half_life", h).err()
+            );
+        }
+        for lambda in [0.0, -0.5, 1.0, 1.5, f64::INFINITY, 1e-308, 5e-324] {
+            let config = CovarianceConfig::exponentially_weighted_decay(lambda);
+            assert_eq!(config.validate(), invalid("decay", lambda), "{lambda}");
+        }
+        for (field, config) in [
+            (
+                "half_life",
+                CovarianceConfig::exponentially_weighted(f64::NAN),
+            ),
+            (
+                "decay",
+                CovarianceConfig::exponentially_weighted_decay(f64::NAN),
+            ),
+            (
+                "threshold",
+                CovarianceConfig::semicovariance_below(f64::NAN),
+            ),
+        ] {
+            assert!(
+                matches!(config.validate(), Err(CutupError::InvalidConfig { field: f, value }) if f == field && value.is_nan()),
+                "{field}"
+            );
+        }
+        for t in [f64::INFINITY, f64::NEG_INFINITY] {
+            let config = CovarianceConfig::semicovariance_below(t);
+            assert_eq!(config.validate(), invalid("threshold", t));
+        }
+        // The range of ln λ is [−708, 0), so its edges are exact.
+        assert_eq!(Decay::Lambda((-708f64).exp()).log(), Ok(-708.0));
+        assert!(Decay::Lambda((-708.001f64).exp()).log().is_err());
+        assert!(Decay::Lambda(1.0 - f64::EPSILON / 2.0).log().unwrap() < 0.0);
+        let shortest = std::f64::consts::LN_2 / 708.0;
+        for h in [shortest * (1.0 + 1e-15), 1e-3] {
+            let config = CovarianceConfig::exponentially_weighted(h);
+            let weights = data
+                .allocate(&MinVariance::default().covariance(config))
+                .unwrap();
+            assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12, "{h}");
+        }
+    }
+
+    #[test]
+    fn estimates_scale_exactly_by_powers_of_two() {
+        let returns = factor_returns(4, 30, 11);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        for k in [-200, 200] {
+            let factor = 2f64.powi(k);
+            let scaled = Returns::returns_matrix(&returns * factor).unwrap();
+            for (name, config) in estimates() {
+                let config = match config.estimate {
+                    Estimate::Semi(Some(t)) => CovarianceConfig::semicovariance_below(t * factor),
+                    _ => config,
+                };
+                assert_eq!(
+                    scaled.adjusted_covariance(&config).unwrap(),
+                    data.adjusted_covariance(&config).unwrap() * (factor * factor),
+                    "{name} 2^{k}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shifting_the_returns_changes_only_a_fixed_threshold() {
+        let returns = factor_returns(4, 30, 13);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let shifted = Returns::returns_matrix(returns.add_scalar(1.0)).unwrap();
+        for (name, config) in estimates() {
+            let a = data.adjusted_covariance(&config).unwrap();
+            let b = if let Estimate::Semi(Some(_)) = config.estimate {
+                // Every shifted return is above 0, so none falls below the same threshold, but
+                // they do below one shifted with them.
+                assert!(matches!(
+                    shifted.adjusted_covariance(&config),
+                    Err(CutupError::ZeroVariance { .. })
+                ));
+                shifted
+                    .adjusted_covariance(&CovarianceConfig::semicovariance_below(1.0))
+                    .unwrap()
+            } else {
+                shifted.adjusted_covariance(&config).unwrap()
+            };
+            let gap = (&a - &b).amax();
+            assert!(gap <= 1e-12 * a.amax(), "{name}: {gap}");
+        }
+    }
+
+    #[test]
+    fn returns_above_the_threshold_are_ignored() {
+        // Raising the gains changes nothing below the threshold, or the mean if it's fixed.
+        let returns = factor_returns(3, 25, 17);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let raised =
+            Returns::returns_matrix(returns.map(|r| if r > 0.0 { 3.0 * r } else { r })).unwrap();
+        let below = CovarianceConfig::semicovariance_below(0.0);
+        assert_eq!(
+            raised.adjusted_covariance(&below),
+            data.adjusted_covariance(&below)
+        );
+        // Below the mean, by hand: only the returns below each mean count.
+        let semi = data
+            .adjusted_covariance(&CovarianceConfig::semicovariance())
+            .unwrap();
+        let mean = returns.row_mean();
+        let d = returns.map_with_location(|_, i, r| (r - mean[i]).min(0.0));
+        let want = d.transpose() * &d / 24.0;
+        assert!((&semi - &want).amax() <= 1e-15 * want.amax());
+    }
+
+    #[test]
+    fn semicovariances_of_assets_with_no_downside() {
+        let zero = |column: usize| CutupError::ZeroVariance {
+            column,
+            asset: column.to_string(),
+        };
+        let returns = dmatrix![0.01, 0.02, 0.03; 0.02, -0.01, 0.01; 0.03, 0.02, -0.02];
+        let data = Returns::returns_matrix(returns).unwrap();
+        // Asset 0 is never below 0, so it has no downside.
+        let below = CovarianceConfig::semicovariance_below(0.0);
+        assert_eq!(
+            data.allocate(&MinVariance::default().covariance(below.clone()))
+                .err(),
+            Some(zero(0))
+        );
+        assert!(
+            data.allocate(&MinVariance::default().covariance(below.regularization(1e-6)))
+                .is_ok()
+        );
+        // Every asset varies, so each has returns below its mean.
+        assert!(
+            data.allocate(&MinVariance::default().covariance(CovarianceConfig::semicovariance()))
+                .is_ok()
+        );
+
+        // A constant asset has none below its mean, but each period loses against a threshold
+        // above it.
+        let constant = dmatrix![0.01, 0.02; 0.01, -0.01; 0.01, 0.03];
+        let data = Returns::returns_matrix(constant).unwrap();
+        assert_eq!(
+            data.allocate(&MinVariance::default().covariance(CovarianceConfig::semicovariance()))
+                .err(),
+            Some(zero(0))
+        );
+        let above = data
+            .adjusted_covariance(&CovarianceConfig::semicovariance_below(0.02))
+            .unwrap();
+        // Each period is 0.01 below it.
+        assert!((above[(0, 0)] - 1e-4).abs() <= 1e-18, "{above}");
+        // A threshold so far away that the shortfalls overflow.
+        assert_eq!(
+            data.adjusted_covariance(&CovarianceConfig::semicovariance_below(1e300)),
+            Err(CutupError::NonFiniteCovariance)
+        );
+    }
+
+    #[test]
+    fn an_exponentially_weighted_constant_asset_has_zero_variance() {
+        let returns = dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03; 0.1, 0.01];
+        let data = Returns::returns_matrix(returns).unwrap();
+        let config = CovarianceConfig::exponentially_weighted(2.0);
+        assert_eq!(
+            data.allocate(&MinVariance::default().covariance(config.clone()))
+                .err(),
+            Some(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
+        );
+        assert!(
+            data.allocate(&MinVariance::default().covariance(config.shrinkage(0.5)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_given_variance_counts_however_small() {
+        // Only an estimate from the returns is 0 to rounding. A given variance of 1e-30 next
+        // to returns near 0.01 would count as 0 by that rule, but it's what was given.
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let mut diagonal = vec![vec![0.0; 5]; 5];
+        for (i, row) in diagonal.iter_mut().enumerate() {
+            row[i] = if i == 1 { 1e-30 } else { 1e-4 };
+        }
+        let given = CovarianceConfig::matrix(&diagonal).unwrap();
+        let weights = data
+            .allocate(&MinVariance::default().covariance(given))
+            .unwrap();
+        assert!(weights[1] > 0.999, "{weights:?}");
     }
 }

@@ -442,9 +442,15 @@ impl Returns {
     /// Returns the first asset whose returns are constant, allowing for floating-point rounding:
     /// a standard deviation below `1e-10` of the asset's largest absolute return counts as zero.
     pub(crate) fn find_zero_variance(&self) -> Option<usize> {
-        (0..self.cov_matrix.ncols()).find(|&i| {
+        self.find_zero_variance_in(&self.cov_matrix)
+    }
+
+    /// Returns the first asset whose variance in `cov`, estimated from the returns, is zero to
+    /// rounding, by the rule of [`Returns::find_zero_variance`].
+    pub(crate) fn find_zero_variance_in(&self, cov: &DMatrix<f64>) -> Option<usize> {
+        (0..cov.ncols()).find(|&i| {
             let scale = self.returns.column(i).amax();
-            self.cov_matrix[(i, i)].sqrt() <= 1e-10 * scale
+            cov[(i, i)].sqrt() <= 1e-10 * scale
         })
     }
 
