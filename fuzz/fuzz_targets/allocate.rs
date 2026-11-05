@@ -8,9 +8,9 @@
 
 use arbitrary::Arbitrary;
 use cutup::{
-    Allocation, Asset, BlackLitterman, CovarianceConfig, EqualWeight, Herc, Hrp, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
+    Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
+    InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
+    MinCvar, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -256,10 +256,12 @@ enum Method {
         bounds: Option<Bounds>,
         target_return: Option<f64>,
     },
-    /// Black-Litterman expected returns, into mean-variance or max Sharpe.
+    /// Black-Litterman expected returns, into mean-variance or max Sharpe, with its posterior
+    /// covariance or the method's own.
     BlackLitterman {
         spec: BlackLittermanSpec,
         max_sharpe: bool,
+        posterior_covariance: bool,
     },
 }
 
@@ -481,14 +483,38 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             }
             Box::new(m)
         }
-        Method::BlackLitterman { spec, max_sharpe } => {
+        Method::BlackLitterman {
+            spec,
+            max_sharpe,
+            posterior_covariance,
+        } => {
             let model = black_litterman(spec);
             let _ = model.prior_returns(data);
+            let covariance = model.posterior_covariance(data);
             let mu = model.expected_returns(data).ok()?;
-            if max_sharpe {
-                Box::new(MaxSharpe::default().expected_returns(mu))
+            // Both solve the same views, so they fail together, except that the covariance
+            // can overflow where the returns don't.
+            assert!(
+                covariance.is_ok() || covariance == Err(CutupError::NonFiniteCovariance),
+                "{covariance:?}"
+            );
+            let covariance = if posterior_covariance {
+                covariance.ok()?
             } else {
-                Box::new(MeanVariance::risk_aversion(1.0).expected_returns(mu))
+                CovarianceConfig::default()
+            };
+            if max_sharpe {
+                Box::new(
+                    MaxSharpe::default()
+                        .expected_returns(mu)
+                        .covariance(covariance),
+                )
+            } else {
+                Box::new(
+                    MeanVariance::risk_aversion(1.0)
+                        .expected_returns(mu)
+                        .covariance(covariance),
+                )
             }
         }
     })
