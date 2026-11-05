@@ -209,8 +209,7 @@ mod tests {
     use super::*;
     use crate::test_support::{assert_weights_close, collinear_returns, two_block_returns};
     use crate::{Hrp, InverseVariance};
-    use nalgebra::DMatrix;
-    use nalgebra::dmatrix;
+    use nalgebra::{DMatrix, dmatrix};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -272,11 +271,7 @@ mod tests {
         let methods = |scale: f64| -> Vec<Box<dyn Allocation>> {
             let diagonal =
                 DMatrix::from_fn(5, 5, |i, j| if i == j { ratios[i] * scale } else { 0.0 });
-            let rows: Vec<Vec<f64>> = diagonal
-                .row_iter()
-                .map(|r| r.iter().copied().collect())
-                .collect();
-            let given = CovarianceConfig::matrix(&rows).unwrap();
+            let given = CovarianceConfig::matrix_flat(diagonal.as_slice(), 5).unwrap();
             vec![
                 Box::new(Hrp::default().covariance(given.clone())),
                 Box::new(Herc::default().covariance(given.clone())),
@@ -306,6 +301,31 @@ mod tests {
         ] {
             assert_weights_close(&data.allocate(method.as_ref()).unwrap(), &equal, 1e-12);
         }
+    }
+
+    #[test]
+    fn test_herc_when_shrinkage_leaves_a_variance_of_zero() {
+        // Shrinking by 1e-30 toward a mean variance near 1e-300 underflows, so the asset given
+        // a variance of 0 keeps it, and the inverse-variance weights within its cluster were
+        // 0 / 0. In the limit of 1 / σ² it takes its cluster's weight.
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let mut diagonal = DMatrix::from_diagonal_element(5, 5, 1e-300);
+        diagonal[(1, 1)] = 0.0;
+        let given = CovarianceConfig::matrix_flat(diagonal.as_slice(), 5)
+            .unwrap()
+            .shrinkage(1e-30);
+        for herc in [Herc::default(), Herc::default().clusters(1)] {
+            let weights = data.allocate(&herc.covariance(given.clone())).unwrap();
+            assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
+            assert!(
+                (weights.iter().sum::<f64>() - 1.0).abs() < 1e-12,
+                "{weights:?}"
+            );
+        }
+        let one = data
+            .allocate(&Herc::default().clusters(1).covariance(given))
+            .unwrap();
+        assert_weights_close(&one, &Weights::from(vec![0.0, 1.0, 0.0, 0.0, 0.0]), 1e-15);
     }
 
     #[test]
