@@ -399,7 +399,9 @@ them at once and two methods on the same data can use different estimates.
   `BlackLitterman::posterior_covariance(&data)`, a `CovarianceConfig` to pass
   to a method's `covariance` setter.
 - **Statistics under a covariance config:** `data.stats_with(&weights,
-  &config)`, alongside the sample statistics of `data.stats`.
+  &config)`, alongside the sample statistics of `data.stats`: the volatility,
+  ratios and risk shares from the config's matrix, the expected return and
+  CVaR from the returns.
 
 ## 0.3.5: expected-return estimators and log returns
 
