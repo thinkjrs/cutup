@@ -522,3 +522,96 @@ fn stats_match_python_reference() {
         failures.join("\n")
     );
 }
+
+/// Each statistic under a covariance config against the `with_covariance` cases in
+/// `tests/fixtures/stats.json`, from `reference/stats.py`: closed forms on the config's matrix,
+/// cross-checked against PyPortfolioOpt and riskfolio-lib. The expected return and CVaR don't
+/// depend on the covariance, so they must be `Returns::stats`'s.
+#[test]
+fn stats_with_match_python_reference() {
+    let datasets: Value = serde_json::from_str(DATASETS).unwrap();
+    let expected: Value = serde_json::from_str(include_str!("fixtures/stats.json")).unwrap();
+    let rates = floats(&expected["rates"]);
+    let betas = floats(&expected["betas"]);
+    let cases = expected["with_covariance"].as_array().unwrap();
+    assert_eq!(cases.len(), 75);
+
+    let mut failures = Vec::new();
+    for case in cases {
+        let name = case["dataset"].as_str().unwrap();
+        let data = allocator(&datasets[name]);
+        let settings = &case["covariance"];
+        let config = if let Some(lambda) = settings["shrinkage"].as_f64() {
+            CovarianceConfig::default().shrinkage(lambda)
+        } else if let Some(half_life) = settings["half_life"].as_f64() {
+            CovarianceConfig::exponentially_weighted(half_life)
+        } else {
+            CovarianceConfig::matrix(&rows(&settings["matrix"])).unwrap()
+        };
+        let what = format!(
+            "{name} {settings}",
+            settings = settings.as_object().unwrap().keys().next().unwrap()
+        );
+        let weights = Weights::from(floats(&case["weights"]));
+        let gross: f64 = weights.iter().map(|w| w.abs()).sum();
+        let stats = data.stats_with(&weights, &config).unwrap();
+        let sample = data.stats(&weights).unwrap();
+        if stats.expected_return() != sample.expected_return()
+            || betas.iter().any(|&b| stats.cvar(b) != sample.cvar(b))
+        {
+            failures.push(format!("{what}: the expected return or CVaR isn't stats'"));
+        }
+        let volatility = case["volatility"].as_f64().unwrap();
+        if case["diversification_ratio"].is_null() {
+            if stats.volatility() != 0.0 || stats.risk_contributions().is_some() {
+                failures.push(format!(
+                    "{what}: expected a riskless portfolio, got {stats:?}"
+                ));
+            }
+            continue;
+        }
+        let mut compare = |label: String, got: f64, want: f64, tolerance: f64| {
+            if (got - want).abs() > tolerance {
+                failures.push(format!("{what} {label}: {got} vs {want}"));
+            }
+        };
+        compare(
+            "volatility".into(),
+            stats.volatility(),
+            volatility,
+            1e-12 * volatility,
+        );
+        for (rate, want) in rates.iter().zip(case["sharpe_ratios"].as_array().unwrap()) {
+            let want = want.as_f64().unwrap();
+            compare(
+                format!("Sharpe ratio at {rate}"),
+                stats.sharpe_ratio(*rate).unwrap(),
+                want,
+                1e-12 * want.abs().max(1.0),
+            );
+        }
+        let want = case["diversification_ratio"].as_f64().unwrap();
+        compare(
+            "diversification ratio".into(),
+            stats.diversification_ratio().unwrap(),
+            want,
+            1e-12 * want.abs().max(1.0) * gross,
+        );
+        let shares = stats.risk_contributions().unwrap();
+        for (i, want) in floats(&case["risk_contributions"]).iter().enumerate() {
+            compare(
+                format!("risk contribution {i}"),
+                shares[i],
+                *want,
+                1e-12 * gross * gross,
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures over {} cases:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
