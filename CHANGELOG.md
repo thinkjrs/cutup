@@ -50,6 +50,13 @@ All notable changes to this project are documented here. The format follows
   given covariance, to pass to a method's `covariance` setter alongside the posterior returns,
   with shrinkage and regularization still available on top. With no views it's `(1 + τ)Σ`. Its
   errors are those of `expected_returns`, and `NonFiniteCovariance` if it overflows.
+- `Returns::stats_with(&weights, &covariance)`, the statistics of `Returns::stats` with the
+  covariance a `CovarianceConfig` sets, as an allocation method would use it: the volatility,
+  the Sharpe ratio's denominator, the diversification ratio and the risk shares come from its
+  matrix, while the expected return is still the sample mean and the CVaR historical. With the
+  default config it's `Returns::stats` exactly. A variance within `10nε` of the square of the
+  positions' volatilities under the covariance, `Σᵢ|wᵢ|σᵢ`, counts as riskless: the rounding a
+  covariance matrix's entries carry, the allowance `CovarianceConfig::matrix` gives eigenvalues.
 
 ### Fixed
 
