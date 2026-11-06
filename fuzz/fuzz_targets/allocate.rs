@@ -2,7 +2,10 @@
 //! of them may return an error, but none may panic, and weights they return must be finite, one
 //! per asset, and sum to 1. Their statistics must not be NaN, and their ratios and risk
 //! contributions must be finite, with the contributions summing to 1. The expected return,
-//! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do.
+//! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do. Their
+//! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
+//! expected return and CVaR, and have shares summing to 1 and no NaN; there, a Sharpe ratio past
+//! `f64::MAX` is infinite, against a volatility far smaller than the returns.
 
 #![no_main]
 
@@ -269,6 +272,34 @@ enum Method {
 struct Input {
     data: Data,
     method: Method,
+    /// The covariance for `Returns::stats_with`.
+    stats_covariance: Covariance,
+}
+
+/// The covariance config `covariance` sets on its own, as the `covariance!` macro sets it on a
+/// method.
+fn config(covariance: Covariance) -> CovarianceConfig {
+    let mut config = CovarianceConfig::default();
+    if let Some(computed) = covariance.computed {
+        config = computed.config();
+    }
+    if let Some(given) = covariance.given.and_then(given) {
+        config = given;
+    }
+    let ledoit_wolf = covariance.ledoit_wolf;
+    if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| !lw.last) {
+        config = config.ledoit_wolf(lw.target());
+    }
+    if let Some(lambda) = covariance.shrinkage {
+        config = config.shrinkage(lambda);
+    }
+    if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| lw.last) {
+        config = config.ledoit_wolf(lw.target());
+    }
+    if let Some(epsilon) = covariance.regularization {
+        config = config.regularization(epsilon);
+    }
+    config
 }
 
 fn returns(data: Data) -> Option<Returns> {
@@ -565,6 +596,37 @@ fuzz_target!(|input: Input| {
         assert!(
             (total - 1.0).abs() <= 1e-6 * largest,
             "risk contributions sum to {total}"
+        );
+    }
+
+    let Ok(with) = data.stats_with(&weights, &config(input.stats_covariance)) else {
+        return;
+    };
+    assert_eq!(
+        with.expected_return().to_bits(),
+        stats.expected_return().to_bits()
+    );
+    assert_eq!(
+        with.cvar(0.9).map(f64::to_bits),
+        stats.cvar(0.9).map(f64::to_bits)
+    );
+    assert!(with.volatility() >= 0.0, "{with:?}");
+    assert_eq!(with.sharpe_ratio(0.0).is_some(), with.volatility() > 0.0);
+    assert!(
+        with.sharpe_ratio(0.0).is_none_or(|s| !s.is_nan()),
+        "{with:?}"
+    );
+    assert!(
+        with.diversification_ratio().is_none_or(f64::is_finite),
+        "{with:?}"
+    );
+    if let Some(shares) = with.risk_contributions() {
+        assert!(shares.iter().all(|s| s.is_finite()), "{with:?}");
+        let largest = shares.iter().fold(1.0, |m: f64, s| m.max(s.abs()));
+        let total: f64 = shares.iter().sum();
+        assert!(
+            (total - 1.0).abs() <= 1e-6 * largest,
+            "risk contributions under a config sum to {total}"
         );
     }
 });
