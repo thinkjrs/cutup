@@ -2,15 +2,18 @@
 //! of them may return an error, but none may panic, and weights they return must be finite, one
 //! per asset, and sum to 1. Their statistics must not be NaN, and their ratios and risk
 //! contributions must be finite, with the contributions summing to 1. The expected return,
-//! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do.
+//! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do. Their
+//! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
+//! expected return and CVaR, and have shares summing to 1 and no NaN; there, a Sharpe ratio past
+//! `f64::MAX` is infinite, against a volatility far smaller than the returns.
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use cutup::{
-    Allocation, Asset, BlackLitterman, CovarianceConfig, EqualWeight, Herc, Hrp, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
+    Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
+    InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
+    MinCvar, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -256,10 +259,12 @@ enum Method {
         bounds: Option<Bounds>,
         target_return: Option<f64>,
     },
-    /// Black-Litterman expected returns, into mean-variance or max Sharpe.
+    /// Black-Litterman expected returns, into mean-variance or max Sharpe, with its posterior
+    /// covariance or the method's own.
     BlackLitterman {
         spec: BlackLittermanSpec,
         max_sharpe: bool,
+        posterior_covariance: bool,
     },
 }
 
@@ -267,6 +272,34 @@ enum Method {
 struct Input {
     data: Data,
     method: Method,
+    /// The covariance for `Returns::stats_with`.
+    stats_covariance: Covariance,
+}
+
+/// The covariance config `covariance` sets on its own, as the `covariance!` macro sets it on a
+/// method.
+fn config(covariance: Covariance) -> CovarianceConfig {
+    let mut config = CovarianceConfig::default();
+    if let Some(computed) = covariance.computed {
+        config = computed.config();
+    }
+    if let Some(given) = covariance.given.and_then(given) {
+        config = given;
+    }
+    let ledoit_wolf = covariance.ledoit_wolf;
+    if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| !lw.last) {
+        config = config.ledoit_wolf(lw.target());
+    }
+    if let Some(lambda) = covariance.shrinkage {
+        config = config.shrinkage(lambda);
+    }
+    if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| lw.last) {
+        config = config.ledoit_wolf(lw.target());
+    }
+    if let Some(epsilon) = covariance.regularization {
+        config = config.regularization(epsilon);
+    }
+    config
 }
 
 fn returns(data: Data) -> Option<Returns> {
@@ -481,14 +514,38 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             }
             Box::new(m)
         }
-        Method::BlackLitterman { spec, max_sharpe } => {
+        Method::BlackLitterman {
+            spec,
+            max_sharpe,
+            posterior_covariance,
+        } => {
             let model = black_litterman(spec);
             let _ = model.prior_returns(data);
+            let covariance = model.posterior_covariance(data);
             let mu = model.expected_returns(data).ok()?;
-            if max_sharpe {
-                Box::new(MaxSharpe::default().expected_returns(mu))
+            // Both solve the same views, so they fail together, except that the covariance
+            // can overflow where the returns don't.
+            assert!(
+                covariance.is_ok() || covariance == Err(CutupError::NonFiniteCovariance),
+                "{covariance:?}"
+            );
+            let covariance = if posterior_covariance {
+                covariance.ok()?
             } else {
-                Box::new(MeanVariance::risk_aversion(1.0).expected_returns(mu))
+                CovarianceConfig::default()
+            };
+            if max_sharpe {
+                Box::new(
+                    MaxSharpe::default()
+                        .expected_returns(mu)
+                        .covariance(covariance),
+                )
+            } else {
+                Box::new(
+                    MeanVariance::risk_aversion(1.0)
+                        .expected_returns(mu)
+                        .covariance(covariance),
+                )
             }
         }
     })
@@ -539,6 +596,37 @@ fuzz_target!(|input: Input| {
         assert!(
             (total - 1.0).abs() <= 1e-6 * largest,
             "risk contributions sum to {total}"
+        );
+    }
+
+    let Ok(with) = data.stats_with(&weights, &config(input.stats_covariance)) else {
+        return;
+    };
+    assert_eq!(
+        with.expected_return().to_bits(),
+        stats.expected_return().to_bits()
+    );
+    assert_eq!(
+        with.cvar(0.9).map(f64::to_bits),
+        stats.cvar(0.9).map(f64::to_bits)
+    );
+    assert!(with.volatility() >= 0.0, "{with:?}");
+    assert_eq!(with.sharpe_ratio(0.0).is_some(), with.volatility() > 0.0);
+    assert!(
+        with.sharpe_ratio(0.0).is_none_or(|s| !s.is_nan()),
+        "{with:?}"
+    );
+    assert!(
+        with.diversification_ratio().is_none_or(f64::is_finite),
+        "{with:?}"
+    );
+    if let Some(shares) = with.risk_contributions() {
+        assert!(shares.iter().all(|s| s.is_finite()), "{with:?}");
+        let largest = shares.iter().fold(1.0, |m: f64, s| m.max(s.abs()));
+        let total: f64 = shares.iter().sum();
+        assert!(
+            (total - 1.0).abs() <= 1e-6 * largest,
+            "risk contributions under a config sum to {total}"
         );
     }
 });

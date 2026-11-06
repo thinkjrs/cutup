@@ -44,8 +44,8 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `Herc::clusters`, then splits risk down the tree and by inverse variance within each group.
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. Solved exactly by the same active-set solver.
-- **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`.
-- **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data.
+- **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
+- **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
 ## Choosing a method
@@ -250,6 +250,32 @@ fn main() -> Result<(), CutupError> {
 }
 ```
 
+`posterior_covariance` gives the posterior covariance too, `Σ + τΣ` less what the views resolve, as a `CovarianceConfig` to pass along with the posterior returns:
+
+```rust
+use cutup::{BlackLitterman, CutupError, MeanVariance, Returns, View};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+    let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+        .view(View::relative(1, 2, 0.0005).confidence(0.7));
+
+    let method = MeanVariance::risk_aversion(2.5)
+        .expected_returns(model.expected_returns(&data)?)
+        .covariance(model.posterior_covariance(&data)?);
+    let weights = data.allocate(&method)?;
+    println!("Black-Litterman weights, posterior covariance: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
 ### Ledoit-Wolf shrinkage
 
 `.shrinkage(λ)` takes a fixed intensity. `.ledoit_wolf(target)` estimates it from the returns instead, with Ledoit and Wolf's formulas for the intensity that minimizes the expected error, toward one of two targets: `ShrinkageTarget::ConstantVariance`, the average variance with no correlation, as `.shrinkage(λ)` uses, or `ShrinkageTarget::ConstantCorrelation`, each asset's own variance with the average correlation between them. Whichever of the two is set last applies. Its intensity is for the sample covariance, so it isn't supported with the other estimates below or a covariance of your own.
@@ -364,6 +390,34 @@ fn main() -> Result<(), CutupError> {
             stats.cvar(0.8)?,
         );
     }
+    Ok(())
+}
+```
+
+`data.stats_with(&weights, &covariance)` measures them under a `CovarianceConfig` instead, such as the one a method was given, an exponentially weighted covariance or a Black-Litterman posterior: the volatility, the Sharpe ratio, the diversification ratio and the risk shares use its matrix, while the expected return and CVaR stay those of the returns. With the default config it's `data.stats(&weights)`.
+
+```rust
+use cutup::{CovarianceConfig, CutupError, MinVariance, Returns};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+    let recent = CovarianceConfig::exponentially_weighted(2.0);
+    let weights = data.allocate(&MinVariance::default().covariance(recent.clone()))?;
+
+    let sample = data.stats(&weights)?;
+    let weighted = data.stats_with(&weights, &recent)?;
+    println!(
+        "volatility {:.5} on the sample covariance, {:.5} on the one it was optimized for",
+        sample.volatility(),
+        weighted.volatility(),
+    );
     Ok(())
 }
 ```

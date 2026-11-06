@@ -2,7 +2,7 @@
 
 use crate::asset::check_values;
 use crate::{Asset, CovarianceConfig, CutupError, PerAsset, Returns};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{Cholesky, DMatrix, DVector, Dyn};
 
 /// Expected returns from the Black-Litterman model (Black and Litterman, 1992): the returns
 /// the market portfolio implies, blended with your views on some assets.
@@ -44,10 +44,11 @@ use nalgebra::{DMatrix, DVector};
 ///   prior, 0.05 by default.
 ///
 /// Σ is the covariance of the [`Returns`], after the same adjustments as the allocation methods:
-/// use the same shrinkage here as in the method you pass the returns to. Expected returns are
-/// in the units and period of the data, so the views and the risk-free rate must be too. `δ` is
-/// the same whatever the period, since the mean and the variance of returns both scale with
-/// it: 2.5 is a common choice.
+/// use the same shrinkage here as in the method you pass the returns to, unless you pass it the
+/// [posterior covariance](BlackLitterman::posterior_covariance), which already has it. Expected
+/// returns are in the units and period of the data, so the views and the risk-free rate must be
+/// too. `δ` is the same whatever the period, since the mean and the variance of returns both
+/// scale with it: 2.5 is a common choice.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BlackLitterman {
@@ -130,6 +131,84 @@ impl BlackLitterman {
     ///   variance or a confidence on a portfolio with no variance, which would make it
     ///   certain. Give such a view an explicit [`View::variance`].
     pub fn expected_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
+        let solved = self.solve(data)?;
+        let Some(views) = &solved.views else {
+            return Ok(solved.pi.as_slice().to_vec());
+        };
+        let x = views.factor.solve(&views.surprise);
+        let posterior = &solved.pi + &views.tau_sigma_pt * x;
+        if posterior.iter().any(|m| !m.is_finite()) {
+            return Err(CutupError::DegenerateViews);
+        }
+        Ok(posterior.as_slice().to_vec())
+    }
+
+    /// The posterior covariance of the returns, `Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` (He and
+    /// Litterman, 1999): the covariance `Σ`, plus the uncertainty `τΣ` in the prior's expected
+    /// returns, less what the views resolve of it. It's PyPortfolioOpt's `bl_cov` and the
+    /// covariance riskfolio-lib's `black_litterman` returns.
+    ///
+    /// It comes as a [`CovarianceConfig`] holding it as a [given
+    /// covariance](CovarianceConfig::matrix), to pass with the [posterior
+    /// returns](BlackLitterman::expected_returns) to a method's `covariance` setter. A fixed
+    /// shrinkage and regularization can still be set on it, on top of whatever `Σ` already had,
+    /// but not [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf), which is for the sample
+    /// covariance: set that on the model instead.
+    ///
+    /// With no views, or only views of confidence 0, it's `(1 + τ)Σ`. A certain view leaves the
+    /// variance of its portfolio at `pᵀΣp`: the uncertainty in its expected return is gone.
+    /// The result is positive semidefinite whenever `Σ` is, and between `Σ` and `(1 + τ)Σ`.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`BlackLitterman::expected_returns`], except for the
+    /// [`CutupError::DegenerateViews`] it returns when the posterior returns overflow, which
+    /// this doesn't compute, and [`CutupError::NonFiniteCovariance`] if the result overflows.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, MeanVariance, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+    ///     .view(View::relative(1, 2, 0.0005).confidence(0.7));
+    ///
+    /// let method = MeanVariance::risk_aversion(2.5)
+    ///     .expected_returns(model.expected_returns(&data)?)
+    ///     .covariance(model.posterior_covariance(&data)?);
+    /// let weights = data.allocate(&method)?;
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn posterior_covariance(&self, data: &Returns) -> Result<CovarianceConfig, CutupError> {
+        let solved = self.solve(data)?;
+        let mut posterior = &solved.cov * (1.0 + self.tau);
+        if let Some(views) = &solved.views {
+            // τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ = YᵀY for Y = L⁻¹PτΣ, with L the views' Cholesky factor, so
+            // it's symmetric and positive semidefinite by construction.
+            let y = views
+                .factor
+                .l_dirty()
+                .solve_lower_triangular(&views.tau_sigma_pt.transpose())
+                .ok_or(CutupError::DegenerateViews)?;
+            posterior -= y.tr_mul(&y);
+        }
+        if posterior.iter().any(|x| !x.is_finite()) {
+            return Err(CutupError::NonFiniteCovariance);
+        }
+        Ok(CovarianceConfig::computed(posterior))
+    }
+
+    /// The covariance, the prior and the views, checked and factored: what the posterior
+    /// returns and covariance share.
+    fn solve(&self, data: &Returns) -> Result<Solved, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         let pi = self.prior(&cov, data.labels())?;
         if !(self.tau.is_finite() && self.tau > 0.0) {
@@ -178,7 +257,11 @@ impl BlackLitterman {
             views.push((p, view.q, scale, given));
         }
         if views.is_empty() {
-            return Ok(pi.as_slice().to_vec());
+            return Ok(Solved {
+                cov,
+                pi,
+                views: None,
+            });
         }
 
         let k = views.len();
@@ -198,12 +281,17 @@ impl BlackLitterman {
             }
             a[(i, i)] += scale * spread + given;
         }
-        let x = solve_views(a, q - &p * &pi)?;
-        let posterior = pi + tau_sigma_pt * x;
-        if posterior.iter().any(|m| !m.is_finite()) {
-            return Err(CutupError::DegenerateViews);
-        }
-        Ok(posterior.as_slice().to_vec())
+        let factor = factor_views(a)?;
+        let surprise = q - &p * &pi;
+        Ok(Solved {
+            cov,
+            pi,
+            views: Some(SolvedViews {
+                tau_sigma_pt,
+                factor,
+                surprise,
+            }),
+        })
     }
 
     fn prior(&self, cov: &DMatrix<f64>, labels: &[String]) -> Result<DVector<f64>, CutupError> {
@@ -238,21 +326,35 @@ impl BlackLitterman {
     }
 }
 
+/// The covariance, the prior, and the views if any are left, factored.
+struct Solved {
+    cov: DMatrix<f64>,
+    pi: DVector<f64>,
+    views: Option<SolvedViews>,
+}
+
+/// The views: `τΣPᵀ`, the Cholesky factor of `τPΣPᵀ + Ω`, and `Q − Pπ`.
+struct SolvedViews {
+    tau_sigma_pt: DMatrix<f64>,
+    factor: Cholesky<f64, Dyn>,
+    surprise: DVector<f64>,
+}
+
 /// How close to 0, relative to its scale, a view's variance or the part of it no other view
 /// explains can be before the views are degenerate.
 const DEGENERATE: f64 = 1e-12;
 
-/// Solves `Ax = b` for the views' covariance `A = τPΣPᵀ + Ω`, rejecting views that repeat
-/// or contradict each other: each Cholesky pivot is the part of a view's variance the earlier
-/// views don't explain, which must not vanish relative to the variance itself.
-fn solve_views(a: DMatrix<f64>, b: DVector<f64>) -> Result<DVector<f64>, CutupError> {
+/// The Cholesky factor of the views' covariance `A = τPΣPᵀ + Ω`, rejecting views that repeat
+/// or contradict each other: each pivot is the part of a view's variance the earlier views
+/// don't explain, which must not vanish relative to the variance itself.
+fn factor_views(a: DMatrix<f64>) -> Result<Cholesky<f64, Dyn>, CutupError> {
     let diagonal = a.diagonal();
     let cholesky = a.cholesky().ok_or(CutupError::DegenerateViews)?;
     let l = cholesky.l_dirty();
     if (0..diagonal.len()).any(|i| l[(i, i)].powi(2) <= DEGENERATE * diagonal[i]) {
         return Err(CutupError::DegenerateViews);
     }
-    Ok(cholesky.solve(&b))
+    Ok(cholesky)
 }
 
 /// A view for [`BlackLitterman`]: a portfolio of the assets has an expected return `q`.
@@ -380,6 +482,8 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{assert_reference, datasets, factor_returns};
+    use crate::{MaxSharpe, MeanVariance};
     use nalgebra::dmatrix;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -698,6 +802,205 @@ mod tests {
                 .expected_returns(&allocator)
                 .unwrap();
             assert!(close(&mu, &prior, 1e-15), "{confidence}: {mu:?}");
+        }
+    }
+
+    /// The posterior covariance `model` gives on `data`, as a matrix.
+    fn posterior(model: &BlackLitterman, data: &Returns) -> DMatrix<f64> {
+        data.adjusted_covariance(&model.posterior_covariance(data).unwrap())
+            .unwrap()
+    }
+
+    /// The smallest eigenvalue of `a − b`, relative to the largest of `b`.
+    fn smallest_eigenvalue_of_difference(a: &DMatrix<f64>, b: &DMatrix<f64>) -> f64 {
+        let largest = b.clone().symmetric_eigen().eigenvalues.amax();
+        (a - b).symmetric_eigen().eigenvalues.min() / largest
+    }
+
+    /// Against the Black-Litterman cases in `tests/fixtures/covariance.json`, from
+    /// `reference/covariance.py`: the formula, cross-checked against PyPortfolioOpt's `bl_cov`
+    /// and riskfolio-lib's `black_litterman`.
+    #[test]
+    fn posterior_covariance_matches_the_python_reference() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/covariance.json")).unwrap();
+        let cases = fixture["black_litterman"].as_array().unwrap();
+        assert_eq!(cases.len(), 12);
+        let datasets = datasets();
+        let floats = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_f64().unwrap())
+                .collect()
+        };
+        for case in cases {
+            let name = case["dataset"].as_str().unwrap();
+            let (_, data) = datasets.iter().find(|(n, _)| n == name).unwrap();
+            let n = data.labels().len();
+            let mut model = BlackLitterman::new(vec![1.0 / n as f64; n], 2.5)
+                .tau(case["tau"].as_f64().unwrap());
+            for view in case["views"].as_array().unwrap() {
+                let q = view["q"].as_f64().unwrap();
+                let asset = |i: usize| view["assets"][i].as_u64().unwrap() as usize;
+                let mut built = match view["kind"].as_str().unwrap() {
+                    "absolute" => View::absolute(asset(0), q),
+                    "relative" => View::relative(asset(0), asset(1), q),
+                    _ => View::portfolio(floats(&view["weights"]), q),
+                };
+                if let Some(omega) = view["variance"].as_f64() {
+                    built = built.variance(omega);
+                }
+                if let Some(confidence) = view["confidence"].as_f64() {
+                    built = built.confidence(confidence);
+                }
+                model = model.view(built);
+            }
+            let config = model.posterior_covariance(data).unwrap();
+            let what = format!("{name} {}", case["views_name"]);
+            assert_reference(data, &config, case, &what);
+        }
+    }
+
+    #[test]
+    fn no_views_give_the_prior_uncertainty_on_top() {
+        let data = allocator();
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5).tau(0.1);
+        assert_eq!(posterior(&model, &data), &data.cov_matrix * 1.1);
+        // Views of confidence 0 are dropped.
+        let dropped = model.clone().view(View::absolute(0, 0.01).confidence(0.0));
+        assert_eq!(posterior(&dropped, &data), &data.cov_matrix * 1.1);
+        // The covariance config applies first.
+        let shrunk = model.shrinkage(0.4);
+        let sigma = data
+            .adjusted_covariance(&CovarianceConfig::default().shrinkage(0.4))
+            .unwrap();
+        assert_eq!(posterior(&shrunk, &data), sigma * 1.1);
+    }
+
+    #[test]
+    fn views_resolve_the_uncertainty_in_their_portfolios() {
+        let data = allocator();
+        let cov = &data.cov_matrix;
+        let tau = 0.05;
+        let p = DVector::from_vec(vec![0.0, 1.0, -1.0]);
+        let variance = |m: &DMatrix<f64>| p.dot(&(m * &p));
+        let base = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+        // A certain view leaves its portfolio's variance at pᵀΣp, and a default one halfway:
+        // with ω = τpᵀΣp, the uncertainty τpᵀΣp is halved.
+        let certain = posterior(
+            &base.clone().view(View::relative(1, 2, 0.001).variance(0.0)),
+            &data,
+        );
+        assert!((variance(&certain) - variance(cov)).abs() <= 1e-15 * variance(cov));
+        let default = posterior(&base.clone().view(View::relative(1, 2, 0.001)), &data);
+        let want = variance(cov) * (1.0 + tau / 2.0);
+        assert!((variance(&default) - want).abs() <= 1e-15 * want);
+        // Exactly symmetric, and between Σ and (1 + τ)Σ.
+        for m in [&certain, &default] {
+            assert_eq!(m, &m.transpose());
+            assert!(smallest_eigenvalue_of_difference(m, cov) >= -1e-14);
+            assert!(smallest_eigenvalue_of_difference(&(cov * (1.0 + tau)), m) >= -1e-14);
+        }
+    }
+
+    #[test]
+    fn posterior_covariance_errors_match_expected_returns() {
+        let data = allocator();
+        let base = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+        for model in [
+            base.clone().tau(0.0),
+            base.clone().tau(-1.0),
+            BlackLitterman::new([0.5, 0.5], 2.5),
+            BlackLitterman::new([0.0, 0.0, 0.0], 2.5),
+            base.clone().view(View::absolute(5, 0.01)),
+            base.clone().view(View::absolute(0, f64::INFINITY)),
+            base.clone()
+                .view(View::absolute(0, 0.01).variance(0.0))
+                .view(View::absolute(0, 0.02).variance(0.0)),
+            base.clone().shrinkage(2.0),
+        ] {
+            let error = model.expected_returns(&data).unwrap_err();
+            assert_eq!(model.posterior_covariance(&data).err(), Some(error));
+        }
+    }
+
+    #[test]
+    fn a_posterior_covariance_that_overflows_is_rejected() {
+        // Returns near 1e151 have variances near 1e301, so (1 + τ)Σ overflows at τ = 1e10.
+        let data = Returns::returns_matrix(sample() * 1e153).unwrap();
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5).tau(1e10);
+        assert_eq!(
+            model.posterior_covariance(&data),
+            Err(CutupError::NonFiniteCovariance)
+        );
+    }
+
+    #[test]
+    fn the_posterior_goes_to_any_method() {
+        let data = Returns::returns_matrix(factor_returns(4, 30, 21)).unwrap();
+        let model = BlackLitterman::new([0.4, 0.3, 0.2, 0.1], 2.5)
+            .view(View::absolute(0, 0.004).confidence(0.8))
+            .view(View::relative(1, 3, 0.002));
+        let mu = model.expected_returns(&data).unwrap();
+        let cov = model.posterior_covariance(&data).unwrap();
+        let methods: Vec<Box<dyn crate::Allocation>> = vec![
+            Box::new(
+                MeanVariance::risk_aversion(2.5)
+                    .expected_returns(mu.clone())
+                    .covariance(cov.clone()),
+            ),
+            Box::new(
+                MaxSharpe::default()
+                    .expected_returns(mu)
+                    .covariance(cov.clone()),
+            ),
+            Box::new(crate::MinVariance::default().covariance(cov.clone().shrinkage(0.2))),
+        ];
+        for method in methods {
+            let weights = data.allocate(method.as_ref()).unwrap();
+            assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        }
+        // Like any given covariance, it must fit the data.
+        let other = Returns::returns_matrix(factor_returns(3, 30, 21)).unwrap();
+        assert!(matches!(
+            other.allocate(&crate::MinVariance::default().covariance(cov)),
+            Err(CutupError::DimensionMismatch { .. })
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    proptest::proptest! {
+        #[test]
+        fn posteriors_are_ordered_by_confidence(
+            seed in 0u64..1000,
+            assets in 2usize..6,
+            long in 0usize..6,
+            offset in 0usize..5,
+            low in 0.01f64..0.98,
+            gap in 0.01f64..1.0,
+            tau in 0.01f64..1.0,
+        ) {
+            // Σ ⪯ Σ_BL(more confident) ⪯ Σ_BL(less confident) ⪯ (1 + τ)Σ.
+            let long = long % assets;
+            let short = (long + 1 + offset % (assets - 1)) % assets;
+            let data =
+                Returns::returns_matrix(factor_returns(assets, 3 * assets + 10, seed)).unwrap();
+            let cov = &data.cov_matrix;
+            let high = (low + gap).min(1.0);
+            let model = |c: f64| {
+                BlackLitterman::new(vec![1.0; assets], 2.5)
+                    .tau(tau)
+                    .view(View::relative(long, short, 0.001).confidence(c))
+                    .view(View::absolute(long, 0.002))
+            };
+            let confident = posterior(&model(high), &data);
+            let unsure = posterior(&model(low), &data);
+            let inflated = cov * (1.0 + tau);
+            for (upper, lower) in [(&unsure, &confident), (&confident, cov), (&inflated, &unsure)] {
+                let smallest = smallest_eigenvalue_of_difference(upper, lower);
+                proptest::prop_assert!(smallest >= -1e-12, "{smallest}");
+            }
         }
     }
 }

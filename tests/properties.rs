@@ -626,6 +626,41 @@ proptest! {
     }
 
     #[test]
+    fn stats_with_favor_the_methods_that_optimize_them(
+        returns in returns(),
+        choice in 0usize..3,
+        lambda in 0.0f64..1.0,
+        half_life in 1.0f64..30.0,
+    ) {
+        // Under the covariance they were given, min variance has the lowest volatility, max
+        // diversification the highest diversification ratio, and risk parity equal shares.
+        prop_assume!(well_posed(&returns));
+        let allocator = returns_via_flat(returns).unwrap();
+        let config = match choice {
+            0 => CovarianceConfig::default().shrinkage(lambda),
+            1 => CovarianceConfig::exponentially_weighted(half_life),
+            _ => CovarianceConfig::semicovariance(),
+        };
+        let stats = |weights: &Weights| allocator.stats_with(weights, &config).unwrap();
+        let allocate = |method: &dyn Allocation| allocator.allocate(method).unwrap();
+        let min_variance = allocate(&MinVariance::default().covariance(config.clone()));
+        let max_diversification = allocate(&MaxDiversification::default().covariance(config.clone()));
+        let lowest = stats(&min_variance).volatility();
+        prop_assume!(lowest > 0.0);
+        let highest = stats(&max_diversification).diversification_ratio().unwrap();
+        for weights in long_only_methods(&allocator) {
+            let other = stats(&weights);
+            prop_assert!(lowest <= other.volatility() * (1.0 + 1e-9), "{weights:?}");
+            prop_assert!(other.diversification_ratio().unwrap() <= highest * (1.0 + 1e-9), "{weights:?}");
+        }
+        let n = allocator.labels().len() as f64;
+        let risk_parity = allocate(&RiskParity::default().covariance(config.clone()));
+        for share in stats(&risk_parity).risk_contributions().unwrap() {
+            prop_assert!((share - 1.0 / n).abs() <= 1e-9, "{share}");
+        }
+    }
+
+    #[test]
     fn stats_scale_with_the_returns(returns in returns(), scale in 0.1f64..10.0) {
         prop_assume!(well_posed(&returns));
         let allocator = returns_via_flat(returns.clone()).unwrap();

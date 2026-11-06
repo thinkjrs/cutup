@@ -2,10 +2,11 @@
 //! [`Returns::stats`].
 
 use crate::cvar::{tail_loss, tail_weight};
-use crate::{CutupError, Returns, Weights};
+use crate::{CovarianceConfig, CutupError, Returns, Weights};
 use nalgebra::{DMatrix, DVector};
 
-/// Statistics of one portfolio over the returns in a [`Returns`], from [`Returns::stats`].
+/// Statistics of one portfolio over the returns in a [`Returns`], from [`Returns::stats`], or
+/// [`Returns::stats_with`] for a covariance of your choice.
 ///
 /// Each is per period, in the units of the returns, with the sample mean and covariance:
 /// with daily returns, the volatility is daily and the Sharpe ratio is daily too. Nothing is
@@ -55,9 +56,12 @@ pub struct PortfolioStats {
     /// The portfolio's returns, divided by `2^exponent`, all smaller than 2 in size.
     scaled: Vec<f64>,
     exponent: i32,
-    /// The mean and standard deviation of `scaled`, the standard deviation 0 if it counts as 0.
+    /// The mean of `scaled`, and the standard deviation in units of `2^(exponent −
+    /// ratio_exponent)`, 0 if it counts as 0: the Sharpe ratio of the scaled values is
+    /// `2^ratio_exponent` times the actual one.
     mean: f64,
     deviation: f64,
+    ratio_exponent: i32,
 }
 
 impl PortfolioStats {
@@ -66,26 +70,31 @@ impl PortfolioStats {
         self.expected_return
     }
 
-    /// The volatility `sqrt(wᵀΣw)`, with the sample covariance as `Σ`.
+    /// The volatility `sqrt(wᵀΣw)`, with the sample covariance as `Σ`, or the one given to
+    /// [`Returns::stats_with`].
     ///
     /// A volatility below `1e-10` of the sizes of the positions' largest returns,
     /// `Σᵢ|wᵢ| maxₜ|rₜᵢ|`, counts as 0: the rule for a constant asset, applied to each position.
     /// Weights only on constant assets, such as cash, have none, though rounding leaves them a
     /// trace, and neither do positions that cancel to within rounding. So does a volatility too
-    /// small to represent, below about `5e-324`.
+    /// small to represent, below about `5e-324`. [`Returns::stats_with`] has a rule of its own,
+    /// relative to the positions' volatilities under its covariance.
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
 
     /// The Sharpe ratio `(μᵀw − r) / sqrt(wᵀΣw)` for the risk-free rate `r` per period, in the
-    /// units of the returns: a daily rate for daily returns.
+    /// units of the returns: a daily rate for daily returns. `μ` is always the sample mean, and
+    /// `Σ` the [volatility](Self::volatility)'s.
     ///
-    /// `None` if the [volatility](Self::volatility) is 0, or the rate isn't finite.
+    /// `None` if the [volatility](Self::volatility) is 0, or the rate isn't finite. A ratio
+    /// past `f64::MAX` is infinite.
     pub fn sharpe_ratio(&self, risk_free_rate: f64) -> Option<f64> {
         if self.deviation == 0.0 || !risk_free_rate.is_finite() {
             return None;
         }
-        Some((self.mean - pow2_scaled(risk_free_rate, -self.exponent)) / self.deviation)
+        let ratio = (self.mean - pow2_scaled(risk_free_rate, -self.exponent)) / self.deviation;
+        Some(pow2_scaled(ratio, self.ratio_exponent))
     }
 
     /// The diversification ratio `σᵀw / sqrt(wᵀΣw)`, where `σ` holds the assets' volatilities:
@@ -107,7 +116,8 @@ impl PortfolioStats {
     }
 
     /// The conditional value at risk at confidence `beta`, the same as [`Returns::cvar`]: the
-    /// average loss over the worst `1 − β` of the periods.
+    /// average loss over the worst `1 − β` of the periods. It's historical, so a covariance
+    /// given to [`Returns::stats_with`] doesn't change it.
     ///
     /// # Errors
     ///
@@ -262,7 +272,111 @@ impl Returns {
             exponent,
             mean,
             deviation,
+            ratio_exponent: 0,
         })
+    }
+
+    /// The same statistics as [`Returns::stats`], but with the covariance `covariance` sets:
+    /// an [estimate](CovarianceConfig::exponentially_weighted), a [given
+    /// matrix](CovarianceConfig::matrix), such as a [Black-Litterman
+    /// posterior](crate::BlackLitterman::posterior_covariance), or adjustments, as an allocation
+    /// method would use it. Then methods can be compared on the risk they were optimized for.
+    ///
+    /// The volatility, the diversification ratio and the risk contributions come from its
+    /// matrix, and so does the Sharpe ratio's denominator. The expected return is still the
+    /// sample mean, and the CVaR is still historical. With the default config, the sample
+    /// covariance with no adjustments, it's [`Returns::stats`] exactly.
+    ///
+    /// A variance within `10nε` of the square of the positions' own volatilities, `Σᵢ|wᵢ|σᵢ`
+    /// under this covariance, counts as 0: then the ratios and shares are `None`. `wᵀΣw` is a
+    /// sum of terms that size, from a matrix whose entries carry rounding of their own, so
+    /// below that a hedge's variance is rounding. It's the allowance [`CovarianceConfig::matrix`]
+    /// gives eigenvalues, and a volatility of about `√(10nε)`, `5e-8·√n`, of the positions'. It
+    /// can't be the `1e-10` of [`Returns::stats`], which works from each period's return of the
+    /// portfolio and so keeps a hedge's volatility to rounding of the returns. A volatility too
+    /// small to represent counts as 0 too.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Returns::stats`], and any error from `covariance` for this data, as an
+    /// allocation method using it would return: for example [`CutupError::InvalidConfig`] for
+    /// an invalid setting, [`CutupError::ZeroVariance`] for a constant asset, or
+    /// [`CutupError::DimensionMismatch`] for a given matrix of another size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MinVariance, Returns};
+    ///
+    /// let returns = [
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let recent = CovarianceConfig::exponentially_weighted(2.0);
+    /// let weights = data.allocate(&MinVariance::default().covariance(recent.clone()))?;
+    ///
+    /// // The risk it was optimized for, next to the sample one.
+    /// let weighted = data.stats_with(&weights, &recent)?;
+    /// let sample = data.stats(&weights)?;
+    /// assert_eq!(weighted.expected_return(), sample.expected_return());
+    /// assert_ne!(weighted.volatility(), sample.volatility());
+    ///
+    /// // With the default config, it's the sample statistics.
+    /// assert_eq!(data.stats_with(&weights, &CovarianceConfig::default())?, sample);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn stats_with(
+        &self,
+        weights: &Weights,
+        covariance: &CovarianceConfig,
+    ) -> Result<PortfolioStats, CutupError> {
+        let mut stats = self.stats(weights)?;
+        if *covariance == CovarianceConfig::default() {
+            return Ok(stats);
+        }
+        let cov = self.adjusted_covariance(covariance)?;
+        // The weights divided by a power of two near the largest, and the covariance by an even
+        // one near its largest entry, so its square root scales exactly too.
+        let weight_exponent = binary_exponent(largest(weights.iter().copied()));
+        let w = DVector::from_iterator(
+            weights.len(),
+            weights.iter().map(|&w| pow2_scaled(w, -weight_exponent)),
+        );
+        let half = binary_exponent(cov.amax()).div_euclid(2);
+        let cov = cov.map(|x| pow2_scaled(x, -2 * half));
+        let marginal = &cov * &w;
+        let variance = w.dot(&marginal);
+        let volatilities = cov.diagonal().map(f64::sqrt);
+        let deviation = variance.max(0.0).sqrt();
+        let sizes: f64 = w.iter().zip(&volatilities).map(|(w, s)| w.abs() * s).sum();
+        let exponent = weight_exponent + half;
+        // wᵀΣw is a sum of terms up to (Σᵢ|wᵢ|σᵢ)² in size, and the matrix's entries carry
+        // rounding of their own, so a variance within 10nε of that, the allowance
+        // `CovarianceConfig::matrix` gives eigenvalues, is 0 but for rounding: a hedge's
+        // volatility can't be told from 0 below about √(10nε) of its positions'.
+        let n = w.len() as f64;
+        if variance <= 10.0 * n * f64::EPSILON * sizes * sizes
+            || pow2_scaled(deviation, exponent) == 0.0
+        {
+            stats.volatility = 0.0;
+            stats.deviation = 0.0;
+            stats.diversification_ratio = None;
+            stats.risk_contributions = None;
+            return Ok(stats);
+        }
+        let contributions: Vec<f64> = w.iter().zip(&marginal).map(|(w, m)| w * m).collect();
+        let total: f64 = contributions.iter().sum();
+        stats.volatility = pow2_scaled(deviation, exponent);
+        // The deviation in its own scale, and the Sharpe ratio's correction for the mean's.
+        stats.deviation = deviation;
+        stats.ratio_exponent = stats.exponent - exponent;
+        stats.diversification_ratio = Some(w.dot(&volatilities) / deviation);
+        stats.risk_contributions = Some(contributions.iter().map(|c| c / total).collect());
+        Ok(stats)
     }
 }
 
@@ -739,5 +853,223 @@ mod tests {
         assert_eq!(pow2_scaled(f64::MAX, -2046), f64::MAX * half * half);
         assert_eq!(pow2_scaled(5e-324, 2097), 2f64.powi(1023));
         assert_eq!(pow2_scaled(-3.0, 2), -12.0);
+    }
+
+    /// The rows of `m`, for `CovarianceConfig::matrix`.
+    fn rows(m: &DMatrix<f64>) -> Vec<Vec<f64>> {
+        m.row_iter().map(|r| r.iter().copied().collect()).collect()
+    }
+
+    /// Closed forms of the statistics that depend on the covariance, under `cov`.
+    fn covariance_closed_forms(cov: &DMatrix<f64>, weights: &[f64]) -> (f64, f64, Vec<f64>) {
+        let w = DVector::from_column_slice(weights);
+        let variance = w.dot(&(cov * &w));
+        let volatility = variance.sqrt();
+        let ratio = cov.diagonal().map(f64::sqrt).dot(&w) / volatility;
+        let marginal = cov * &w;
+        let shares = (0..w.len())
+            .map(|i| w[i] * marginal[i] / variance)
+            .collect();
+        (volatility, ratio, shares)
+    }
+
+    #[test]
+    fn stats_with_the_default_config_are_the_sample_stats() {
+        let data = Returns::returns_matrix(factor_returns(4, 20, 3)).unwrap();
+        for weights in [
+            vec![0.25; 4],
+            vec![0.7, -0.2, 0.4, 0.1],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ] {
+            let weights = Weights::from(weights);
+            assert_eq!(
+                data.stats_with(&weights, &CovarianceConfig::default()),
+                data.stats(&weights)
+            );
+        }
+    }
+
+    #[test]
+    fn stats_with_a_given_sample_covariance_match_the_sample_stats() {
+        let data = Returns::returns_matrix(factor_returns(4, 20, 5)).unwrap();
+        let given = CovarianceConfig::matrix(&rows(&data.cov_matrix)).unwrap();
+        let weights = Weights::from(vec![0.4, -0.1, 0.5, 0.2]);
+        let (a, b) = (
+            data.stats_with(&weights, &given).unwrap(),
+            data.stats(&weights).unwrap(),
+        );
+        assert_eq!(a.expected_return(), b.expected_return());
+        assert_eq!(a.cvar(0.9), b.cvar(0.9));
+        assert!(close(a.volatility(), b.volatility(), 1e-13));
+        for rate in [0.0, 0.001] {
+            assert!(close(
+                a.sharpe_ratio(rate).unwrap(),
+                b.sharpe_ratio(rate).unwrap(),
+                1e-13
+            ));
+        }
+        assert!(close(
+            a.diversification_ratio().unwrap(),
+            b.diversification_ratio().unwrap(),
+            1e-13
+        ));
+        for (x, y) in a
+            .risk_contributions()
+            .unwrap()
+            .iter()
+            .zip(b.risk_contributions().unwrap())
+        {
+            assert!((x - y).abs() <= 1e-13, "{x} vs {y}");
+        }
+    }
+
+    #[test]
+    fn stats_with_match_their_closed_forms() {
+        let data = Returns::returns_matrix(factor_returns(3, 20, 7)).unwrap();
+        let shrunk = CovarianceConfig::default()
+            .shrinkage(0.3)
+            .regularization(1e-6);
+        for (config, weights) in [
+            (
+                CovarianceConfig::matrix(&[[4e-4, 0.0, 0.0], [0.0, 1e-4, 0.0], [0.0, 0.0, 9e-4]])
+                    .unwrap(),
+                vec![0.5, 0.3, 0.2],
+            ),
+            (shrunk, vec![0.8, -0.3, 0.5]),
+            (
+                CovarianceConfig::exponentially_weighted(4.0),
+                vec![1.5, 0.5, -1.0],
+            ),
+        ] {
+            let cov = data.adjusted_covariance(&config).unwrap();
+            let stats = data
+                .stats_with(&Weights::from(weights.clone()), &config)
+                .unwrap();
+            let (volatility, ratio, shares) = covariance_closed_forms(&cov, &weights);
+            assert!(close(stats.volatility(), volatility, 1e-14), "{config:?}");
+            assert!(close(stats.diversification_ratio().unwrap(), ratio, 1e-14));
+            for (got, want) in stats.risk_contributions().unwrap().iter().zip(&shares) {
+                assert!((got - want).abs() <= 1e-14, "{got} vs {want}");
+            }
+            let expected = data
+                .stats(&Weights::from(weights))
+                .unwrap()
+                .expected_return();
+            let sharpe = (expected - 0.0004) / volatility;
+            assert!(close(stats.sharpe_ratio(0.0004).unwrap(), sharpe, 1e-13));
+        }
+    }
+
+    #[test]
+    fn stats_with_scale_exactly_by_powers_of_two() {
+        // A given matrix scaled by 4^k gives a volatility scaled by 2^k, and the same ratios.
+        let data = Returns::returns_matrix(factor_returns(3, 20, 9)).unwrap();
+        let cov = data
+            .adjusted_covariance(&CovarianceConfig::default().shrinkage(0.2))
+            .unwrap();
+        let weights = Weights::from(vec![0.6, 0.3, 0.1]);
+        let base = data
+            .stats_with(&weights, &CovarianceConfig::matrix(&rows(&cov)).unwrap())
+            .unwrap();
+        for k in [-500, -3, 3, 500] {
+            let scaled = cov.map(|x| pow2_scaled(x, 2 * k));
+            let stats = data
+                .stats_with(&weights, &CovarianceConfig::matrix(&rows(&scaled)).unwrap())
+                .unwrap();
+            assert_eq!(stats.volatility(), pow2_scaled(base.volatility(), k), "{k}");
+            assert_eq!(stats.diversification_ratio(), base.diversification_ratio());
+            assert_eq!(stats.risk_contributions(), base.risk_contributions());
+            assert_eq!(
+                stats.sharpe_ratio(0.0),
+                base.sharpe_ratio(0.0).map(|s| pow2_scaled(s, -k))
+            );
+        }
+    }
+
+    #[test]
+    fn stats_with_of_riskless_portfolios() {
+        let data = Returns::returns_matrix(factor_returns(2, 20, 11)).unwrap();
+        let riskless = |stats: &PortfolioStats| {
+            stats.volatility() == 0.0
+                && stats.sharpe_ratio(0.0).is_none()
+                && stats.diversification_ratio().is_none()
+                && stats.risk_contributions().is_none()
+        };
+        // Perfectly correlated with volatilities of 1 and 3, so (3, −(1 + h)) has a variance of
+        // 9h² next to positions of about 6: riskless within 10nε of their square, 36, below
+        // h ≈ 1.33e-7. Scaled, the sizes aren't 1, so they can't hide a product.
+        let correlated = CovarianceConfig::matrix(&[[1.0, 3.0], [3.0, 9.0]]).unwrap();
+        for (h, want) in [(0.0, true), (1.2e-7, true), (1.5e-7, false)] {
+            let stats = data
+                .stats_with(&Weights::from(vec![3.0, -(1.0 + h)]), &correlated)
+                .unwrap();
+            assert_eq!(riskless(&stats), want, "{h}: {stats:?}");
+        }
+        // A volatility too small to represent: 1e-200 of a covariance near 1e-300.
+        let tiny = CovarianceConfig::matrix(&[[1e-300, 0.0], [0.0, 1e-300]]).unwrap();
+        let stats = data
+            .stats_with(&Weights::from(vec![1e-200, 1e-200]), &tiny)
+            .unwrap();
+        assert!(riskless(&stats), "{stats:?}");
+        let stats = data
+            .stats_with(&Weights::from(vec![1e-100, 1e-100]), &tiny)
+            .unwrap();
+        assert!(!riskless(&stats), "{stats:?}");
+    }
+
+    #[test]
+    fn stats_with_a_far_smaller_covariance_keep_the_sharpe_ratio_in_scale() {
+        // Returns near 1e100 and a given covariance near 1e-300: the volatility is some 1e250
+        // times smaller than the returns, and the Sharpe ratio some 1e250 times larger.
+        let returns = factor_returns(2, 20, 13) * 1e100;
+        let data = Returns::returns_matrix(returns).unwrap();
+        let tiny = CovarianceConfig::matrix(&[[1e-300, 0.0], [0.0, 4e-300]]).unwrap();
+        let weights = Weights::from(vec![0.5, 0.5]);
+        let stats = data.stats_with(&weights, &tiny).unwrap();
+        let expected = data.stats(&weights).unwrap().expected_return();
+        let volatility = (0.25e-300f64 + 0.25 * 4e-300).sqrt();
+        assert!(close(stats.volatility(), volatility, 1e-15));
+        assert!(close(
+            stats.sharpe_ratio(0.0).unwrap(),
+            expected / volatility,
+            1e-13
+        ));
+    }
+
+    #[test]
+    fn stats_with_return_the_configs_errors() {
+        let data = labeled();
+        let weights = Weights::from(vec![0.5, 0.3, 0.2]);
+        assert!(matches!(
+            data.stats_with(&weights, &CovarianceConfig::default().shrinkage(2.0)),
+            Err(CutupError::InvalidConfig {
+                field: "shrinkage",
+                ..
+            })
+        ));
+        let small = CovarianceConfig::matrix(&[[1.0, 0.0], [0.0, 1.0]]).unwrap();
+        assert!(matches!(
+            data.stats_with(&weights, &small),
+            Err(CutupError::DimensionMismatch {
+                field: "covariance",
+                ..
+            })
+        ));
+        // The weights are checked first, as in `stats`.
+        assert_eq!(
+            data.stats_with(&Weights::from(vec![0.5, 0.5]), &small),
+            data.stats(&Weights::from(vec![0.5, 0.5]))
+        );
+        let constant = Returns::returns_matrix(dmatrix![0.1, 0.01; 0.1, -0.02; 0.1, 0.03]).unwrap();
+        assert_eq!(
+            constant.stats_with(
+                &Weights::from(vec![0.5, 0.5]),
+                &CovarianceConfig::exponentially_weighted(2.0)
+            ),
+            Err(CutupError::ZeroVariance {
+                column: 0,
+                asset: "0".into()
+            })
+        );
     }
 }

@@ -1,6 +1,6 @@
 //! Fixtures and checks shared by the unit tests.
 
-use crate::{MinVariance, Returns, Weights};
+use crate::{CovarianceConfig, MinVariance, Returns, Weights};
 use nalgebra::{DMatrix, DVector, dmatrix};
 
 /// Six periods of prices for three assets whose returns covariance is full rank.
@@ -130,4 +130,57 @@ pub(crate) fn labeled() -> Returns {
         .unwrap()
         .labeled(["SPY", "TLT", "GLD"])
         .unwrap()
+}
+
+/// The datasets in `tests/fixtures/datasets.json`, by name, as `tests/reference.rs` reads them.
+pub(crate) fn datasets() -> Vec<(String, Returns)> {
+    let datasets: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/datasets.json")).unwrap();
+    let datasets = datasets.as_object().unwrap();
+    datasets
+        .iter()
+        .map(|(name, dataset)| {
+            let rows: Vec<Vec<f64>> = dataset["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    row.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_f64().unwrap())
+                        .collect()
+                })
+                .collect();
+            let data = match dataset["kind"].as_str().unwrap() {
+                "prices" => Returns::from_prices(&rows),
+                _ => Returns::new(&rows),
+            };
+            (name.clone(), data.unwrap())
+        })
+        .collect()
+}
+
+/// Asserts `config`'s covariance on `data` is the fixture's `expected["covariance"]`, to
+/// 1e-12 of its largest entry.
+pub(crate) fn assert_reference(
+    data: &Returns,
+    config: &CovarianceConfig,
+    expected: &serde_json::Value,
+    what: &str,
+) {
+    let got = data.adjusted_covariance(config).unwrap();
+    let want = DMatrix::from_row_iterator(
+        got.nrows(),
+        got.ncols(),
+        expected["covariance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())),
+    );
+    assert!(
+        (&got - &want).amax() <= 1e-12 * want.amax(),
+        "{what}: {got} vs {want}"
+    );
 }

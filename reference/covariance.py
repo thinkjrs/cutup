@@ -5,7 +5,8 @@
 
 Reads tests/fixtures/datasets.json and writes tests/fixtures/covariance.json, which the
 tests in src/covariance.rs check CovarianceConfig's estimates against: Ledoit-Wolf shrinkage,
-the exponentially weighted covariance and the semicovariances.
+the exponentially weighted covariance and the semicovariances. Its Black-Litterman cases are
+checked by the tests in src/black_litterman.rs.
 
 For each dataset and each Ledoit-Wolf target, the case holds the shrinkage intensity δ and the
 shrunk covariance δF + (1 − δ)S, where S is the sample covariance with ddof=1, as cutup
@@ -34,6 +35,16 @@ checked against riskfolio-lib's covar_matrix(method="semi"), and the one below a
 0, Σₜ min(rₜ, 0) min(rₜ, 0)ᵀ / T, against PyPortfolioOpt's semicovariance(benchmark=0), to
 1e-12.
 
+The Black-Litterman posterior covariance, Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ, is written out
+from He and Litterman (1999) on four datasets with equal market weights: with default views
+and τ = 1/T, checked against PyPortfolioOpt's BlackLittermanModel.bl_cov and riskfolio-lib's
+black_litterman, which fixes τ at 1/T and uses the default Ω; with an explicit variance, a
+confidence and a certain view at τ = 0.05, against PyPortfolioOpt's; and with no views, which
+gives (1 + τ)Σ. All to 1e-12, except riskfolio-lib's: it inverts τΣ, so it's checked to 1e-15
+times Σ's condition number when that's looser, and not on scales4, whose condition number of
+about 1e16 leaves nothing to check. A view's default variance is τpᵀΣp, and a confidence c's
+τ(1 − c)/c · pᵀΣp.
+
 With one asset, or a sample covariance already equal to the target, there's nothing to
 shrink and δ is 0, as scikit-learn has it. Where the constant correlation target is the
 sample covariance but for rounding, as it always is for two assets, δ is made of that
@@ -53,6 +64,7 @@ import sys
 import numpy as np
 import pandas as pd
 import riskfolio
+from pypfopt.black_litterman import BlackLittermanModel
 from pypfopt.risk_models import CovarianceShrinkage, semicovariance
 from sklearn.covariance import ledoit_wolf, ledoit_wolf_shrinkage
 
@@ -62,6 +74,8 @@ DATASETS = FIXTURES / "datasets.json"
 OUTPUT = FIXTURES / "covariance.json"
 TARGETS = ["constant_variance", "constant_correlation"]
 HALF_LIVES = [1.0, 5.0, 20.0]
+BL_DATASETS = ["two_blocks5", "prices10x60", "near_singular4", "scales4"]
+DELTA = 2.5
 
 
 def load_returns(dataset: dict) -> np.ndarray:
@@ -100,10 +114,10 @@ def constant_correlation_intensity(returns: np.ndarray) -> float:
     return float(max(0.0, min(1.0, (pi_hat - rho_hat) / gamma_hat / t)))
 
 
-def same_matrix(a: np.ndarray, b: np.ndarray) -> bool:
-    """Equal to 1e-12 of the larger matrix's largest entry."""
+def same_matrix(a: np.ndarray, b: np.ndarray, tolerance: float = 1e-12) -> bool:
+    """Equal to `tolerance` of the larger matrix's largest entry."""
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
-    return a.shape == b.shape and np.abs(a - b).max() <= 1e-12 * max(np.abs(a).max(), np.abs(b).max())
+    return a.shape == b.shape and np.abs(a - b).max() <= tolerance * max(np.abs(a).max(), np.abs(b).max())
 
 
 def exponentially_weighted(returns: np.ndarray, half_life: float) -> np.ndarray:
@@ -132,6 +146,74 @@ def semicovariances(returns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     theirs = semicovariance(pd.DataFrame(returns), returns_data=True, benchmark=0.0, frequency=1)
     assert same_matrix(zero, np.asarray(theirs)), (zero, theirs)
     return mean, zero
+
+
+def view_sets(n: int, t: int) -> list[tuple[str, float, list[dict]]]:
+    """Each view set's name, τ and views. Assets 0 to 3 exist in every dataset used."""
+    basket = [0.0] * n
+    basket[0], basket[1], basket[3] = 0.5, 0.5, -1.0
+    default = [
+        {"kind": "absolute", "assets": [0], "q": 0.002, "variance": None, "confidence": None},
+        {"kind": "relative", "assets": [1, 2], "q": 0.001, "variance": None, "confidence": None},
+    ]
+    mixed = [
+        {"kind": "absolute", "assets": [0], "q": 0.002, "variance": 1e-6, "confidence": None},
+        {"kind": "relative", "assets": [1, 2], "q": 0.001, "variance": None, "confidence": 0.7},
+        {"kind": "portfolio", "weights": basket, "q": 0.0005, "variance": 0.0, "confidence": None},
+    ]
+    return [("default", 1.0 / t, default), ("mixed", 0.05, mixed), ("none", 0.05, [])]
+
+
+def view_portfolio(view: dict, n: int) -> np.ndarray:
+    if view["kind"] == "portfolio":
+        return np.array(view["weights"])
+    p = np.zeros(n)
+    p[view["assets"][0]] = 1.0
+    if view["kind"] == "relative":
+        p[view["assets"][1]] = -1.0
+    return p
+
+
+def black_litterman_cases() -> list[dict]:
+    datasets = json.loads(DATASETS.read_text())
+    out = []
+    for name in BL_DATASETS:
+        returns = load_returns(datasets[name])
+        t, n = returns.shape
+        cov = np.cov(returns, rowvar=False, ddof=1)
+        market = np.full(n, 1.0 / n)
+        for label, tau, views in view_sets(n, t):
+            case = {"dataset": name, "views_name": label, "tau": tau, "views": views}
+            if not views:
+                case["covariance"] = ((1.0 + tau) * cov).tolist()
+                out.append(case)
+                continue
+            p = np.array([view_portfolio(v, n) for v in views])
+            q = np.array([v["q"] for v in views])
+            spread = np.diag(p @ (tau * cov) @ p.T)
+            omega = np.array([
+                v["variance"] if v["variance"] is not None
+                else spread[i] * ((1 - v["confidence"]) / v["confidence"] if v["confidence"] is not None else 1.0)
+                for i, v in enumerate(views)
+            ])
+            tau_sigma_pt = tau * cov @ p.T
+            a = p @ tau_sigma_pt + np.diag(omega)
+            posterior = cov + tau * cov - tau_sigma_pt @ np.linalg.solve(a, tau_sigma_pt.T)
+            pi = DELTA * cov @ market
+            theirs = BlackLittermanModel(pd.DataFrame(cov), pi=pi, P=p, Q=q, omega=np.diag(omega), tau=tau).bl_cov()
+            assert same_matrix(posterior, theirs.to_numpy()), (name, label)
+            # riskfolio-lib inverts τΣ, so it's accurate only to rounding times Σ's condition
+            # number, which for scales4 is about 1e16: too much to check anything.
+            condition = np.linalg.cond(cov)
+            if label == "default" and condition <= 1e10:
+                _, theirs, _ = riskfolio.ParamsEstimation.black_litterman(
+                    pd.DataFrame(returns), pd.DataFrame(market), p, q.reshape(-1, 1), delta=DELTA
+                )
+                tolerance = max(1e-12, 1e-15 * condition)
+                assert same_matrix(posterior, theirs.to_numpy(), tolerance), (name, label)
+            case["covariance"] = posterior.tolist()
+            out.append(case)
+    return out
 
 
 def close(a: float, b: float, tolerance: float) -> bool:
@@ -225,18 +307,33 @@ def drift(committed: list, fresh: list) -> list[str]:
     return problems
 
 
+def black_litterman_drift(committed: list, fresh: list) -> list[str]:
+    if len(committed) != len(fresh):
+        return ["black_litterman case count"]
+    problems = []
+    for old, new in zip(committed, fresh):
+        what = f"black_litterman/{new['dataset']}/{new['views_name']}"
+        if {k: v for k, v in old.items() if k != "covariance"} != {k: v for k, v in new.items() if k != "covariance"}:
+            problems.append(f"{what}: inputs changed")
+        elif not same_matrix(old["covariance"], new["covariance"]):
+            problems.append(f"{what}: covariance")
+    return problems
+
+
 def main() -> None:
-    fresh = {"cases": cases()}
+    fresh = {"cases": cases(), "black_litterman": black_litterman_cases()}
     if "--check" in sys.argv[1:]:
         committed = json.loads(OUTPUT.read_text())
         problems = drift(committed["cases"], fresh["cases"])
+        problems += black_litterman_drift(committed["black_litterman"], fresh["black_litterman"])
         for problem in problems:
             print(problem)
         drifted = len({problem.split()[0] for problem in problems})
-        print(f"{drifted} of {len(fresh['cases'])} cases drifted from {OUTPUT}")
+        total = len(fresh["cases"]) + len(fresh["black_litterman"])
+        print(f"{drifted} of {total} cases drifted from {OUTPUT}")
         sys.exit(1 if problems else 0)
     write_json(OUTPUT, fresh)
-    print(f"wrote {len(fresh['cases'])} cases to {OUTPUT}")
+    print(f"wrote {len(fresh['cases'])} cases and {len(fresh['black_litterman'])} Black-Litterman cases to {OUTPUT}")
 
 
 if __name__ == "__main__":
