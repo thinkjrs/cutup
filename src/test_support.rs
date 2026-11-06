@@ -1,6 +1,6 @@
 //! Fixtures and checks shared by the unit tests.
 
-use crate::{MinVariance, Returns, Weights};
+use crate::{CovarianceConfig, MinVariance, Returns, Weights};
 use nalgebra::{DMatrix, DVector, dmatrix};
 
 /// Six periods of prices for three assets whose returns covariance is full rank.
@@ -159,4 +159,28 @@ pub(crate) fn datasets() -> Vec<(String, Returns)> {
             (name.clone(), data.unwrap())
         })
         .collect()
+}
+
+/// Asserts `config`'s covariance on `data` is the fixture's `expected["covariance"]`, to
+/// 1e-12 of its largest entry.
+pub(crate) fn assert_reference(
+    data: &Returns,
+    config: &CovarianceConfig,
+    expected: &serde_json::Value,
+    what: &str,
+) {
+    let got = data.adjusted_covariance(config).unwrap();
+    let want = DMatrix::from_row_iterator(
+        got.nrows(),
+        got.ncols(),
+        expected["covariance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())),
+    );
+    assert!(
+        (&got - &want).amax() <= 1e-12 * want.amax(),
+        "{what}: {got} vs {want}"
+    );
 }

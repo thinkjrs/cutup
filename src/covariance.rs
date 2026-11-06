@@ -763,8 +763,8 @@ fn constant_correlation(cov: &DMatrix<f64>) -> DMatrix<f64> {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_weights_close, datasets, factor_returns, full_rank_prices, rank_one_returns,
-        two_block_returns, uncorrelated_returns,
+        assert_reference, assert_weights_close, datasets, factor_returns, full_rank_prices,
+        rank_one_returns, two_block_returns, uncorrelated_returns,
     };
     use crate::{
         Allocation, BlackLitterman, EqualWeight, Herc, Hrp, MaxDiversification, MaxSharpe,
@@ -1126,30 +1126,6 @@ mod tests {
                 (case.clone(), name.clone(), data.clone())
             })
             .collect()
-    }
-
-    /// Asserts `config`'s covariance on `data` is the fixture's `expected["covariance"]`, to
-    /// 1e-12 of its largest entry.
-    fn assert_reference(
-        data: &Returns,
-        config: &CovarianceConfig,
-        expected: &serde_json::Value,
-        what: &str,
-    ) {
-        let got = data.adjusted_covariance(config).unwrap();
-        let want = DMatrix::from_row_iterator(
-            got.nrows(),
-            got.ncols(),
-            expected["covariance"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())),
-        );
-        assert!(
-            (&got - &want).amax() <= 1e-12 * want.amax(),
-            "{what}: {got} vs {want}"
-        );
     }
 
     /// Against the fixture: scikit-learn's intensity toward a constant variance, and the
