@@ -22,6 +22,16 @@ against riskfolio-lib's Risk_Contribution with rm="MV", which uses central diffe
 sizes of its positions' largest returns, Σᵢ|wᵢ| maxₜ|rₜᵢ|, counts as riskless, as cutup counts it: its ratios
 and shares are null.
 
+The with_covariance cases are the same weights under three covariances, for
+Returns::stats_with: a shrinkage of 0.2 toward the average variance, the exponentially weighted
+covariance at a half-life of 5 (pandas' ewm(halflife=5).cov(), as reference/covariance.py
+computes it), and a given matrix, (S + diag(S)) / 2, written into the case. The volatility,
+Sharpe ratios, diversification ratio and risk shares come from the closed forms on that matrix,
+cross-checked against PyPortfolioOpt's portfolio_performance to 1e-12 and riskfolio-lib's
+Risk_Contribution to 1e-6. The expected return and CVaR don't depend on the covariance, so the
+Rust test checks they're those of Returns::stats. A variance within 10nε of the square of the
+positions' own volatilities, Σᵢ|wᵢ|σᵢ under the covariance, counts as riskless, as cutup counts it.
+
 With --check, nothing is written: the cases are recomputed and compared with the committed
 file, failing if any value moved by more than 1e-12 of its size or any case changed shape.
 """
@@ -34,6 +44,7 @@ import pandas as pd
 import riskfolio
 from pypfopt.base_optimizer import portfolio_performance
 
+from covariance import exponentially_weighted
 from fixtures import FIXTURES, write_json
 
 DATASETS = FIXTURES / "datasets.json"
@@ -107,6 +118,62 @@ def cross_check(returns, mu, cov, weights, out) -> None:
         assert close(theirs, value, 1e-12) or abs(theirs - value) <= 1e-15, (beta, theirs, value)
 
 
+def covariance_stats(returns: np.ndarray, cov: np.ndarray, weights: np.ndarray) -> dict:
+    """The statistics that depend on the covariance, from their closed forms under `cov`."""
+    mu = returns.mean(axis=0)
+    variance = float(weights @ cov @ weights)
+    volatility = np.sqrt(max(variance, 0.0))
+    sizes = np.abs(weights) @ np.sqrt(np.diag(cov))
+    riskless = variance <= 10 * len(weights) * np.finfo(float).eps * sizes**2
+    expected = float(mu @ weights)
+    out = {
+        "volatility": 0.0 if riskless else float(volatility),
+        "sharpe_ratios": [None if riskless else (expected - r) / volatility for r in RATES],
+        "diversification_ratio": None if riskless else float(np.sqrt(np.diag(cov)) @ weights / volatility),
+        "risk_contributions": None if riskless else (weights * (cov @ weights) / variance).tolist(),
+    }
+    if not riskless:
+        for rate, sharpe in zip(RATES, out["sharpe_ratios"]):
+            _, theirs_volatility, theirs = portfolio_performance(weights, mu, cov, risk_free_rate=rate)
+            assert close(theirs_volatility, out["volatility"], 1e-12), (theirs_volatility, out)
+            assert close(theirs, sharpe, 1e-12), (theirs, sharpe)
+        contributions = riskfolio.Risk_Contribution(
+            pd.DataFrame(weights), pd.DataFrame(returns), cov=pd.DataFrame(cov), rm="MV"
+        )
+        shares = np.asarray(contributions, dtype=float).ravel() / out["volatility"]
+        assert np.allclose(shares, out["risk_contributions"], rtol=0, atol=1e-6), (shares, out)
+    return out
+
+
+def covariances(returns: np.ndarray) -> list[tuple[dict, np.ndarray]]:
+    """Each covariance config, as the Rust test builds it, and its matrix."""
+    sample = np.cov(returns, rowvar=False, ddof=1)
+    n = sample.shape[0]
+    shrunk = 0.2 * np.trace(sample) / n * np.eye(n) + 0.8 * sample
+    given = (sample + np.diag(np.diag(sample))) / 2
+    return [
+        ({"shrinkage": 0.2}, shrunk),
+        ({"half_life": 5.0}, exponentially_weighted(returns, 5.0)),
+        ({"matrix": given.tolist()}, given),
+    ]
+
+
+def covariance_cases() -> list[dict]:
+    datasets = json.loads(DATASETS.read_text())
+    out = []
+    for name, dataset in datasets.items():
+        returns = load_returns(dataset)
+        for config, cov in covariances(returns):
+            for weights in weight_sets(name, returns.shape[1]):
+                out.append({
+                    "dataset": name,
+                    "covariance": config,
+                    "weights": weights,
+                    **covariance_stats(returns, cov, np.array(weights)),
+                })
+    return out
+
+
 def weight_sets(name: str, n: int) -> list[list[float]]:
     rng = np.random.default_rng(sum(map(ord, name)))
     noise = rng.normal(scale=0.4, size=n)
@@ -135,6 +202,14 @@ def values(case: dict) -> list:
     for key, value in case.items():
         if key == "dataset":
             continue
+        if key == "covariance":
+            for item in value.values():
+                if isinstance(item, list):
+                    for row in item:
+                        flat.extend(row)
+                else:
+                    flat.append(item)
+            continue
         if isinstance(value, list):
             flat.extend(value)
         else:
@@ -156,18 +231,20 @@ def drift(committed: list, fresh: list) -> list[str]:
 
 
 def main() -> None:
-    fresh = {"rates": RATES, "betas": BETAS, "cases": cases()}
+    fresh = {"rates": RATES, "betas": BETAS, "cases": cases(), "with_covariance": covariance_cases()}
     if "--check" in sys.argv[1:]:
         committed = json.loads(OUTPUT.read_text())
         problems = drift(committed["cases"], fresh["cases"])
+        problems += [f"with_covariance {p}" for p in drift(committed["with_covariance"], fresh["with_covariance"])]
         if committed["rates"] != RATES or committed["betas"] != BETAS:
             problems.append("rates or betas")
         for problem in problems:
             print(problem)
-        print(f"{len(problems)} of {len(fresh['cases'])} cases drifted from {OUTPUT}")
+        total = len(fresh["cases"]) + len(fresh["with_covariance"])
+        print(f"{len(problems)} of {total} cases drifted from {OUTPUT}")
         sys.exit(1 if problems else 0)
     write_json(OUTPUT, fresh)
-    print(f"wrote {len(fresh['cases'])} cases to {OUTPUT}")
+    print(f"wrote {len(fresh['cases'])} cases and {len(fresh['with_covariance'])} with a covariance to {OUTPUT}")
 
 
 if __name__ == "__main__":
