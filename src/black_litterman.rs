@@ -44,10 +44,11 @@ use nalgebra::{Cholesky, DMatrix, DVector, Dyn};
 ///   prior, 0.05 by default.
 ///
 /// Σ is the covariance of the [`Returns`], after the same adjustments as the allocation methods:
-/// use the same shrinkage here as in the method you pass the returns to. Expected returns are
-/// in the units and period of the data, so the views and the risk-free rate must be too. `δ` is
-/// the same whatever the period, since the mean and the variance of returns both scale with
-/// it: 2.5 is a common choice.
+/// use the same shrinkage here as in the method you pass the returns to, unless you pass it the
+/// [posterior covariance](BlackLitterman::posterior_covariance), which already has it. Expected
+/// returns are in the units and period of the data, so the views and the risk-free rate must be
+/// too. `δ` is the same whatever the period, since the mean and the variance of returns both
+/// scale with it: 2.5 is a common choice.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BlackLitterman {
@@ -149,8 +150,10 @@ impl BlackLitterman {
     ///
     /// It comes as a [`CovarianceConfig`] holding it as a [given
     /// covariance](CovarianceConfig::matrix), to pass with the [posterior
-    /// returns](BlackLitterman::expected_returns) to a method's `covariance` setter. Shrinkage
-    /// and regularization can still be set on it, on top of whatever `Σ` already had.
+    /// returns](BlackLitterman::expected_returns) to a method's `covariance` setter. A fixed
+    /// shrinkage and regularization can still be set on it, on top of whatever `Σ` already had,
+    /// but not [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf), which is for the sample
+    /// covariance: set that on the model instead.
     ///
     /// With no views, or only views of confidence 0, it's `(1 + τ)Σ`. A certain view leaves the
     /// variance of its portfolio at `pᵀΣp`: the uncertainty in its expected return is gone.
@@ -158,8 +161,9 @@ impl BlackLitterman {
     ///
     /// # Errors
     ///
-    /// The same as [`BlackLitterman::expected_returns`], and
-    /// [`CutupError::NonFiniteCovariance`] if the result overflows.
+    /// The same as [`BlackLitterman::expected_returns`], except for the
+    /// [`CutupError::DegenerateViews`] it returns when the posterior returns overflow, which
+    /// this doesn't compute, and [`CutupError::NonFiniteCovariance`] if the result overflows.
     ///
     /// # Example
     ///
@@ -191,7 +195,7 @@ impl BlackLitterman {
             // it's symmetric and positive semidefinite by construction.
             let y = views
                 .factor
-                .l()
+                .l_dirty()
                 .solve_lower_triangular(&views.tau_sigma_pt.transpose())
                 .ok_or(CutupError::DegenerateViews)?;
             posterior -= y.tr_mul(&y);
@@ -478,7 +482,7 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{datasets, factor_returns};
+    use crate::test_support::{assert_reference, datasets, factor_returns};
     use crate::{MaxSharpe, MeanVariance};
     use nalgebra::dmatrix;
     #[cfg(target_arch = "wasm32")]
@@ -852,21 +856,9 @@ mod tests {
                 }
                 model = model.view(built);
             }
-            let got = posterior(&model, data);
-            let want = DMatrix::from_row_iterator(
-                n,
-                n,
-                case["covariance"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .flat_map(floats),
-            );
+            let config = model.posterior_covariance(data).unwrap();
             let what = format!("{name} {}", case["views_name"]);
-            assert!(
-                (&got - &want).amax() <= 1e-12 * want.amax(),
-                "{what}: {got} vs {want}"
-            );
+            assert_reference(data, &config, case, &what);
         }
     }
 
