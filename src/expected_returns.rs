@@ -66,15 +66,16 @@ impl Returns {
 
     /// The exponentially weighted mean of each asset, the last row weighted most.
     fn weighted_mean(&self, decay: Decay) -> Result<Vec<f64>, CutupError> {
-        let log_decay = decay.log()?;
-        let periods = self.returns.nrows();
-        let weights: Vec<f64> = (0..periods)
-            .map(|t| ((periods - 1 - t) as f64 * log_decay).exp())
-            .collect();
+        let weights = exponential_weights(self.returns.nrows(), decay.log()?);
+        Ok(self.weighted_means(&weights))
+    }
+
+    /// Each asset's mean under `weights`, one per row, as from [`exponential_weights`]. The
+    /// exponentially weighted covariance centers on these too.
+    pub(crate) fn weighted_means(&self, weights: &[f64]) -> Vec<f64> {
         // At least 1, the last period's weight.
         let total: f64 = weights.iter().sum();
-        Ok(self
-            .returns
+        self.returns
             .column_iter()
             .map(|column| {
                 // Divided by a power of two near the largest return, exactly, so subnormal
@@ -88,8 +89,15 @@ impl Returns {
                     .sum();
                 pow2_scaled(sum / total, exponent)
             })
-            .collect())
+            .collect()
     }
+}
+
+/// The weights `λ^(T−1−t)` of `periods` rows for `λ = e^log_decay`, the last row's 1.
+pub(crate) fn exponential_weights(periods: usize, log_decay: f64) -> Vec<f64> {
+    (0..periods)
+        .map(|t| ((periods - 1 - t) as f64 * log_decay).exp())
+        .collect()
 }
 
 #[cfg(test)]

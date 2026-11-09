@@ -2,6 +2,7 @@
 //! you give, and adjustments to it.
 
 use crate::eigen::SymmetricEigen;
+use crate::expected_returns::exponential_weights;
 use crate::stats::{binary_exponent, pow2_scaled};
 use crate::{CutupError, Returns};
 use nalgebra::DMatrix;
@@ -604,21 +605,9 @@ impl Returns {
     /// weighted most.
     fn exponentially_weighted(&self, log_decay: f64) -> DMatrix<f64> {
         let (periods, n) = self.returns.shape();
-        let weights: Vec<f64> = (0..periods)
-            .map(|t| ((periods - 1 - t) as f64 * log_decay).exp())
-            .collect();
-        let total: f64 = weights.iter().sum();
-        let mean: Vec<f64> = (0..n)
-            .map(|i| {
-                let column = self.returns.column(i);
-                weights
-                    .iter()
-                    .zip(column.iter())
-                    .map(|(w, r)| w * r)
-                    .sum::<f64>()
-                    / total
-            })
-            .collect();
+        let weights = exponential_weights(periods, log_decay);
+        // The same mean `Returns::exponentially_weighted_mean` gives.
+        let mean = self.weighted_means(&weights);
         // Σw − Σw²/Σw, from its closed form 2λ(1 − λ^(T−1)) / (1 − λ²), with each 1 − λ^k as
         // −expm1(k·ln λ), so neither cancels for λ near 0 or 1.
         let lambda = log_decay.exp();
