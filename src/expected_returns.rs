@@ -4,6 +4,7 @@
 use crate::black_litterman::market_portfolio;
 use crate::covariance::Decay;
 use crate::eigen::SymmetricEigen;
+use crate::methods::correlation;
 use crate::stats::{binary_exponent, pow2_scaled};
 use crate::{CutupError, PerAsset, Returns};
 use nalgebra::{DMatrix, DVector};
@@ -218,18 +219,22 @@ impl Returns {
     ///
     /// <https://en.wikipedia.org/wiki/James%E2%80%93Stein_estimator>
     pub fn james_stein_mean(&self) -> Result<Vec<f64>, CutupError> {
-        let moments = Moments::new(self);
-        let mean = &moments.mean;
-        let target = mean.mean();
-        let spread = mean.add_scalar(-target).norm_squared();
-        let alpha = if spread == 0.0 {
+        let exponent = binary_exponent(self.returns.amax());
+        let moments = Moments::new(self, vec![exponent; self.returns.ncols()]);
+        let target = moments.mean.mean();
+        let deviations = moments.mean.add_scalar(-target);
+        let largest = deviations.amax();
+        let alpha = if largest == 0.0 {
             0.0
         } else {
             let eigen = SymmetricEigen::new(&moments.cov).ok_or(CutupError::SingularCovariance)?;
             let excess = moments.cov.trace() - 2.0 * eigen.values.max();
-            // A spread that overflows leaves α at 0, the limit; one that underflows can't,
-            // since the means are at most 1 in this scale and some differ.
-            (excess / (moments.periods * spread)).clamp(0.0, 1.0)
+            // The deviations divided by a power of two near the largest, exactly, so a spread
+            // far below the means can't underflow to 0: ‖μ − μ̄1‖² = spread · 2^(2·shift). An
+            // intensity past f64::MAX is clamped to 1.
+            let shift = binary_exponent(largest);
+            let spread = deviations.map(|d| pow2_scaled(d, -shift)).norm_squared();
+            pow2_scaled(excess / (moments.periods * spread), -2 * shift).clamp(0.0, 1.0)
         };
         Ok(moments.shrunk(target, alpha))
     }
@@ -270,7 +275,7 @@ impl Returns {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn bayes_stein_mean(&self) -> Result<Vec<f64>, CutupError> {
-        let (periods, n) = self.returns.shape();
+        let n = self.returns.ncols();
         // Each asset's returns divided by a power of two near their largest, exactly, so no
         // asset's variance underflows next to another's: Σ = SDCDS for S the powers of two and
         // D the volatilities in these units.
@@ -279,59 +284,47 @@ impl Returns {
             .column_iter()
             .map(|column| binary_exponent(column.amax()))
             .collect();
-        let z = DMatrix::from_fn(periods, n, |t, i| {
-            pow2_scaled(self.returns[(t, i)], -exponents[i])
-        });
-        let mean = z.row_mean().transpose();
-        let mut centered = z.clone();
-        for (mut column, m) in centered.column_iter_mut().zip(mean.iter()) {
-            column.add_scalar_mut(-m);
-        }
-        let cov = centered.tr_mul(&centered) / (periods - 1) as f64;
-        let volatilities = cov.diagonal().map(f64::sqrt);
+        let moments = Moments::new(self, exponents);
+        let exponents = &moments.exponents;
         // The rule of `Returns::find_zero_variance`, which doesn't depend on the scale.
-        if let Some(asset) = (0..n).find(|&i| volatilities[i] <= 1e-10 * z.column(i).amax()) {
+        if let Some(asset) = (0..n).find(|&i| {
+            let largest = pow2_scaled(self.returns.column(i).amax(), -exponents[i]);
+            moments.cov[(i, i)].sqrt() <= 1e-10 * largest
+        }) {
             return Err(self.zero_variance(asset));
         }
-        let correlation =
-            DMatrix::from_fn(n, n, |i, j| cov[(i, j)] / volatilities[i] / volatilities[j]);
+        let (correlation, volatilities) = correlation(&moments.cov)?;
         let eigen = SymmetricEigen::new(&correlation).ok_or(CutupError::SingularCovariance)?;
         if eigen.values.min() <= n as f64 * f64::EPSILON * eigen.values.max() {
             return Err(CutupError::SingularCovariance);
         }
-        // xᵀΣ⁻¹y = (D⁻¹S⁻¹x)ᵀC⁻¹(D⁻¹S⁻¹y), for D⁻¹S⁻¹x and D⁻¹S⁻¹y in correlation units as
-        // vectors and powers of two, as a mantissa and a power of two.
-        let form = |(x, j): &(DVector<f64>, i32), (y, k): &(DVector<f64>, i32)| {
-            let sum: f64 = (0..n)
-                .map(|e| {
-                    let v = eigen.vectors.column(e);
-                    v.dot(x) * v.dot(y) / eigen.values[e]
-                })
-                .sum();
-            (sum, j + k)
+        // xᵀΣ⁻¹y = (D⁻¹S⁻¹x)ᵀC⁻¹(D⁻¹S⁻¹y) = Σₑ (vₑ·x')(vₑ·y')/λₑ, for x' = D⁻¹S⁻¹x and
+        // y' = D⁻¹S⁻¹y in correlation units, from their projections onto the eigenvectors.
+        let project = |x: &DVector<f64>| DVector::from_fn(n, |e, _| eigen.vectors.column(e).dot(x));
+        let form = |x: &DVector<f64>, y: &DVector<f64>| -> f64 {
+            (0..n).map(|e| x[e] * y[e] / eigen.values[e]).sum()
         };
+        // D⁻¹S⁻¹1 and D⁻¹S⁻¹μ, each as a vector and a power of two.
         let ones: Vec<(f64, i32)> = (0..n)
             .map(|i| (1.0 / volatilities[i], -exponents[i]))
             .collect();
         let ones = gather(&ones);
-        let means: Vec<(f64, i32)> = (0..n).map(|i| (mean[i] / volatilities[i], 0)).collect();
+        let means: Vec<(f64, i32)> = (0..n)
+            .map(|i| (moments.mean[i] / volatilities[i], 0))
+            .collect();
         let means = gather(&means);
-        let (numerator, j) = form(&ones, &means);
-        // 1ᵀΣ⁻¹1 > 0, Σ⁻¹ being positive definite.
-        let (denominator, k) = form(&ones, &ones);
-        // μ₀ = ratio · 2^(j − k), and D⁻¹S⁻¹(μ − μ₀1) in the means' scale.
-        let ratio = numerator / denominator;
-        let shift = j - k + ones.1 - means.1;
-        let deviations = (
-            DVector::from_fn(n, |i, _| means.0[i] - pow2_scaled(ratio * ones.0[i], shift)),
-            means.1,
-        );
-        let (distance, l) = form(&deviations, &deviations);
-        let distance = periods as f64 * pow2_scaled(distance.max(0.0), l);
+        let projected_ones = project(&ones.0);
+        // μ₀ = ratio · 2^(means − ones). 1ᵀΣ⁻¹1 > 0, Σ⁻¹ being positive definite.
+        let ratio =
+            form(&projected_ones, &project(&means.0)) / form(&projected_ones, &projected_ones);
+        // D⁻¹S⁻¹(μ − μ₀1), in the means' scale.
+        let deviations = project(&DVector::from_fn(n, |i, _| means.0[i] - ratio * ones.0[i]));
+        let distance = form(&deviations, &deviations).max(0.0);
+        let distance = moments.periods * pow2_scaled(distance, 2 * means.1);
         let alpha = (n as f64 + 2.0) / (n as f64 + 2.0 + distance);
-        let target = pow2_scaled(ratio, j - k);
+        let target = pow2_scaled(ratio, means.1 - ones.1);
         Ok((0..n)
-            .map(|i| pow2_scaled((1.0 - alpha) * mean[i], exponents[i]) + alpha * target)
+            .map(|i| pow2_scaled((1.0 - alpha) * moments.mean[i], exponents[i]) + alpha * target)
             .collect())
     }
 
@@ -364,40 +357,43 @@ impl Returns {
     }
 }
 
-/// The sample mean and covariance of the returns divided by a power of two near the largest,
-/// exactly, so that their squares can't overflow or underflow: shrinkage intensities are
-/// ratios of the two that don't depend on the scale.
+/// The sample mean and covariance of the returns, each asset's divided by `2^exponents[i]`,
+/// exactly, a power of two near the largest return so that their squares can't overflow or
+/// underflow: shrinkage intensities are ratios of the two that don't depend on the scale.
 struct Moments {
-    exponent: i32,
+    exponents: Vec<i32>,
     mean: DVector<f64>,
     cov: DMatrix<f64>,
     periods: f64,
 }
 
 impl Moments {
-    fn new(data: &Returns) -> Self {
-        let exponent = binary_exponent(data.returns.amax());
-        let scaled = data.returns.map(|r| pow2_scaled(r, -exponent));
-        let mean = scaled.row_mean().transpose();
-        let mut centered = scaled.clone();
+    fn new(data: &Returns, exponents: Vec<i32>) -> Self {
+        let (rows, n) = data.returns.shape();
+        let mut centered = DMatrix::from_fn(rows, n, |t, i| {
+            pow2_scaled(data.returns[(t, i)], -exponents[i])
+        });
+        let mean = centered.row_mean().transpose();
         for (mut column, m) in centered.column_iter_mut().zip(mean.iter()) {
             column.add_scalar_mut(-m);
         }
-        let periods = scaled.nrows() as f64;
+        let periods = rows as f64;
         let cov = centered.tr_mul(&centered) / (periods - 1.0);
         Moments {
-            exponent,
+            exponents,
             mean,
             cov,
             periods,
         }
     }
 
-    /// `(1 − α)μ + α·target`, in the returns' scale. At `α = 0` it's the sample mean exactly.
+    /// `(1 − α)μ + α·target`, in the returns' scale, for exponents that are all the same. At
+    /// `α = 0` it's the sample mean exactly.
     fn shrunk(&self, target: f64, alpha: f64) -> Vec<f64> {
         self.mean
             .iter()
-            .map(|&m| pow2_scaled(m + alpha * (target - m), self.exponent))
+            .zip(&self.exponents)
+            .map(|(&m, &exponent)| pow2_scaled(m + alpha * (target - m), exponent))
             .collect()
     }
 }
