@@ -32,7 +32,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
-- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default) and the covariance matrix.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, or an exponentially weighted mean) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
@@ -272,6 +272,31 @@ fn main() -> Result<(), CutupError> {
         .covariance(model.posterior_covariance(&data)?);
     let weights = data.allocate(&method)?;
     println!("Black-Litterman weights, posterior covariance: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Exponentially weighted mean
+
+In place of the sample mean, `data.exponentially_weighted_mean(half_life)` gives each asset's mean with recent periods weighted more: each period's weight halves every `half_life` periods back from the last row. `exponentially_weighted_mean_decay(λ)` takes the decay instead. It's pandas' `ewm().mean()`, the mean `CovarianceConfig::exponentially_weighted` uses, so the two go together:
+
+```rust
+use cutup::{CovarianceConfig, CutupError, MaxSharpe, Returns};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.006,  0.008, -0.003],
+    ];
+    let data = Returns::new(&returns)?;
+    let method = MaxSharpe::default()
+        .expected_returns(data.exponentially_weighted_mean(3.0)?)
+        .covariance(CovarianceConfig::exponentially_weighted(3.0));
+    let weights = data.allocate(&method)?;
+    println!("Max Sharpe, recent: {:?}", weights.as_slice());
     Ok(())
 }
 ```
