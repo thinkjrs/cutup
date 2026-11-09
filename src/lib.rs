@@ -68,6 +68,7 @@ mod cvar;
 mod deprecated;
 mod eigen;
 mod error;
+mod expected_returns;
 mod lp;
 mod methods;
 mod qp;
