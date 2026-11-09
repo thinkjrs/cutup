@@ -1871,6 +1871,10 @@ proptest! {
         let target = mu.min() + mix * (mu.max() - mu.min());
         // A cap within this of the least turnover counts as at it.
         let rounding = 1e-12;
+        // When the expected returns are close, the target's constraint is resolved no better
+        // than this: rounding the target by an ulp of μ moves the weights by about that over
+        // the spread of μ.
+        let resolution = f64::EPSILON * mu.amax() / (mu.max() - mu.min());
         let method = |cap: Option<f64>| {
             let mut method = MeanVariance::target_return(target).current_weights(current.clone());
             if let Some(cap) = cap {
@@ -1887,11 +1891,9 @@ proptest! {
             Err(CutupError::InfeasibleTurnover { minimum, cap: given }) => {
                 prop_assert!(minimum > given && given == cap);
                 // The least turnover is reachable: a cap of exactly that is met, unless the
-                // expected returns are so close that the target's constraint is resolved no
-                // better than the rounding the cap allows. Rounding the target by an ulp of μ
-                // moves the weights by about that over the spread of μ, and the turnover with
-                // them, within a few times that over the solver's steps.
-                let resolution = f64::EPSILON * mu.amax() / (mu.max() - mu.min());
+                // target's constraint is resolved no better than the rounding the cap allows.
+                // The turnover moves with the weights, within a few times the resolution over
+                // the solver's steps.
                 match allocator.allocate(&method(Some(minimum))) {
                     Ok(least) => prop_assert!(turnover(&least, &current) <= minimum + 2.0 * rounding),
                     Err(CutupError::NotConverged) => prop_assert!(resolution > rounding / 10.0, "{mu:?}"),
@@ -1909,11 +1911,13 @@ proptest! {
         if turnover(&free, &current) > cap + 1e-9 {
             prop_assert!((used - cap).abs() <= 1e-9, "turned over {used}, cap {cap}");
         }
-        // A looser cap never has more variance, nor less than no cap.
+        // A looser cap never has more variance, nor less than no cap, to the variance the
+        // weights' resolution along the target's constraint allows.
         let loose = allocator.allocate(&method(Some(cap + looser))).unwrap();
         let v = |w: &Weights| variance(&cov, w);
-        prop_assert!(v(&loose) <= v(&capped) * (1.0 + 1e-12) + 1e-18, "{} > {}", v(&loose), v(&capped));
-        prop_assert!(v(&free) <= v(&loose) * (1.0 + 1e-12) + 1e-18, "{} > {}", v(&free), v(&loose));
+        let slack = 1.0 + 1e-12 + 10.0 * resolution;
+        prop_assert!(v(&loose) <= v(&capped) * slack + 1e-18, "{} > {}", v(&loose), v(&capped));
+        prop_assert!(v(&free) <= v(&loose) * slack + 1e-18, "{} > {}", v(&free), v(&loose));
     }
 
     #[test]
