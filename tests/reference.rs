@@ -638,22 +638,26 @@ fn expected_returns_match_python_reference() {
         // A mean can be near 0 next to the returns it comes from.
         let scale = returns_scale(dataset);
         // An expected error is null in the fixture.
-        let mut compare = |what: String, got: Result<Vec<f64>, CutupError>, want: &Value| {
-            let close = match (&got, want.is_null()) {
-                (Err(_), true) => true,
-                (Ok(got), false) => {
-                    let want = floats(want);
-                    got.len() == want.len()
-                        && got
-                            .iter()
-                            .zip(&want)
-                            .all(|(a, b)| (a - b).abs() <= 1e-13 * scale)
+        let mut compare_within =
+            |what: String, got: Result<Vec<f64>, CutupError>, want: &Value, tolerance: f64| {
+                let close = match (&got, want.is_null()) {
+                    (Err(_), true) => true,
+                    (Ok(got), false) => {
+                        let want = floats(want);
+                        got.len() == want.len()
+                            && got
+                                .iter()
+                                .zip(&want)
+                                .all(|(a, b)| (a - b).abs() <= tolerance * scale)
+                    }
+                    _ => false,
+                };
+                if !close {
+                    failures.push(format!("{name} {what}: {got:?} vs {want}"));
                 }
-                _ => false,
             };
-            if !close {
-                failures.push(format!("{name} {what}: {got:?} vs {want}"));
-            }
+        let mut compare = |what: String, got: Result<Vec<f64>, CutupError>, want: &Value| {
+            compare_within(what, got, want, 1e-13)
         };
         for estimate in case["exponentially_weighted_mean"].as_array().unwrap() {
             let half_life = estimate["half_life"].as_f64().unwrap();
@@ -686,8 +690,27 @@ fn expected_returns_match_python_reference() {
             );
             checked += 1;
         }
+        compare(
+            "James-Stein mean".into(),
+            data.james_stein_mean(),
+            &case["james_stein"],
+        );
+        // A singular covariance is the only expected error.
+        let got = data.bayes_stein_mean().map_err(|e| {
+            assert_eq!(e, CutupError::SingularCovariance, "{name}");
+            e
+        });
+        // Σ⁻¹ amplifies rounding by the correlation matrix's condition number.
+        let condition = case["bayes_stein_condition"].as_f64().unwrap();
+        compare_within(
+            "Bayes-Stein mean".into(),
+            got,
+            &case["bayes_stein"],
+            (1e-16 * condition).max(1e-13),
+        );
+        checked += 2;
     }
-    assert_eq!(checked, 5 * cases.len());
+    assert_eq!(checked, 7 * cases.len());
     assert!(
         failures.is_empty(),
         "{} failures over {} cases:\n{}",
