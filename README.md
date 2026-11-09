@@ -188,7 +188,7 @@ fn main() -> Result<(), CutupError> {
 
 ### Log returns
 
-`Returns::from_prices` computes simple returns, `p_t / p_{t-1} - 1`, as pandas' `pct_change` does. `data.log_returns()` converts any `Returns` to log returns, `ln(1 + r)`, keeping the labels, and every method then works on those. It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with `ln_1p` so small returns keep their digits. A return of −100% or worse has no log, and gives `CutupError::TotalLoss`.
+`Returns::from_prices` computes simple returns, `p_t / p_{t-1} - 1`, as pandas' `pct_change` does. `data.log_returns()` converts any `Returns` to log returns, `ln(1 + r)`, keeping the labels, and every method then works on those. It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with `ln_1p` so small returns keep their digits. A return of −100% or worse has no log, and gives `CutupError::TotalLoss`. Log returns don't add up across assets, so statistics and the methods that weight returns, such as mean-variance, work with `Σwᵢ ln(1 + rᵢ)`, close to the portfolio's log return `ln(1 + Σwᵢrᵢ)` only while returns are small.
 
 ```rust
 use cutup::{CutupError, MinVariance, Returns};

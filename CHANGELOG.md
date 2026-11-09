@@ -33,8 +33,8 @@ All notable changes to this project are documented here. The format follows
   matrix singular to rounding.
 - `Returns::log_returns()`, a new `Returns` of the log returns `ln(1 + r)`, with the same
   labels, for every method to work on in place of simple returns. It's PyPortfolioOpt's
-  `returns_from_prices(prices, log_returns=True)`, computed with `ln_1p`, so a return far below
-  1 keeps its digits. A return of −1 or below has no log return and is the new
+  `returns_from_prices(prices, log_returns=True)`, computed with `ln_1p`, so a return near 0 keeps
+  its digits. A return of −1 or below has no log return and is the new
   `CutupError::TotalLoss`, with its row and column.
 
 ## [0.3.4] - 2026-11-09
