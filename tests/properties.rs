@@ -140,6 +140,18 @@ fn exponentially_weighted(returns: &DMatrix<f64>, half_life: f64) -> DMatrix<f64
     })
 }
 
+/// This file's exponentially weighted mean, pandas' `ewm(halflife=h).mean()`.
+fn exponentially_weighted_mean(returns: &DMatrix<f64>, half_life: f64) -> Vec<f64> {
+    let (t, n) = returns.shape();
+    let raw: Vec<f64> = (0..t)
+        .map(|s| 0.5f64.powf((t - 1 - s) as f64 / half_life))
+        .collect();
+    let total: f64 = raw.iter().sum();
+    (0..n)
+        .map(|i| (0..t).map(|s| raw[s] / total * returns[(s, i)]).sum())
+        .collect()
+}
+
 /// This file's semicovariance below each mean, over `T − 1`, or below `threshold`, over `T`.
 fn semicovariance(returns: &DMatrix<f64>, threshold: Option<f64>) -> DMatrix<f64> {
     let (t, n) = returns.shape();
@@ -786,6 +798,32 @@ proptest! {
                     prop_assert!((x - y).abs() <= 1e-9, "{config:?}: {a:?} vs {b:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn exponentially_weighted_means_match_this_files(
+        returns in returns(),
+        half_life in 0.1f64..100.0,
+        shift in -0.05f64..0.05,
+    ) {
+        // pandas' mean, within each asset's range, and shifted with the returns.
+        let allocator = returns_via_flat(returns.clone()).unwrap();
+        let scale = returns.amax();
+        let mine = exponentially_weighted_mean(&returns, half_life);
+        let means = allocator.exponentially_weighted_mean(half_life).unwrap();
+        let decay = 0.5f64.powf(1.0 / half_life);
+        let decayed = allocator.exponentially_weighted_mean_decay(decay).unwrap();
+        let shifted = returns_via_flat(returns.add_scalar(shift))
+            .unwrap()
+            .exponentially_weighted_mean(half_life)
+            .unwrap();
+        for (i, column) in returns.column_iter().enumerate() {
+            prop_assert!((means[i] - mine[i]).abs() <= 1e-13 * scale, "{means:?} vs {mine:?}");
+            prop_assert!((decayed[i] - mine[i]).abs() <= 1e-13 * scale, "{decayed:?} vs {mine:?}");
+            prop_assert!(column.min() <= means[i] && means[i] <= column.max(), "{means:?}");
+            let want = means[i] + shift;
+            prop_assert!((shifted[i] - want).abs() <= 1e-13 * (scale + shift.abs()), "{shifted:?}");
         }
     }
 
