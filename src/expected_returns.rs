@@ -3,8 +3,10 @@
 
 use crate::black_litterman::market_portfolio;
 use crate::covariance::Decay;
+use crate::eigen::SymmetricEigen;
 use crate::stats::{binary_exponent, pow2_scaled};
 use crate::{CutupError, PerAsset, Returns};
+use nalgebra::{DMatrix, DVector};
 
 impl Returns {
     /// The exponentially weighted mean of each asset's returns, with weights that halve every
@@ -179,6 +181,160 @@ impl Returns {
             .collect())
     }
 
+    /// The James-Stein estimate of the expected returns: the sample means shrunk toward their
+    /// average, `μ̂ = (1 − α)μ + α·μ̄1`, by an intensity `α` estimated from the data.
+    ///
+    /// `α = (tr Σ − 2λ_max) / (T‖μ − μ̄1‖²)`, with `Σ` the sample covariance, `λ_max` its
+    /// largest eigenvalue and `T` the number of periods, as in riskfolio-lib's `"JS"` with its
+    /// default target: the further apart the means are next to their noise, the less they're
+    /// shrunk. It's clamped to `[0, 1]`, the positive-part estimator, so no mean moves past
+    /// the average or away from it. With fewer than three assets, or one variance dominating
+    /// the rest, `tr Σ ≤ 2λ_max` and these are the sample means; with every mean equal, too.
+    ///
+    /// Shrinking toward the average keeps the cross-sectional mean, so the portfolio tilts
+    /// that come from differences between the means are smaller, and so are their errors.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::SingularCovariance`] if the covariance's eigenvalues can't be computed,
+    /// which takes NaN or a failure to converge.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MaxSharpe, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///     [ 0.010, -0.020,  0.005,  0.003],
+    ///     [-0.004,  0.015,  0.002, -0.001],
+    ///     [ 0.007,  0.003, -0.006,  0.004],
+    ///     [ 0.002, -0.001,  0.004,  0.000],
+    ///     [-0.006,  0.008, -0.003,  0.002],
+    /// ])?;
+    /// let shrunk = data.james_stein_mean()?;
+    /// let weights = data.allocate(&MaxSharpe::default().expected_returns(shrunk))?;
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    ///
+    /// <https://en.wikipedia.org/wiki/James%E2%80%93Stein_estimator>
+    pub fn james_stein_mean(&self) -> Result<Vec<f64>, CutupError> {
+        let moments = Moments::new(self);
+        let mean = &moments.mean;
+        let target = mean.mean();
+        let spread = mean.add_scalar(-target).norm_squared();
+        let alpha = if spread == 0.0 {
+            0.0
+        } else {
+            let eigen = SymmetricEigen::new(&moments.cov).ok_or(CutupError::SingularCovariance)?;
+            let excess = moments.cov.trace() - 2.0 * eigen.values.max();
+            // A spread that overflows leaves α at 0, the limit; one that underflows can't,
+            // since the means are at most 1 in this scale and some differ.
+            (excess / (moments.periods * spread)).clamp(0.0, 1.0)
+        };
+        Ok(moments.shrunk(target, alpha))
+    }
+
+    /// The Bayes-Stein estimate of the expected returns (Jorion, 1986): the sample means shrunk
+    /// toward the mean of the minimum variance portfolio, `μ̂ = (1 − α)μ + α·μ₀1`, with
+    /// `μ₀ = 1ᵀΣ⁻¹μ / 1ᵀΣ⁻¹1` and `α = (n + 2) / (n + 2 + T(μ − μ₀1)ᵀΣ⁻¹(μ − μ₀1))`.
+    ///
+    /// `Σ` is the sample covariance, `n` the number of assets and `T` of periods: riskfolio-lib's
+    /// `"BS"` with target `"b2"`. `α` is in `(0, 1]`: the more the means differ from `μ₀`
+    /// next to their noise, the less they're shrunk. Shrinking toward the minimum variance
+    /// portfolio's mean, the return estimated most precisely, keeps that portfolio's return.
+    ///
+    /// It works in correlation units, as the allocation methods do, so it doesn't depend on
+    /// each asset's units.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::ZeroVariance`] for an asset whose variance is 0 to rounding.
+    /// * [`CutupError::SingularCovariance`] if the correlation matrix is singular to rounding:
+    ///   an eigenvalue at most `nε` of the largest, as for more assets than periods, or an
+    ///   asset that's a combination of others. `Σ⁻¹` doesn't exist then.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///     [ 0.010, -0.020,  0.005],
+    ///     [-0.004,  0.015,  0.002],
+    ///     [ 0.007,  0.003, -0.006],
+    ///     [ 0.002, -0.001,  0.004],
+    ///     [-0.006,  0.008, -0.003],
+    /// ])?;
+    /// let shrunk = data.bayes_stein_mean()?;
+    /// let weights = data.allocate(&MeanVariance::risk_aversion(3.0).expected_returns(shrunk))?;
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn bayes_stein_mean(&self) -> Result<Vec<f64>, CutupError> {
+        let (periods, n) = self.returns.shape();
+        // Each asset's returns divided by a power of two near their largest, exactly, so no
+        // asset's variance underflows next to another's: Σ = SDCDS for S the powers of two and
+        // D the volatilities in these units.
+        let exponents: Vec<i32> = self
+            .returns
+            .column_iter()
+            .map(|column| binary_exponent(column.amax()))
+            .collect();
+        let z = DMatrix::from_fn(periods, n, |t, i| {
+            pow2_scaled(self.returns[(t, i)], -exponents[i])
+        });
+        let mean = z.row_mean().transpose();
+        let mut centered = z.clone();
+        for (mut column, m) in centered.column_iter_mut().zip(mean.iter()) {
+            column.add_scalar_mut(-m);
+        }
+        let cov = centered.tr_mul(&centered) / (periods - 1) as f64;
+        let volatilities = cov.diagonal().map(f64::sqrt);
+        // The rule of `Returns::find_zero_variance`, which doesn't depend on the scale.
+        if let Some(asset) = (0..n).find(|&i| volatilities[i] <= 1e-10 * z.column(i).amax()) {
+            return Err(self.zero_variance(asset));
+        }
+        let correlation =
+            DMatrix::from_fn(n, n, |i, j| cov[(i, j)] / volatilities[i] / volatilities[j]);
+        let eigen = SymmetricEigen::new(&correlation).ok_or(CutupError::SingularCovariance)?;
+        if eigen.values.min() <= n as f64 * f64::EPSILON * eigen.values.max() {
+            return Err(CutupError::SingularCovariance);
+        }
+        // xᵀΣ⁻¹y = (D⁻¹S⁻¹x)ᵀC⁻¹(D⁻¹S⁻¹y), for D⁻¹S⁻¹x and D⁻¹S⁻¹y in correlation units as
+        // vectors and powers of two, as a mantissa and a power of two.
+        let form = |(x, j): &(DVector<f64>, i32), (y, k): &(DVector<f64>, i32)| {
+            let sum: f64 = (0..n)
+                .map(|e| {
+                    let v = eigen.vectors.column(e);
+                    v.dot(x) * v.dot(y) / eigen.values[e]
+                })
+                .sum();
+            (sum, j + k)
+        };
+        let ones: Vec<(f64, i32)> = (0..n)
+            .map(|i| (1.0 / volatilities[i], -exponents[i]))
+            .collect();
+        let ones = gather(&ones);
+        let means: Vec<(f64, i32)> = (0..n).map(|i| (mean[i] / volatilities[i], 0)).collect();
+        let means = gather(&means);
+        let (numerator, j) = form(&ones, &means);
+        // 1ᵀΣ⁻¹1 > 0, Σ⁻¹ being positive definite.
+        let (denominator, k) = form(&ones, &ones);
+        // μ₀ = ratio · 2^(j − k), and D⁻¹S⁻¹(μ − μ₀1) in the means' scale.
+        let ratio = numerator / denominator;
+        let shift = j - k + ones.1 - means.1;
+        let deviations = (
+            DVector::from_fn(n, |i, _| means.0[i] - pow2_scaled(ratio * ones.0[i], shift)),
+            means.1,
+        );
+        let (distance, l) = form(&deviations, &deviations);
+        let distance = periods as f64 * pow2_scaled(distance.max(0.0), l);
+        let alpha = (n as f64 + 2.0) / (n as f64 + 2.0 + distance);
+        let target = pow2_scaled(ratio, j - k);
+        Ok((0..n)
+            .map(|i| pow2_scaled((1.0 - alpha) * mean[i], exponents[i]) + alpha * target)
+            .collect())
+    }
+
     /// The exponentially weighted mean of each asset, the last row weighted most.
     fn weighted_mean(&self, decay: Decay) -> Result<Vec<f64>, CutupError> {
         let weights = exponential_weights(self.returns.nrows(), decay.log()?);
@@ -208,6 +364,60 @@ impl Returns {
     }
 }
 
+/// The sample mean and covariance of the returns divided by a power of two near the largest,
+/// exactly, so that their squares can't overflow or underflow: shrinkage intensities are
+/// ratios of the two that don't depend on the scale.
+struct Moments {
+    exponent: i32,
+    mean: DVector<f64>,
+    cov: DMatrix<f64>,
+    periods: f64,
+}
+
+impl Moments {
+    fn new(data: &Returns) -> Self {
+        let exponent = binary_exponent(data.returns.amax());
+        let scaled = data.returns.map(|r| pow2_scaled(r, -exponent));
+        let mean = scaled.row_mean().transpose();
+        let mut centered = scaled.clone();
+        for (mut column, m) in centered.column_iter_mut().zip(mean.iter()) {
+            column.add_scalar_mut(-m);
+        }
+        let periods = scaled.nrows() as f64;
+        let cov = centered.tr_mul(&centered) / (periods - 1.0);
+        Moments {
+            exponent,
+            mean,
+            cov,
+            periods,
+        }
+    }
+
+    /// `(1 − α)μ + α·target`, in the returns' scale. At `α = 0` it's the sample mean exactly.
+    fn shrunk(&self, target: f64, alpha: f64) -> Vec<f64> {
+        self.mean
+            .iter()
+            .map(|&m| pow2_scaled(m + alpha * (target - m), self.exponent))
+            .collect()
+    }
+}
+
+/// Entries `mᵢ·2^kᵢ` as a vector and one power of two, the vector's largest entry near 1, so
+/// none overflows or underflows on the way unless it's negligible next to the largest.
+fn gather(entries: &[(f64, i32)]) -> (DVector<f64>, i32) {
+    let exponent = entries
+        .iter()
+        .filter(|(m, _)| *m != 0.0)
+        .map(|&(m, k)| binary_exponent(m.abs()) + k)
+        .max()
+        .unwrap_or(0);
+    let vector = DVector::from_iterator(
+        entries.len(),
+        entries.iter().map(|&(m, k)| pow2_scaled(m, k - exponent)),
+    );
+    (vector, exponent)
+}
+
 /// The weights `λ^(T−1−t)` of `periods` rows for `λ = e^log_decay`, the last row's 1.
 pub(crate) fn exponential_weights(periods: usize, log_decay: f64) -> Vec<f64> {
     (0..periods)
@@ -218,8 +428,8 @@ pub(crate) fn exponential_weights(periods: usize, log_decay: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use crate::test_support::{factor_returns, labeled};
-    use crate::{Asset, CutupError, MaxSharpe, MeanVariance, Returns, Weights};
-    use nalgebra::{DMatrix, dmatrix};
+    use crate::{Asset, CutupError, MaxSharpe, MeanVariance, MinVariance, Returns, Weights};
+    use nalgebra::{DMatrix, DVector, dmatrix};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -642,5 +852,257 @@ mod tests {
             1e-150, -1e150;
             -1e-150, -1e150;
         ])
+    }
+
+    /// The sample mean and covariance, written out.
+    fn sample_moments(returns: &DMatrix<f64>) -> (DVector<f64>, DMatrix<f64>) {
+        let mean = returns.row_mean().transpose();
+        let t = returns.nrows() as f64;
+        let centered = DMatrix::from_fn(returns.nrows(), returns.ncols(), |s, i| {
+            returns[(s, i)] - mean[i]
+        });
+        let cov = centered.transpose() * &centered / (t - 1.0);
+        (mean, cov)
+    }
+
+    fn assert_close_all(got: &[f64], want: &[f64], tolerance: f64) {
+        let scale = want.iter().fold(0.0f64, |m, w| m.max(w.abs()));
+        for (a, b) in got.iter().zip(want) {
+            assert!((a - b).abs() <= tolerance * scale, "{got:?} vs {want:?}");
+        }
+    }
+
+    /// Independent returns of about 1% a period, from a fixed linear congruential generator.
+    fn independent_returns(assets: usize, periods: usize, seed: u64) -> DMatrix<f64> {
+        let mut state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        DMatrix::from_fn(periods, assets, |_, _| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.04
+        })
+    }
+
+    /// Five independent assets whose means are close next to their noise, so James-Stein
+    /// shrinks them partway.
+    fn close_means() -> DMatrix<f64> {
+        let noise = independent_returns(5, 12, 29);
+        DMatrix::from_fn(12, 5, |t, i| noise[(t, i)] + 0.0002 * i as f64)
+    }
+
+    #[test]
+    fn james_stein_mean_matches_its_definition() {
+        let returns = close_means();
+        let (mean, cov) = sample_moments(&returns);
+        let target = mean.mean();
+        let spread = mean.add_scalar(-target).norm_squared();
+        let largest = cov.clone().symmetric_eigen().eigenvalues.max();
+        let alpha = (cov.trace() - 2.0 * largest) / (12.0 * spread);
+        assert!(0.0 < alpha && alpha < 1.0, "{alpha}");
+        let want: Vec<f64> = mean
+            .iter()
+            .map(|m| (1.0 - alpha) * m + alpha * target)
+            .collect();
+        let got = data(returns).james_stein_mean().unwrap();
+        assert_close_all(&got, &want, 1e-12);
+        // The average of the means is kept.
+        let average = got.iter().sum::<f64>() / 5.0;
+        assert!(close(average, target, 1e-13), "{average} vs {target}");
+    }
+
+    #[test]
+    fn james_stein_mean_clamps_its_intensity() {
+        // Two assets: tr Σ ≤ 2λ_max, so α ≤ 0 and these are the sample means exactly.
+        let returns = factor_returns(2, 20, 31);
+        let sample: Vec<f64> = returns.row_mean().iter().copied().collect();
+        assert_eq!(data(returns).james_stein_mean().unwrap(), sample);
+        // Means far closer together than their noise: α would be past 1, so every mean is
+        // the average, not past it.
+        let noise = independent_returns(5, 12, 37);
+        let mean = noise.row_mean();
+        let returns = DMatrix::from_fn(12, 5, |t, i| noise[(t, i)] - mean[i] + 1e-9 * i as f64);
+        let got = data(returns).james_stein_mean().unwrap();
+        let average = got.iter().sum::<f64>() / 5.0;
+        for m in &got {
+            assert!(close(*m, average, 1e-6), "{got:?}");
+        }
+        // Every mean equal: nothing to shrink.
+        let equal = data(dmatrix![
+            0.01, 0.03, -0.01;
+            0.03, 0.01, 0.05;
+        ]);
+        assert_eq!(equal.james_stein_mean().unwrap(), vec![0.02; 3]);
+    }
+
+    #[test]
+    fn bayes_stein_mean_matches_its_definition() {
+        let returns = close_means();
+        let (mean, cov) = sample_moments(&returns);
+        let inverse = cov.try_inverse().unwrap();
+        let ones = DVector::from_element(5, 1.0);
+        let target =
+            (ones.transpose() * &inverse * &mean)[0] / (ones.transpose() * &inverse * &ones)[0];
+        let deviation = mean.add_scalar(-target);
+        let distance = (deviation.transpose() * &inverse * &deviation)[0];
+        let alpha = 7.0 / (7.0 + 12.0 * distance);
+        let want: Vec<f64> = mean
+            .iter()
+            .map(|m| (1.0 - alpha) * m + alpha * target)
+            .collect();
+        let got = data(returns).bayes_stein_mean().unwrap();
+        assert_close_all(&got, &want, 1e-11);
+    }
+
+    #[test]
+    fn bayes_stein_mean_keeps_the_minimum_variance_return() {
+        // The minimum variance portfolio's return is the target, under the sample means and the
+        // shrunk ones alike.
+        let returns = factor_returns(4, 30, 41);
+        let data = data(returns);
+        let weights = data
+            .allocate(&MinVariance::default().allow_short())
+            .unwrap();
+        let shrunk = data.bayes_stein_mean().unwrap();
+        let sample = data.returns.row_mean();
+        let before: f64 = weights.iter().zip(sample.iter()).map(|(w, m)| w * m).sum();
+        let after: f64 = weights.iter().zip(&shrunk).map(|(w, m)| w * m).sum();
+        assert!(close(before, after, 1e-10), "{before} vs {after}");
+        // And every mean moved toward it, none past it.
+        for (s, m) in shrunk.iter().zip(sample.iter()) {
+            assert!(
+                (s - before).abs() <= (m - before).abs(),
+                "{shrunk:?} vs {sample}"
+            );
+            assert!((s - before) * (m - before) >= 0.0, "{shrunk:?} vs {sample}");
+        }
+    }
+
+    #[test]
+    fn bayes_stein_mean_needs_an_invertible_covariance() {
+        let constant = data(dmatrix![
+            0.01, 0.002, -0.01;
+            -0.02, 0.002, 0.03;
+            0.03, 0.002, 0.01;
+            0.01, 0.002, -0.02;
+        ]);
+        assert!(matches!(
+            constant.bayes_stein_mean(),
+            Err(CutupError::ZeroVariance { column: 1, .. })
+        ));
+        // More assets than periods, and an asset that's the sum of two others.
+        let wide = data(factor_returns(6, 4, 43));
+        assert_eq!(wide.bayes_stein_mean(), Err(CutupError::SingularCovariance));
+        let base = factor_returns(2, 10, 47);
+        let collinear = DMatrix::from_fn(10, 3, |t, i| match i {
+            2 => base[(t, 0)] + base[(t, 1)],
+            _ => base[(t, i)],
+        });
+        assert_eq!(
+            data(collinear).bayes_stein_mean(),
+            Err(CutupError::SingularCovariance)
+        );
+        // James-Stein needs no inverse.
+        assert!(constant.james_stein_mean().is_ok() && wide.james_stein_mean().is_ok());
+    }
+
+    #[test]
+    fn stein_means_scale_exactly_by_powers_of_two() {
+        // Near 1e-182 and 1e118, where the unscaled covariances would underflow or come close
+        // to overflowing.
+        let returns = close_means();
+        let james = data(returns.clone()).james_stein_mean().unwrap();
+        let bayes = data(returns.clone()).bayes_stein_mean().unwrap();
+        for k in [-600, -3, 3, 400] {
+            let scale = 2f64.powi(k);
+            let scaled = data(returns.map(|r| r * scale));
+            let want = |m: &[f64]| m.iter().map(|x| x * scale).collect::<Vec<_>>();
+            assert_eq!(scaled.james_stein_mean().unwrap(), want(&james), "{k}");
+            assert_eq!(scaled.bayes_stein_mean().unwrap(), want(&bayes), "{k}");
+        }
+    }
+
+    #[test]
+    fn bayes_stein_mean_of_assets_far_apart_in_scale() {
+        // One asset's returns 2^−660, about 2e-199, times the others': its variance would
+        // underflow unscaled. With Σ = CΣ₁C and μ = Cμ₁ for C = diag(c), and u = c⁻¹ / 2^660,
+        // μ₀ = 2^−660 · uᵀΣ₁⁻¹μ₁ / uᵀΣ₁⁻¹u, and (μ − μ₀1)ᵀΣ⁻¹(μ − μ₀1) is the same form in
+        // Σ₁ with μ₁ − μ₀c⁻¹, all of it finite.
+        let base = close_means();
+        let small = 2f64.powi(-660);
+        let returns = DMatrix::from_fn(12, 5, |t, i| {
+            base[(t, i)] * if i == 0 { small } else { 1.0 }
+        });
+        let got = data(returns).bayes_stein_mean().unwrap();
+
+        let (mean, cov) = sample_moments(&base);
+        let inverse = cov.try_inverse().unwrap();
+        let u = DVector::from_fn(5, |i, _| if i == 0 { 1.0 } else { small });
+        let ratio = (u.transpose() * &inverse * &mean)[0] / (u.transpose() * &inverse * &u)[0];
+        let target = ratio * small;
+        // μ₀c⁻¹: the first entry is μ₀ · 2^660, the rest μ₀.
+        let shifted = DVector::from_fn(5, |i, _| mean[i] - if i == 0 { ratio } else { target });
+        let distance = (shifted.transpose() * &inverse * &shifted)[0];
+        let alpha = 7.0 / (7.0 + 12.0 * distance);
+        for i in 0..5 {
+            let m = mean[i] * if i == 0 { small } else { 1.0 };
+            let want = (1.0 - alpha) * m + alpha * target;
+            let scale = if i == 0 { small } else { 1.0 };
+            assert!(
+                (got[i] - want).abs() <= 1e-11 * 0.02 * scale,
+                "{i}: {got:?} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn stein_means_feed_a_method() {
+        let data = data(close_means());
+        for mu in [
+            data.james_stein_mean().unwrap(),
+            data.bayes_stein_mean().unwrap(),
+        ] {
+            let method = MeanVariance::risk_aversion(100.0).allow_short();
+            let weights = data.allocate(&method.clone().expected_returns(mu)).unwrap();
+            assert_ne!(weights, data.allocate(&method).unwrap());
+        }
+    }
+
+    #[test]
+    fn bayes_stein_mean_draws_the_lines_where_its_rules_do() {
+        // A second asset that differs from the first by η in four periods: their correlation
+        // is 1 − O(η²). At η = 5e-10 the smaller eigenvalue of the correlation matrix, 1 − ρ,
+        // is rounding, about 4.7e-16, under nε times the larger, 8.9e-16; at 1.4e-9 it's
+        // 3.4e-15, over it.
+        let x = [0.01, -0.02, 0.015, -0.005, 0.02, -0.01];
+        let step = [1.0, -1.0, -1.0, 1.0, 0.0, 0.0];
+        let pair = |eta: f64| {
+            data(DMatrix::from_fn(6, 2, |t, i| {
+                x[t] + if i == 1 { eta * step[t] } else { 0.0 }
+            }))
+        };
+        assert_eq!(
+            pair(5e-10).bayes_stein_mean(),
+            Err(CutupError::SingularCovariance)
+        );
+        assert!(pair(1.4e-9).bayes_stein_mean().is_ok());
+        // An asset at 1.9 but for one period 3e-10 above: a volatility of 1.5e-10, under
+        // 1e-10 of its largest return, so it's constant, as for an allocation method. At 5e-10
+        // above, a volatility of 2.5e-10, it isn't.
+        let nearly_constant = |delta: f64| {
+            let other = independent_returns(1, 4, 53);
+            data(DMatrix::from_fn(4, 2, |t, i| match i {
+                0 => other[(t, 0)],
+                _ => 1.9 + if t == 3 { delta } else { 0.0 },
+            }))
+        };
+        let constant = nearly_constant(3e-10);
+        assert!(matches!(
+            constant.bayes_stein_mean(),
+            Err(CutupError::ZeroVariance { column: 1, .. })
+        ));
+        assert_eq!(constant.find_zero_variance(), Some(1));
+        assert!(nearly_constant(5e-10).bayes_stein_mean().is_ok());
     }
 }
