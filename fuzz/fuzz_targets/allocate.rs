@@ -6,7 +6,8 @@
 //! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
 //! expected return and CVaR, and have shares summing to 1 and no NaN; there, a Sharpe ratio past
 //! `f64::MAX` is infinite, against a volatility far smaller than the returns. An expected-return
-//! estimate may fail only for its parameter, and is otherwise one finite value per asset.
+//! estimate may fail only for its parameters, or a riskless market, and is otherwise one value
+//! per asset, never NaN, and finite but for a CAPM return past `f64::MAX`.
 
 #![no_main]
 
@@ -101,6 +102,7 @@ struct Covariance {
 enum Estimate {
     HalfLife(f64),
     Decay(f64),
+    Capm(Values, f64),
 }
 
 impl Estimate {
@@ -108,6 +110,7 @@ impl Estimate {
         match self {
             Estimate::HalfLife(h) => data.exponentially_weighted_mean(h),
             Estimate::Decay(lambda) => data.exponentially_weighted_mean_decay(lambda),
+            Estimate::Capm(market, rate) => data.capm_returns(market, rate),
         }
     }
 }
@@ -521,14 +524,27 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             max_sharpe,
             covariance,
         } => {
-            // An estimate is invalid only for its parameter, and then one finite per asset.
+            // An estimate fails only for its parameters, or a riskless market. Otherwise it's
+            // one per asset, never NaN, and finite but for a CAPM return past f64::MAX.
+            let capm = matches!(estimate, Estimate::Capm(..));
             let mu = match estimate.estimate(data) {
                 Ok(mu) => mu,
+                Err(
+                    CutupError::InvalidConfig { .. }
+                    | CutupError::InvalidAssetValue { .. }
+                    | CutupError::DimensionMismatch { .. }
+                    | CutupError::UnknownAsset { .. }
+                    | CutupError::DuplicateAsset { .. }
+                    | CutupError::RisklessMarket,
+                ) if capm => return None,
                 Err(CutupError::InvalidConfig { .. }) => return None,
                 Err(e) => panic!("{e:?}"),
             };
             assert_eq!(mu.len(), data.labels().len());
-            assert!(mu.iter().all(|m| m.is_finite()), "{mu:?}");
+            assert!(
+                mu.iter().all(|m| m.is_finite() || capm && !m.is_nan()),
+                "{mu:?}"
+            );
             if max_sharpe {
                 Box::new(covariance!(
                     MaxSharpe::default().expected_returns(mu),
