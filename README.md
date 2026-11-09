@@ -32,7 +32,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
-- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, or an exponentially weighted mean) and the covariance matrix.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, an exponentially weighted mean, or CAPM returns) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
@@ -297,6 +297,30 @@ fn main() -> Result<(), CutupError> {
         .covariance(CovarianceConfig::exponentially_weighted(3.0));
     let weights = data.allocate(&method)?;
     println!("Max Sharpe, recent: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### CAPM returns
+
+`data.capm_returns(market_weights, risk_free_rate)` gives each asset the expected return the capital asset pricing model does, `r_f + βᵢ(E[r_m] − r_f)`: its beta to the market portfolio, from the sample covariance, times the market's mean excess return. The market weights are one per asset, in column order or by label, and capitalizations work too. With equal weights it's PyPortfolioOpt's `capm_return`, per period and without compounding. For the returns the market weights imply through a risk aversion instead, `δΣw`, use `BlackLitterman::prior_returns`.
+
+```rust
+use cutup::{CutupError, MaxSharpe, Returns};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.006,  0.008, -0.003],
+    ];
+    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+    // Market capitalizations, and a risk-free rate of 0.01% a period.
+    let capm = data.capm_returns([("SPY", 600.0), ("TLT", 300.0), ("GLD", 100.0)], 0.0001)?;
+    let weights = data.allocate(&MaxSharpe::default().risk_free_rate(0.0001).expected_returns(capm))?;
+    println!("Max Sharpe, CAPM returns: {:?}", weights.as_slice());
     Ok(())
 }
 ```
