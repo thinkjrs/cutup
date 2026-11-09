@@ -701,7 +701,8 @@ fn expected_returns_match_python_reference() {
             e
         });
         // Σ⁻¹ amplifies rounding by the correlation matrix's condition number.
-        let condition = case["bayes_stein_condition"].as_f64().unwrap();
+        // A null condition number isn't finite, and Bayes-Stein is an expected error there.
+        let condition = case["bayes_stein_condition"].as_f64().unwrap_or(0.0);
         compare_within(
             "Bayes-Stein mean".into(),
             got,

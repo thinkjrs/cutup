@@ -128,11 +128,13 @@ def james_stein(returns: np.ndarray) -> list[float]:
     return shrunk.tolist()
 
 
-def correlation_condition(returns: np.ndarray) -> float:
-    """The correlation matrix's condition number, which Bayes-Stein's tolerance grows with."""
+def correlation_condition(returns: np.ndarray) -> float | None:
+    """The correlation matrix's condition number, which Bayes-Stein's tolerance grows with, or
+    None where it isn't finite, which JSON can't hold; Bayes-Stein is an expected error there."""
     cov = np.cov(returns, rowvar=False)
     sd = np.sqrt(np.diag(cov))
-    return float(np.linalg.cond(cov / np.outer(sd, sd)))
+    condition = float(np.linalg.cond(cov / np.outer(sd, sd)))
+    return condition if np.isfinite(condition) else None
 
 
 def bayes_stein(returns: np.ndarray) -> list[float] | None:
@@ -223,7 +225,7 @@ def drift(committed: list, fresh: list) -> list[str]:
         for (name, a), (_, b) in zip(old_estimates, new_estimates):
             # Σ⁻¹ amplifies rounding, which differs between BLAS builds, by the condition number.
             tolerance = TOLERANCE
-            if name == "bayes_stein":
+            if name == "bayes_stein" and new["bayes_stein_condition"] is not None:
                 tolerance = max(TOLERANCE, 1e-16 * new["bayes_stein_condition"])
             if (a is None) != (b is None) or (
                 a is not None and (len(a) != len(b) or not same(a, b, new["scale"], tolerance))
