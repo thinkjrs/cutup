@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format follows
   period's weight halves every `half_life` periods back from the last row, so a long half-life
   gives the sample mean and a short one the last period's returns. An invalid half-life or
   decay is `InvalidConfig`, as for the covariance.
+- `Returns::capm_returns(market_weights, risk_free_rate)`, each asset's expected return under
+  the capital asset pricing model, `r_f + βᵢ(E[r_m] − r_f)`, with its beta to the market
+  portfolio from the sample covariance and the market's sample mean, as PyPortfolioOpt's
+  `capm_return` computes it per period without compounding. The market weights are checked
+  and normalized as `BlackLitterman`'s are, so capitalizations work too. A market with no
+  variance is the new `CutupError::RisklessMarket`. For the returns the market implies through
+  a risk aversion, `δΣw`, there's `BlackLitterman::prior_returns`.
 
 ## [0.3.4] - 2026-11-09
 
