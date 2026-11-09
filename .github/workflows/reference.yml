@@ -40,3 +40,6 @@ jobs:
 
       - name: Check Ledoit-Wolf fixtures against the reference
         run: uv run --project reference --locked python reference/covariance.py --check
+
+      - name: Check expected-return fixtures against the reference
+        run: uv run --project reference --locked python reference/expected_returns.py --check
