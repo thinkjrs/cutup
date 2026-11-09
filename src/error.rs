@@ -197,6 +197,9 @@ pub enum CutupError {
         /// The most negative eigenvalue.
         eigenvalue: f64,
     },
+    /// The market portfolio given to [`Returns::capm_returns`](crate::Returns::capm_returns) has
+    /// no variance, such as all of it in cash, so no asset has a beta to it.
+    RisklessMarket,
 }
 
 impl fmt::Display for CutupError {
@@ -234,6 +237,10 @@ impl fmt::Display for CutupError {
                 f,
                 "covariance matrix has a negative eigenvalue, {eigenvalue}, so some portfolio \
                  would have a negative variance"
+            ),
+            CutupError::RisklessMarket => write!(
+                f,
+                "market portfolio has no variance, so no asset has a beta to it"
             ),
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
@@ -414,6 +421,10 @@ mod tests {
             CutupError::IndefiniteCovariance { eigenvalue: -0.5 }.to_string(),
             "covariance matrix has a negative eigenvalue, -0.5, so some portfolio would have a \
              negative variance"
+        );
+        assert_eq!(
+            CutupError::RisklessMarket.to_string(),
+            "market portfolio has no variance, so no asset has a beta to it"
         );
         assert_eq!(
             CutupError::InvalidAssetValue {
