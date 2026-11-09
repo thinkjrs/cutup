@@ -34,13 +34,14 @@ DRIFT = 4 * np.finfo(float).eps
 
 
 def log_returns(dataset: dict) -> np.ndarray:
-    logs = np.log1p(load_returns(dataset))
+    simple = load_returns(dataset)
+    logs = np.log1p(simple)
 
     if dataset["kind"] == "prices":
         prices = pd.DataFrame(dataset["data"], dtype=float)
     else:
         start = np.ones((1, logs.shape[1]))
-        prices = pd.DataFrame(np.cumprod(np.vstack([start, 1.0 + load_returns(dataset)]), axis=0))
+        prices = pd.DataFrame(np.cumprod(np.vstack([start, 1.0 + simple]), axis=0))
     scale = np.abs(logs).max()
     theirs = returns_from_prices(prices, log_returns=True).to_numpy()
     gap = np.abs(logs - theirs).max()
