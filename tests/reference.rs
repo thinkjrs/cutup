@@ -563,7 +563,11 @@ fn stats_with_match_python_reference() {
         }
         let volatility = case["volatility"].as_f64().unwrap();
         if case["diversification_ratio"].is_null() {
-            if stats.volatility() != 0.0 || stats.risk_contributions().is_some() {
+            if stats.volatility() != 0.0
+                || stats.risk_contributions().is_some()
+                || stats.diversification_ratio().is_some()
+                || rates.iter().any(|&r| stats.sharpe_ratio(r).is_some())
+            {
                 failures.push(format!(
                     "{what}: expected a riskless portfolio, got {stats:?}"
                 ));
