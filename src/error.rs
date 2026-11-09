@@ -200,6 +200,14 @@ pub enum CutupError {
     /// The market portfolio given to [`Returns::capm_returns`](crate::Returns::capm_returns) has
     /// no variance, such as all of it in cash, so no asset has a beta to it.
     RisklessMarket,
+    /// A return given to [`Returns::log_returns`](crate::Returns::log_returns) is −100% or
+    /// worse, so `1 + r` has no logarithm.
+    TotalLoss {
+        /// Row of the offending return.
+        row: usize,
+        /// Column (asset) of the offending return.
+        col: usize,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -241,6 +249,10 @@ impl fmt::Display for CutupError {
             CutupError::RisklessMarket => write!(
                 f,
                 "market portfolio has no variance, so no asset has a beta to it"
+            ),
+            CutupError::TotalLoss { row, col } => write!(
+                f,
+                "return at row {row}, column {col} is -100% or worse, so it has no log return"
             ),
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
@@ -425,6 +437,10 @@ mod tests {
         assert_eq!(
             CutupError::RisklessMarket.to_string(),
             "market portfolio has no variance, so no asset has a beta to it"
+        );
+        assert_eq!(
+            CutupError::TotalLoss { row: 3, col: 1 }.to_string(),
+            "return at row 3, column 1 is -100% or worse, so it has no log return"
         );
         assert_eq!(
             CutupError::InvalidAssetValue {

@@ -319,6 +319,48 @@ impl Returns {
         &self.labels
     }
 
+    /// Converts simple returns `r` to log returns, `ln(1 + r)`, keeping the labels: a new
+    /// `Returns` whose covariance, means and every allocation are those of the log returns.
+    /// It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with
+    /// [`f64::ln_1p`], so a return far below 1 keeps its digits.
+    ///
+    /// Data from [`Returns::from_prices`] gives `ln(p_t / p_{t-1})`, to rounding. Data from
+    /// [`Returns::new`] is taken to be simple returns: for returns that are already logs, use
+    /// them as they are.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::TotalLoss`] if a return is −1 or below, a loss of 100% or more, which has
+    ///   no log return. Its row is the row of the returns, one before the later price's row for
+    ///   data from prices.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// let prices = [[100.0, 50.0], [110.0, 49.0], [99.0, 51.0]];
+    /// let data = Returns::from_prices(&prices)?.labeled(["SPY", "TLT"])?;
+    ///
+    /// let logs = data.log_returns()?;
+    /// assert_eq!(logs.labels(), ["SPY", "TLT"]);
+    ///
+    /// // Log returns add up: SPY's two sum to ln(99 / 100).
+    /// let weights = cutup::Weights::from(vec![1.0, 0.0]);
+    /// let total = 2.0 * logs.stats(&weights)?.expected_return();
+    /// assert!((total - (0.99f64).ln()).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn log_returns(&self) -> Result<Returns, CutupError> {
+        if let Some((row, col)) = Returns::find(&self.returns, |r| r <= -1.0) {
+            return Err(CutupError::TotalLoss { row, col });
+        }
+        // Every log is finite and at most about 710 in size, so the covariance is too.
+        let mut logs = Returns::build(self.returns.map(f64::ln_1p))?;
+        logs.labels = Arc::clone(&self.labels);
+        Ok(logs)
+    }
+
     /// Computes weights with `method`, any [`Allocation`]: one of this crate's methods, such as
     /// [`MinVariance`](crate::MinVariance) or [`Hrp`](crate::Hrp), or one of your own. The weights
     /// carry the data's [labels](Returns::labels).
@@ -543,7 +585,7 @@ impl Returns {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{full_rank_prices, labeled};
+    use crate::test_support::{datasets, full_rank_prices, labeled};
     use crate::{
         Asset, BlackLitterman, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility,
         MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance, RiskParity, View,
@@ -672,6 +714,90 @@ mod tests {
             .to_string(),
             "row 1 has the wrong number of values: 1, not 2"
         );
+    }
+
+    /// Against `tests/fixtures/log_returns.json`, NumPy's `log1p` of each dataset's returns
+    /// from `reference/log_returns.py`, cross-checked there against PyPortfolioOpt.
+    #[test]
+    fn test_log_returns_match_the_python_reference() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/log_returns.json")).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        let datasets = datasets();
+        assert_eq!(cases.len(), datasets.len());
+        for (name, data) in datasets {
+            let case = cases
+                .iter()
+                .find(|c| c["dataset"] == name.as_str())
+                .unwrap();
+            let rows: Vec<Vec<f64>> = case["log_returns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    let row = row.as_array().unwrap();
+                    row.iter().map(|v| v.as_f64().unwrap()).collect()
+                })
+                .collect();
+            let want = Returns::new(&rows).unwrap();
+            let got = data.log_returns().unwrap();
+            assert_eq!(got.returns.shape(), want.returns.shape(), "{name}");
+            for (g, w) in got.returns.iter().zip(want.returns.iter()) {
+                assert!(
+                    (g - w).abs() <= 4.0 * f64::EPSILON * w.abs(),
+                    "{name}: {g} vs {w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_log_returns_keep_the_labels_and_the_digits() {
+        let data = labeled();
+        let logs = data.log_returns().unwrap();
+        assert_eq!(logs.labels(), data.labels());
+        assert_eq!(logs.returns, data.returns.map(f64::ln_1p));
+
+        // From prices, the log returns are those of the price ratios.
+        let prices = full_rank_prices();
+        let logs = Returns::prices_matrix(prices.clone())
+            .unwrap()
+            .log_returns()
+            .unwrap();
+        for t in 0..logs.returns.nrows() {
+            for j in 0..logs.returns.ncols() {
+                let exact = (prices[(t + 1, j)] / prices[(t, j)]).ln();
+                assert!((logs.returns[(t, j)] - exact).abs() <= 1e-15, "{t}, {j}");
+            }
+        }
+
+        // Tiny returns keep every digit, where ln(1 + r) would round them to 0.
+        let tiny = Returns::new(&[[1e-300, 3e-17], [-2e-300, -1e-17], [5e-300, 2e-17]]).unwrap();
+        assert_eq!(tiny.log_returns().unwrap().returns, tiny.returns);
+    }
+
+    #[test]
+    fn test_log_returns_reject_a_total_loss() {
+        // The return just above −1 has the most negative log, ln(2^−53).
+        let above = -1.0 + f64::EPSILON / 2.0;
+        let data = Returns::new(&[[above, 0.01], [1e150, -0.02], [0.0, 0.03]]).unwrap();
+        let logs = data.log_returns().unwrap();
+        let least = -53.0 * std::f64::consts::LN_2;
+        assert!((logs.returns[(0, 0)] - least).abs() <= f64::EPSILON * least.abs());
+        assert_eq!(logs.returns[(1, 0)], 1e150f64.ln());
+        assert!(logs.cov_matrix.iter().all(|c| c.is_finite()));
+
+        // The first return of −1 or below, row by row.
+        for (rows, row, col) in [
+            ([[0.01, 0.02], [0.03, -1.0], [-1.0, 0.0]], 1, 1),
+            ([[0.01, -1.5], [-1.0, 0.04], [0.0, 0.0]], 0, 1),
+            ([[0.01, 0.02], [0.03, 0.04], [-1e150, 0.0]], 2, 0),
+        ] {
+            assert_eq!(
+                Returns::new(&rows).unwrap().log_returns(),
+                Err(CutupError::TotalLoss { row, col })
+            );
+        }
     }
 
     #[test]
