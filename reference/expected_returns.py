@@ -72,7 +72,7 @@ def capm(returns: np.ndarray, market: np.ndarray, rate: float) -> list[float] | 
     m = returns @ w
     sizes = np.abs(w) @ np.abs(returns).max(axis=0)
     volatility = np.std(m, ddof=1)
-    if volatility < 1e-10 * sizes:
+    if volatility <= 1e-10 * sizes:
         return None
     cov = np.cov(np.column_stack([returns, m]), rowvar=False)
     betas = cov[:-1, -1] / cov[-1, -1]
