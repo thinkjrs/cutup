@@ -94,9 +94,9 @@ impl Estimate {
     }
 }
 
-/// How fast the weights of an exponentially weighted covariance decay.
+/// How fast the weights of an exponentially weighted covariance or mean decay.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Decay {
+pub(crate) enum Decay {
     HalfLife(f64),
     Lambda(f64),
 }
@@ -109,7 +109,7 @@ impl Decay {
 
     /// `ln λ`, after checking it's in `[−708, 0)`. From a half-life it's `−ln 2 / h`, without
     /// rounding `λ` first.
-    fn log(self) -> Result<f64, CutupError> {
+    pub(crate) fn log(self) -> Result<f64, CutupError> {
         let (field, value, log) = match self {
             Decay::HalfLife(h) => ("half_life", h, -std::f64::consts::LN_2 / h),
             Decay::Lambda(lambda) => ("decay", lambda, lambda.ln()),
