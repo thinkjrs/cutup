@@ -1,10 +1,11 @@
 name: Reference
 
-# Recomputes tests/fixtures/expected.json, lp.json, stats.json and covariance.json from the
-# pinned Python reference implementations and fails if any value drifts from the committed
-# file beyond floating-point noise, so the fixtures can't drift from what the reference
-# actually computes. The Rust side (tests/reference.rs, and the unit tests in src/lp.rs and
-# src/covariance.rs) runs with the rest of the tests in tests.yml.
+# Recomputes tests/fixtures/expected.json, lp.json, stats.json, covariance.json,
+# expected_returns.json and log_returns.json from the pinned Python reference implementations
+# and fails if any value drifts from the committed file beyond floating-point noise, so the
+# fixtures can't drift from what the reference actually computes. The Rust side
+# (tests/reference.rs, and the unit tests in src/lp.rs, src/covariance.rs and src/returns.rs)
+# runs with the rest of the tests in tests.yml.
 
 on:
   push:
@@ -43,3 +44,6 @@ jobs:
 
       - name: Check expected-return fixtures against the reference
         run: uv run --project reference --locked python reference/expected_returns.py --check
+
+      - name: Check log return fixtures against the reference
+        run: uv run --project reference --locked python reference/log_returns.py --check
