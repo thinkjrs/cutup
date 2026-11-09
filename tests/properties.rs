@@ -128,9 +128,7 @@ fn exponentially_weighted(returns: &DMatrix<f64>, half_life: f64) -> DMatrix<f64
         .collect();
     let total: f64 = raw.iter().sum();
     let w: Vec<f64> = raw.iter().map(|x| x / total).collect();
-    let mean: Vec<f64> = (0..n)
-        .map(|i| (0..t).map(|s| w[s] * returns[(s, i)]).sum())
-        .collect();
+    let mean = exponentially_weighted_mean(returns, half_life);
     let correction = 1.0 - w.iter().map(|x| x * x).sum::<f64>();
     DMatrix::from_fn(n, n, |i, j| {
         (0..t)
