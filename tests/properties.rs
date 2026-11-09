@@ -902,6 +902,34 @@ proptest! {
     }
 
     #[test]
+    fn log_returns_add_up_to_the_growth(returns in returns()) {
+        // Prices that compound the returns from 100: the log returns of the prices sum to
+        // ln(p_T / p_0), and average no more than ln(1 + r̄), by Jensen's inequality.
+        let mut prices = DMatrix::from_element(returns.nrows() + 1, returns.ncols(), 100.0);
+        for t in 0..returns.nrows() {
+            for j in 0..returns.ncols() {
+                prices[(t + 1, j)] = prices[(t, j)] * (1.0 + returns[(t, j)]);
+            }
+        }
+        let flat: Vec<f64> = prices.transpose().as_slice().to_vec();
+        let data = Returns::from_prices_flat(&flat, prices.ncols()).unwrap();
+        let logs = data.log_returns().unwrap();
+        prop_assert_eq!(logs.labels(), data.labels());
+        let periods = returns.nrows() as f64;
+        let last = prices.nrows() - 1;
+        for j in 0..returns.ncols() {
+            let mut unit = vec![0.0; returns.ncols()];
+            unit[j] = 1.0;
+            let unit = Weights::from(unit);
+            let log_mean = logs.stats(&unit).unwrap().expected_return();
+            let mean = data.stats(&unit).unwrap().expected_return();
+            let growth = (prices[(last, j)] / prices[(0, j)]).ln();
+            prop_assert!((periods * log_mean - growth).abs() <= 1e-13, "{log_mean} vs {growth}");
+            prop_assert!(log_mean <= mean.ln_1p() + 1e-15, "{log_mean} vs {mean}");
+        }
+    }
+
+    #[test]
     fn products_of_factors_are_covariances(
         factors in prop::collection::vec(-1.0f64..1.0, 36),
         n in 1usize..=6,
