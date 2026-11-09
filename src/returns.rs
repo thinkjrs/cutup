@@ -322,11 +322,18 @@ impl Returns {
     /// Converts simple returns `r` to log returns, `ln(1 + r)`, keeping the labels: a new
     /// `Returns` whose covariance, means and every allocation are those of the log returns.
     /// It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with
-    /// [`f64::ln_1p`], so a return far below 1 keeps its digits.
+    /// [`f64::ln_1p`], so a return near 0 keeps its digits.
     ///
-    /// Data from [`Returns::from_prices`] gives `ln(p_t / p_{t-1})`, to rounding. Data from
-    /// [`Returns::new`] is taken to be simple returns: for returns that are already logs, use
-    /// them as they are.
+    /// Data from [`Returns::from_prices`] gives `ln(p_t / p_{t-1})`, to the rounding of the
+    /// simple return `p_t / p_{t-1} - 1`. That rounding grows as the price falls: a fall to
+    /// `1e-10` of the price loses about 7 of the log's digits, and one below about `2^-54` of it
+    /// rounds the return to −1, a [`CutupError::TotalLoss`]. Data from [`Returns::new`] is taken
+    /// to be simple returns: for returns that are already logs, use them as they are.
+    ///
+    /// Log returns don't add up across assets: a portfolio's log return isn't the weighted sum
+    /// of its assets' log returns. So [`Returns::stats`], CVaR and the methods that weight the
+    /// returns, such as mean-variance, work with `Σwᵢ ln(1 + rᵢ)`, close to `ln(1 + Σwᵢrᵢ)`
+    /// only for small returns.
     ///
     /// # Errors
     ///
@@ -739,10 +746,10 @@ mod tests {
                     row.iter().map(|v| v.as_f64().unwrap()).collect()
                 })
                 .collect();
-            let want = Returns::new(&rows).unwrap();
+            let want = Returns::rows_matrix(&rows).unwrap();
             let got = data.log_returns().unwrap();
-            assert_eq!(got.returns.shape(), want.returns.shape(), "{name}");
-            for (g, w) in got.returns.iter().zip(want.returns.iter()) {
+            assert_eq!(got.returns.shape(), want.shape(), "{name}");
+            for (g, w) in got.returns.iter().zip(want.iter()) {
                 assert!(
                     (g - w).abs() <= 4.0 * f64::EPSILON * w.abs(),
                     "{name}: {g} vs {w}"
@@ -784,7 +791,8 @@ mod tests {
         let logs = data.log_returns().unwrap();
         let least = -53.0 * std::f64::consts::LN_2;
         assert!((logs.returns[(0, 0)] - least).abs() <= f64::EPSILON * least.abs());
-        assert_eq!(logs.returns[(1, 0)], 1e150f64.ln());
+        let huge = 1e150f64.ln();
+        assert!((logs.returns[(1, 0)] - huge).abs() <= f64::EPSILON * huge);
         assert!(logs.cov_matrix.iter().all(|c| c.is_finite()));
 
         // The first return of −1 or below, row by row.
