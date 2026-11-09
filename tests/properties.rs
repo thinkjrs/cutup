@@ -800,6 +800,38 @@ proptest! {
     }
 
     #[test]
+    fn capm_returns_make_the_market_the_tangency_portfolio(
+        returns in returns(),
+        market in prop::collection::vec(0.1f64..10.0, 6),
+        rate in -0.002f64..0.002,
+    ) {
+        // Every excess return is its asset's covariance with the market times one factor, so
+        // Σ⁻¹(μ − r_f) is proportional to the market weights: the unconstrained max Sharpe
+        // portfolio, at the same rate, is the market, as is its expected return.
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let market = &market[..n];
+        let total: f64 = market.iter().sum();
+        let w: Vec<f64> = market.iter().map(|m| m / total).collect();
+        let allocator = returns_via_flat(returns).unwrap();
+        let capm = allocator.capm_returns(market, rate).unwrap();
+        let mean = allocator.stats(&Weights::from(w.clone())).unwrap().expected_return();
+        let weighted: f64 = capm.iter().zip(&w).map(|(m, w)| m * w).sum();
+        prop_assert!((weighted - mean).abs() <= 1e-12 * (mean.abs() + rate.abs()).max(1e-6), "{weighted} vs {mean}");
+        let premium = mean - rate;
+        prop_assume!(premium.abs() > 1e-6);
+        let tangency = allocator.allocate(
+            &MaxSharpe::default().allow_short().risk_free_rate(rate).expected_returns(capm),
+        );
+        if premium > 0.0 {
+            let tangency = tangency.unwrap();
+            for (a, b) in tangency.iter().zip(&w) {
+                prop_assert!((a - b).abs() <= 1e-9, "{tangency:?} vs {w:?}");
+            }
+        }
+    }
+
+    #[test]
     fn exponentially_weighted_means_match_this_files(
         returns in returns(),
         half_life in 0.1f64..100.0,
