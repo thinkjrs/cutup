@@ -419,9 +419,9 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   returns `δΣw` were already public as `BlackLitterman::prior_returns`, so
   there's no `implied_returns`.
 - **James-Stein and Bayes-Stein:** `data.james_stein_mean()`, shrinking the
-  sample means toward their average with the intensity clamped to `[0, 1]`,
-  and `data.bayes_stein_mean()`, toward the minimum variance portfolio's mean,
-  as Jorion (1986) has it.
+  sample means toward their average with riskfolio-lib's intensity clamped to
+  `[0, 1]`, and `data.bayes_stein_mean()`, toward the minimum variance
+  portfolio's mean, as Jorion (1986) has it, in correlation units.
 - **Log returns:** `data.log_returns()`, a new `Returns` of `ln(1 + r)`.
   Simple returns stay the default.
 
