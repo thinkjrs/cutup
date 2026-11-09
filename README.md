@@ -78,7 +78,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.3.3"
+cutup = "0.3.4"
 ```
 
 cutup 0.3 needs Rust 1.85 or newer. cutup 0.2 needs 1.78.
@@ -87,7 +87,7 @@ To pass nalgebra matrices in and get `DVector` weights out, turn on the `nalgebr
 
 ```toml
 [dependencies]
-cutup = { version = "0.3.3", features = ["nalgebra"] }
+cutup = { version = "0.3.4", features = ["nalgebra"] }
 ```
 
 ## Usage
