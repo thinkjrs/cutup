@@ -276,8 +276,8 @@ struct Input {
     stats_covariance: Covariance,
 }
 
-/// The covariance config `covariance` sets on its own, as the `covariance!` macro sets it on a
-/// method.
+/// The covariance config `covariance` sets, for `Returns::stats_with` and, through the
+/// `covariance!` macro, any method's `covariance` setter.
 fn config(covariance: Covariance) -> CovarianceConfig {
     let mut config = CovarianceConfig::default();
     if let Some(computed) = covariance.computed {
@@ -323,34 +323,13 @@ fn linkage(choice: u8) -> Linkage {
     }
 }
 
-/// Applies the covariance settings with any method's `covariance`, `shrinkage`, `ledoit_wolf`
-/// and `regularization`. A given covariance takes the place of a computed one, and one the
-/// constructor rejects is left out.
+/// Applies the covariance settings with any method's `covariance` setter, as [`config`] builds
+/// them: a given covariance takes the place of a computed one, and one the constructor rejects
+/// is left out.
 macro_rules! covariance {
-    ($method:expr, $covariance:expr) => {{
-        let mut method = $method;
-        let covariance = $covariance;
-        if let Some(computed) = covariance.computed {
-            method = method.covariance(computed.config());
-        }
-        if let Some(config) = covariance.given.and_then(given) {
-            method = method.covariance(config);
-        }
-        let ledoit_wolf = covariance.ledoit_wolf;
-        if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| !lw.last) {
-            method = method.ledoit_wolf(lw.target());
-        }
-        if let Some(lambda) = covariance.shrinkage {
-            method = method.shrinkage(lambda);
-        }
-        if let Some(lw) = ledoit_wolf.as_ref().filter(|lw| lw.last) {
-            method = method.ledoit_wolf(lw.target());
-        }
-        if let Some(epsilon) = covariance.regularization {
-            method = method.regularization(epsilon);
-        }
-        method
-    }};
+    ($method:expr, $covariance:expr) => {
+        $method.covariance(config($covariance))
+    };
 }
 
 /// Applies current weights and a turnover cap and penalty.
