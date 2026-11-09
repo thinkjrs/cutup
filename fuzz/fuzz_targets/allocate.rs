@@ -5,7 +5,8 @@
 //! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do. Their
 //! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
 //! expected return and CVaR, and have shares summing to 1 and no NaN; there, a Sharpe ratio past
-//! `f64::MAX` is infinite, against a volatility far smaller than the returns.
+//! `f64::MAX` is infinite, against a volatility far smaller than the returns. An expected-return
+//! estimate may fail only for its parameter, and is otherwise one finite value per asset.
 
 #![no_main]
 
@@ -93,6 +94,22 @@ struct Covariance {
     given: Option<Given>,
     computed: Option<Computed>,
     ledoit_wolf: Option<LedoitWolf>,
+}
+
+/// An expected-return estimate from the returns, with any parameter.
+#[derive(Arbitrary, Debug)]
+enum Estimate {
+    HalfLife(f64),
+    Decay(f64),
+}
+
+impl Estimate {
+    fn estimate(self, data: &Returns) -> Result<Vec<f64>, CutupError> {
+        match self {
+            Estimate::HalfLife(h) => data.exponentially_weighted_mean(h),
+            Estimate::Decay(lambda) => data.exponentially_weighted_mean_decay(lambda),
+        }
+    }
 }
 
 /// A covariance estimated from the returns in place of the sample one, with any parameter.
@@ -265,6 +282,12 @@ enum Method {
         spec: BlackLittermanSpec,
         max_sharpe: bool,
         posterior_covariance: bool,
+    },
+    /// Estimated expected returns, into mean-variance or max Sharpe.
+    Estimated {
+        estimate: Estimate,
+        max_sharpe: bool,
+        covariance: Covariance,
     },
 }
 
@@ -492,6 +515,31 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                 m = m.target_return(target);
             }
             Box::new(m)
+        }
+        Method::Estimated {
+            estimate,
+            max_sharpe,
+            covariance,
+        } => {
+            // An estimate is invalid only for its parameter, and then one finite per asset.
+            let mu = match estimate.estimate(data) {
+                Ok(mu) => mu,
+                Err(CutupError::InvalidConfig { .. }) => return None,
+                Err(e) => panic!("{e:?}"),
+            };
+            assert_eq!(mu.len(), data.labels().len());
+            assert!(mu.iter().all(|m| m.is_finite()), "{mu:?}");
+            if max_sharpe {
+                Box::new(covariance!(
+                    MaxSharpe::default().expected_returns(mu),
+                    covariance
+                ))
+            } else {
+                Box::new(covariance!(
+                    MeanVariance::risk_aversion(1.0).expected_returns(mu),
+                    covariance
+                ))
+            }
         }
         Method::BlackLitterman {
             spec,
