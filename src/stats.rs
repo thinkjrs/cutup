@@ -165,6 +165,16 @@ impl Returns {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn stats(&self, weights: &Weights) -> Result<PortfolioStats, CutupError> {
+        self.portfolio_stats(weights, true)
+    }
+
+    /// [`Returns::stats`], with the diversification ratio and risk contributions only if
+    /// `ratios`: [`Returns::stats_with`] replaces them with its covariance's.
+    fn portfolio_stats(
+        &self,
+        weights: &Weights,
+        ratios: bool,
+    ) -> Result<PortfolioStats, CutupError> {
         self.check_weights(weights)?;
         if let Some(column) = weights.iter().position(|w| !w.is_finite()) {
             return Err(CutupError::NonFiniteWeight {
@@ -223,7 +233,7 @@ impl Returns {
             deviation
         };
 
-        let (diversification_ratio, risk_contributions) = if deviation == 0.0 {
+        let (diversification_ratio, risk_contributions) = if deviation == 0.0 || !ratios {
             (None, None)
         } else {
             // Each asset's returns are scaled by a power of two of their own, so its volatility
@@ -301,7 +311,9 @@ impl Returns {
     /// Those of [`Returns::stats`], and any error from `covariance` for this data, as an
     /// allocation method using it would return: for example [`CutupError::InvalidConfig`] for
     /// an invalid setting, [`CutupError::ZeroVariance`] for a constant asset, or
-    /// [`CutupError::DimensionMismatch`] for a given matrix of another size.
+    /// [`CutupError::DimensionMismatch`] for a given matrix of another size. The default config
+    /// is [`Returns::stats`], errors included: it doesn't check the sample covariance, so a
+    /// constant asset isn't [`CutupError::ZeroVariance`] there.
     ///
     /// # Example
     ///
@@ -334,48 +346,61 @@ impl Returns {
         weights: &Weights,
         covariance: &CovarianceConfig,
     ) -> Result<PortfolioStats, CutupError> {
-        let mut stats = self.stats(weights)?;
         if *covariance == CovarianceConfig::default() {
-            return Ok(stats);
+            return self.stats(weights);
         }
+        let mut stats = self.portfolio_stats(weights, false)?;
         let cov = self.adjusted_covariance(covariance)?;
-        // The weights divided by a power of two near the largest, and the covariance by an even
-        // one near its largest entry, so its square root scales exactly too.
-        let weight_exponent = binary_exponent(largest(weights.iter().copied()));
+        // Each asset's row and column of the covariance divided by a power of two near its
+        // volatility, and its weight multiplied by it, so wᵀΣw is unchanged and no held asset's
+        // variance underflows next to a far larger one's; then the weights divided by a power of
+        // two near the largest. A variance rounding left a little negative scales as 0.
+        let n = cov.nrows();
+        let halves: Vec<i32> = (0..n)
+            .map(|i| binary_exponent(cov[(i, i)].max(0.0)).div_euclid(2))
+            .collect();
+        let exponent = weights
+            .iter()
+            .zip(&halves)
+            .filter(|(w, _)| **w != 0.0)
+            .map(|(w, h)| binary_exponent(w.abs()) + h)
+            .max()
+            .unwrap_or(0);
         let w = DVector::from_iterator(
-            weights.len(),
-            weights.iter().map(|&w| pow2_scaled(w, -weight_exponent)),
+            n,
+            weights
+                .iter()
+                .zip(&halves)
+                .map(|(&w, &h)| pow2_scaled(w, h - exponent)),
         );
-        let half = binary_exponent(cov.amax()).div_euclid(2);
-        let cov = cov.map(|x| pow2_scaled(x, -2 * half));
+        let cov = DMatrix::from_fn(n, n, |i, j| {
+            pow2_scaled(cov[(i, j)], -(halves[i] + halves[j]))
+        });
         let marginal = &cov * &w;
         let variance = w.dot(&marginal);
-        let volatilities = cov.diagonal().map(f64::sqrt);
+        let volatilities = cov.diagonal().map(|v| v.max(0.0).sqrt());
         let deviation = variance.max(0.0).sqrt();
         let sizes: f64 = w.iter().zip(&volatilities).map(|(w, s)| w.abs() * s).sum();
-        let exponent = weight_exponent + half;
         // wᵀΣw is a sum of terms up to (Σᵢ|wᵢ|σᵢ)² in size, and the matrix's entries carry
         // rounding of their own, so a variance within 10nε of that, the allowance
         // `CovarianceConfig::matrix` gives eigenvalues, is 0 but for rounding: a hedge's
         // volatility can't be told from 0 below about √(10nε) of its positions'.
-        let n = w.len() as f64;
-        if variance <= 10.0 * n * f64::EPSILON * sizes * sizes
+        if variance <= 10.0 * n as f64 * f64::EPSILON * sizes * sizes
             || pow2_scaled(deviation, exponent) == 0.0
         {
             stats.volatility = 0.0;
             stats.deviation = 0.0;
-            stats.diversification_ratio = None;
-            stats.risk_contributions = None;
             return Ok(stats);
         }
-        let contributions: Vec<f64> = w.iter().zip(&marginal).map(|(w, m)| w * m).collect();
+        let mut contributions: Vec<f64> = w.iter().zip(&marginal).map(|(w, m)| w * m).collect();
         let total: f64 = contributions.iter().sum();
+        contributions.iter_mut().for_each(|c| *c /= total);
         stats.volatility = pow2_scaled(deviation, exponent);
         // The deviation in its own scale, and the Sharpe ratio's correction for the mean's.
         stats.deviation = deviation;
         stats.ratio_exponent = stats.exponent - exponent;
         stats.diversification_ratio = Some(w.dot(&volatilities) / deviation);
-        stats.risk_contributions = Some(contributions.iter().map(|c| c / total).collect());
+        stats.risk_contributions = Some(contributions);
         Ok(stats)
     }
 }
@@ -1015,6 +1040,50 @@ mod tests {
             .stats_with(&Weights::from(vec![1e-100, 1e-100]), &tiny)
             .unwrap();
         assert!(!riskless(&stats), "{stats:?}");
+    }
+
+    #[test]
+    fn stats_with_a_variance_rounded_below_0() {
+        // `CovarianceConfig::matrix` allows a diagonal down to −10nε of the largest eigenvalue:
+        // it counts as 0, not NaN, in the volatilities.
+        let data = Returns::returns_matrix(factor_returns(3, 20, 15)).unwrap();
+        let given =
+            CovarianceConfig::matrix(&[[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, -1e-15]])
+                .unwrap();
+        let stats = data
+            .stats_with(&Weights::from(vec![1.0, 0.5, 0.0]), &given)
+            .unwrap();
+        assert_eq!(stats.volatility(), 1.5);
+        assert_eq!(stats.diversification_ratio(), Some(1.0));
+        // A hedge within rounding is still riskless.
+        let hedge = data
+            .stats_with(&Weights::from(vec![1.0, -1.0 + 1e-12, 0.0]), &given)
+            .unwrap();
+        assert_eq!(hedge.volatility(), 0.0, "{hedge:?}");
+        assert_eq!(hedge.diversification_ratio(), None);
+    }
+
+    #[test]
+    fn stats_with_assets_of_far_apart_scales() {
+        // Variances of 1e-300 and 1e100: each asset is scaled on its own, so the first's doesn't
+        // underflow next to the second's.
+        let data = Returns::returns_matrix(factor_returns(2, 20, 17)).unwrap();
+        let given = CovarianceConfig::matrix(&[[1e-300, 0.0], [0.0, 1e100]]).unwrap();
+        let stats = data
+            .stats_with(&Weights::from(vec![1.0, 0.0]), &given)
+            .unwrap();
+        assert!(close(stats.volatility(), 1e-150, 1e-15), "{stats:?}");
+        assert_eq!(stats.risk_contributions(), Some(&[1.0, 0.0][..]));
+        // 1e-200 of the second has the same variance as all of the first.
+        let stats = data
+            .stats_with(&Weights::from(vec![1.0, 1e-200]), &given)
+            .unwrap();
+        assert!(
+            close(stats.volatility(), 2e-300f64.sqrt(), 1e-14),
+            "{stats:?}"
+        );
+        let shares = stats.risk_contributions().unwrap();
+        assert!(close(shares[0], 0.5, 1e-14) && close(shares[1], 0.5, 1e-14));
     }
 
     #[test]
