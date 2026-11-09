@@ -93,8 +93,20 @@ impl PortfolioStats {
         if self.deviation == 0.0 || !risk_free_rate.is_finite() {
             return None;
         }
-        let ratio = (self.mean - pow2_scaled(risk_free_rate, -self.exponent)) / self.deviation;
-        Some(pow2_scaled(ratio, self.ratio_exponent))
+        // The excess return in the larger of the mean's scale and the rate's, so a rate far
+        // larger than the returns doesn't overflow when the volatility, from a covariance given
+        // to `Returns::stats_with`, is far larger too. Powers of two scale exactly, so it's the
+        // same ratio otherwise.
+        let k = if risk_free_rate == 0.0 {
+            self.exponent
+        } else {
+            self.exponent.max(binary_exponent(risk_free_rate.abs()))
+        };
+        let excess = pow2_scaled(self.mean, self.exponent - k) - pow2_scaled(risk_free_rate, -k);
+        Some(pow2_scaled(
+            excess / self.deviation,
+            k - self.exponent + self.ratio_exponent,
+        ))
     }
 
     /// The diversification ratio `σᵀw / sqrt(wᵀΣw)`, where `σ` holds the assets' volatilities:
@@ -351,13 +363,16 @@ impl Returns {
         }
         let mut stats = self.portfolio_stats(weights, false)?;
         let cov = self.adjusted_covariance(covariance)?;
-        // Each asset's row and column of the covariance divided by a power of two near its
-        // volatility, and its weight multiplied by it, so wᵀΣw is unchanged and no held asset's
+        // Each asset's row and column of the covariance divided by a power of two near the
+        // square root of the row's largest entry in size, its volatility unless a covariance is
+        // larger, and its weight multiplied by it, so wᵀΣw is unchanged and no held asset's
         // variance underflows next to a far larger one's; then the weights divided by a power of
-        // two near the largest. A variance rounding left a little negative scales as 0.
+        // two near the largest. The row's largest, not the variance: the eigenvalue allowance of
+        // `CovarianceConfig::matrix` lets a covariance far exceed `σᵢσⱼ`, and every entry
+        // `|cᵢⱼ| ≤ √(maxᵢ·maxⱼ)` then scales below 4, so none overflows.
         let n = cov.nrows();
         let halves: Vec<i32> = (0..n)
-            .map(|i| binary_exponent(cov[(i, i)].max(0.0)).div_euclid(2))
+            .map(|i| binary_exponent(cov.row(i).amax()).div_euclid(2))
             .collect();
         let exponent = weights
             .iter()
@@ -373,12 +388,17 @@ impl Returns {
                 .zip(&halves)
                 .map(|(&w, &h)| pow2_scaled(w, h - exponent)),
         );
+        // The volatilities from the variances before scaling, which a far larger covariance in
+        // their row could leave subnormal or 0.
+        let volatilities = DVector::from_fn(n, |i, _| {
+            pow2_scaled(cov[(i, i)].max(0.0).sqrt(), -halves[i])
+        });
         let cov = DMatrix::from_fn(n, n, |i, j| {
             pow2_scaled(cov[(i, j)], -(halves[i] + halves[j]))
         });
-        let marginal = &cov * &w;
-        let variance = w.dot(&marginal);
-        let volatilities = cov.diagonal().map(|v| v.max(0.0).sqrt());
+        // Each asset's part of wᵀΣw, which they sum to.
+        let mut contributions = w.component_mul(&(&cov * &w));
+        let variance = contributions.sum();
         let deviation = variance.max(0.0).sqrt();
         let sizes: f64 = w.iter().zip(&volatilities).map(|(w, s)| w.abs() * s).sum();
         // wᵀΣw is a sum of terms up to (Σᵢ|wᵢ|σᵢ)² in size, and the matrix's entries carry
@@ -392,15 +412,13 @@ impl Returns {
             stats.deviation = 0.0;
             return Ok(stats);
         }
-        let mut contributions: Vec<f64> = w.iter().zip(&marginal).map(|(w, m)| w * m).collect();
-        let total: f64 = contributions.iter().sum();
-        contributions.iter_mut().for_each(|c| *c /= total);
+        contributions /= variance;
         stats.volatility = pow2_scaled(deviation, exponent);
         // The deviation in its own scale, and the Sharpe ratio's correction for the mean's.
         stats.deviation = deviation;
         stats.ratio_exponent = stats.exponent - exponent;
         stats.diversification_ratio = Some(w.dot(&volatilities) / deviation);
-        stats.risk_contributions = Some(contributions);
+        stats.risk_contributions = Some(contributions.data.into());
         Ok(stats)
     }
 }
@@ -452,8 +470,8 @@ pub(crate) fn pow2_scaled(x: f64, k: i32) -> f64 {
 mod tests {
     use super::*;
     use crate::test_support::{
-        collinear_returns, factor_returns, labeled, portfolio_variance, risk_shares, sample_mean,
-        sharpe, uncorrelated_returns,
+        collinear_returns, factor_returns, labeled, portfolio_variance, risk_shares, rows,
+        sample_mean, sharpe, uncorrelated_returns,
     };
     use crate::{MaxDiversification, MinVariance, RiskParity};
     use nalgebra::dmatrix;
@@ -880,11 +898,6 @@ mod tests {
         assert_eq!(pow2_scaled(-3.0, 2), -12.0);
     }
 
-    /// The rows of `m`, for `CovarianceConfig::matrix`.
-    fn rows(m: &DMatrix<f64>) -> Vec<Vec<f64>> {
-        m.row_iter().map(|r| r.iter().copied().collect()).collect()
-    }
-
     /// Closed forms of the statistics that depend on the covariance, under `cov`.
     fn covariance_closed_forms(cov: &DMatrix<f64>, weights: &[f64]) -> (f64, f64, Vec<f64>) {
         let w = DVector::from_column_slice(weights);
@@ -1103,6 +1116,60 @@ mod tests {
             expected / volatility,
             1e-13
         ));
+    }
+
+    #[test]
+    fn stats_with_a_covariance_past_its_variances() {
+        // The eigenvalue allowance accepts a covariance of 1e285 between assets with variances
+        // of 1e-300, next to one of 1e300: scaled by their variances alone, it overflows.
+        let data = Returns::returns_matrix(factor_returns(3, 20, 19)).unwrap();
+        let given = CovarianceConfig::matrix(&[
+            [1e300, 0.0, 0.0],
+            [0.0, 1e-300, 1e285],
+            [0.0, 1e285, 1e-300],
+        ])
+        .unwrap();
+        let stats = data
+            .stats_with(&Weights::from(vec![0.0, 1.0, 1.0]), &given)
+            .unwrap();
+        assert!(
+            close(stats.volatility(), 2e285f64.sqrt(), 1e-14),
+            "{stats:?}"
+        );
+        let shares = stats.risk_contributions().unwrap();
+        assert!(shares[0] == 0.0 && close(shares[1], 0.5, 1e-14) && close(shares[2], 0.5, 1e-14));
+        assert!(close(
+            stats.diversification_ratio().unwrap(),
+            2e-150 / 2e285f64.sqrt(),
+            1e-14
+        ));
+    }
+
+    #[test]
+    fn stats_with_a_rate_far_past_the_returns() {
+        // Returns near 1e-200 and a covariance near 1e200: a rate of 1e150 is far past the
+        // returns' scale, but the Sharpe ratio, some -1e50, is finite.
+        let returns = factor_returns(2, 20, 21) * 1e-200;
+        let data = Returns::returns_matrix(returns).unwrap();
+        let big = CovarianceConfig::matrix(&[[1e200, 0.0], [0.0, 4e200]]).unwrap();
+        let weights = Weights::from(vec![0.5, 0.5]);
+        let stats = data.stats_with(&weights, &big).unwrap();
+        let volatility = (0.25e200f64 + 1e200).sqrt();
+        assert!(close(stats.volatility(), volatility, 1e-15));
+        let want = (stats.expected_return() - 1e150) / volatility;
+        assert!(
+            close(stats.sharpe_ratio(1e150).unwrap(), want, 1e-15),
+            "{stats:?}"
+        );
+        // And `stats` still gives the same ratio as before at any rate.
+        let sample = data.stats(&weights).unwrap();
+        for rate in [0.0, 1e-205, 1e-200, 1e-190] {
+            let want = (sample.expected_return() - rate) / sample.volatility();
+            assert!(
+                close(sample.sharpe_ratio(rate).unwrap(), want, 1e-13),
+                "{rate}"
+            );
+        }
     }
 
     #[test]
