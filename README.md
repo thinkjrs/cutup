@@ -32,7 +32,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
-- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, an exponentially weighted mean, or CAPM returns) and the covariance matrix.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
@@ -321,6 +321,30 @@ fn main() -> Result<(), CutupError> {
     let capm = data.capm_returns([("SPY", 600.0), ("TLT", 300.0), ("GLD", 100.0)], 0.0001)?;
     let weights = data.allocate(&MaxSharpe::default().risk_free_rate(0.0001).expected_returns(capm))?;
     println!("Max Sharpe, CAPM returns: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### James-Stein and Bayes-Stein means
+
+Sample means are noisy, and mean-variance and max Sharpe amplify their differences. `data.james_stein_mean()` shrinks them toward their average, and `data.bayes_stein_mean()` toward the minimum variance portfolio's mean (Jorion, 1986), each by an intensity estimated from the data: the closer the means are next to their noise, the more they're shrunk. James-Stein keeps the average of the means, and Bayes-Stein the minimum variance portfolio's return.
+
+```rust
+use cutup::{CutupError, MeanVariance, Returns};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005,  0.003],
+        [-0.004,  0.015,  0.002, -0.001],
+        [ 0.007,  0.003, -0.006,  0.004],
+        [ 0.002, -0.001,  0.004,  0.000],
+        [-0.006,  0.008, -0.003,  0.002],
+        [ 0.004, -0.002,  0.001, -0.003],
+    ];
+    let data = Returns::new(&returns)?;
+    let method = MeanVariance::risk_aversion(3.0).expected_returns(data.bayes_stein_mean()?);
+    let weights = data.allocate(&method)?;
+    println!("Mean-variance, Bayes-Stein: {:?}", weights.as_slice());
     Ok(())
 }
 ```
