@@ -1,11 +1,12 @@
 //! Every `Returns` constructor, on arbitrary shapes and floats: NaN, infinities, subnormals and
 //! huge values included. Each may return an error, but none may panic. On success, labeling,
-//! `cvar` and the label lookups mustn't panic either.
+//! `cvar` and the label lookups mustn't panic either, and `log_returns` must keep the labels or
+//! fail only for a return of −1 or below.
 
 #![no_main]
 
 use arbitrary::Arbitrary;
-use cutup::{EqualWeight, Returns, Weights};
+use cutup::{CutupError, EqualWeight, Returns, Weights};
 use libfuzzer_sys::fuzz_target;
 use nalgebra::DMatrix;
 
@@ -60,6 +61,10 @@ fuzz_target!(|input: Input| {
         }
     }
     let _ = data.labels();
+    match data.log_returns() {
+        Ok(logs) => assert_eq!(logs.labels(), data.labels()),
+        Err(e) => assert!(matches!(e, CutupError::TotalLoss { .. }), "{e:?}"),
+    }
     let _ = data.cvar(&Weights::from(input.weights), input.beta);
     if let Ok(equal) = data.allocate(&EqualWeight) {
         let _ = data.cvar(&equal, input.beta);
