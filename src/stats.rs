@@ -54,13 +54,13 @@ pub struct PortfolioStats {
     diversification_ratio: Option<f64>,
     risk_contributions: Option<Vec<f64>>,
     /// The portfolio's returns, divided by `2^exponent`, all smaller than 2 in size.
-    scaled: Vec<f64>,
-    exponent: i32,
+    pub(crate) scaled: Vec<f64>,
+    pub(crate) exponent: i32,
     /// The mean of `scaled`, and the standard deviation in units of `2^(exponent −
     /// ratio_exponent)`, 0 if it counts as 0: the Sharpe ratio of the scaled values is
     /// `2^ratio_exponent` times the actual one.
-    mean: f64,
-    deviation: f64,
+    pub(crate) mean: f64,
+    pub(crate) deviation: f64,
     ratio_exponent: i32,
 }
 
@@ -182,7 +182,7 @@ impl Returns {
 
     /// [`Returns::stats`], with the diversification ratio and risk contributions only if
     /// `ratios`: [`Returns::stats_with`] replaces them with its covariance's.
-    fn portfolio_stats(
+    pub(crate) fn portfolio_stats(
         &self,
         weights: &Weights,
         ratios: bool,

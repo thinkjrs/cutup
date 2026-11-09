@@ -130,25 +130,51 @@ impl Returns {
                 value: risk_free_rate,
             });
         }
-        // The market's mean and volatility from its return each period, as `stats` gives them.
-        let market = self.stats(&self.weights(w.as_slice().to_vec()))?;
-        let volatility = market.volatility();
-        if volatility == 0.0 {
+        // The market's return each period, in a power-of-two scale of its own, with its mean
+        // and volatility, as `stats` gives them.
+        let market = self.portfolio_stats(&self.weights(w.as_slice().to_vec()), false)?;
+        if market.volatility() == 0.0 {
             return Err(CutupError::RisklessMarket);
         }
-        // βᵢ(E[r_m] − r_f) as Cov(rᵢ, r_m) / σ_m, at most σᵢ in size, times the premium over
-        // σ_m, each of those two divided by a power of two near it: exactly, and so that a rate
-        // far from the returns doesn't overflow on the way to an excess return that doesn't.
+        let t = self.returns.nrows();
+        // The premium over σ_m, divided by a power of two near it: σ_m is `deviation` in units
+        // of 2^exponent, nonzero and at least 1e-10 of the scaled returns.
         let premium = market.expected_return() - risk_free_rate;
-        let (premium_exponent, volatility_exponent) =
-            (binary_exponent(premium.abs()), binary_exponent(volatility));
-        let ratio =
-            pow2_scaled(premium, -premium_exponent) / pow2_scaled(volatility, -volatility_exponent);
-        Ok((&self.cov_matrix * &w)
-            .iter()
-            .map(|&c| {
-                let excess = c / volatility * ratio;
-                risk_free_rate + pow2_scaled(excess, premium_exponent - volatility_exponent)
+        let premium_exponent = binary_exponent(premium.abs());
+        let ratio = pow2_scaled(premium, -premium_exponent) / market.deviation;
+        let rate_exponent = binary_exponent(risk_free_rate.abs());
+        let mut asset = Vec::with_capacity(t);
+        Ok(self
+            .returns
+            .column_iter()
+            .map(|column| {
+                // Cov(rᵢ, r_m) / σ_m from each period's market return, not from Σw, which
+                // underflows for small returns and cancels for a hedged market. Each asset is
+                // in a scale of its own, so it's at most about σᵢ in that scale.
+                let asset_exponent = binary_exponent(column.amax());
+                asset.clear();
+                asset.extend(column.iter().map(|&r| pow2_scaled(r, -asset_exponent)));
+                let asset_mean = asset.iter().sum::<f64>() / t as f64;
+                let comovement: f64 = asset
+                    .iter()
+                    .zip(&market.scaled)
+                    .map(|(a, m)| (a - asset_mean) * (m - market.mean))
+                    .sum::<f64>()
+                    / (t - 1) as f64;
+                let excess = comovement / market.deviation * ratio;
+                if excess == 0.0 {
+                    return risk_free_rate;
+                }
+                // r_f + βᵢ(E[r_m] − r_f) in the larger of the two terms' scales, so it's
+                // infinite only if the return itself is past f64::MAX. The excess return is
+                // `excess` times 2^shift, and `excess` is within a few dozen powers of two of
+                // 1, so 2^shift is near enough its scale.
+                let shift = asset_exponent + premium_exponent - market.exponent;
+                let k = rate_exponent.max(shift);
+                pow2_scaled(
+                    pow2_scaled(risk_free_rate, -k) + pow2_scaled(excess, shift - k),
+                    k,
+                )
             })
             .collect())
     }
@@ -512,12 +538,27 @@ mod tests {
             for (got, b) in capm.iter().zip(&base) {
                 // r_f(1 − β) for β = b / mean, the market's mean negligible next to the rate.
                 let beta = b / mean;
-                let want = rate - beta * rate;
+                let want = rate * (1.0 - beta);
                 assert!(!got.is_nan(), "{rate}: {capm:?}");
                 if want.is_finite() {
+                    assert!(got.is_finite(), "{rate}: {capm:?} vs {want}");
                     assert!(close(*got, want, 1e-12), "{rate}: {capm:?} vs {want}");
                 }
             }
+        }
+        // A beta of 2 at a rate past f64::MAX / 2: β·(E[r_m] − r_f) is past f64::MAX, but
+        // r_f + β(E[r_m] − r_f), about −r_f, isn't.
+        let leveraged = Returns::returns_matrix(dmatrix![
+            0.01, 0.02;
+            -0.01, -0.02;
+            0.02, 0.04;
+            -0.015, -0.03;
+        ])
+        .unwrap();
+        for rate in [1e308, f64::MAX, -1e308, -f64::MAX] {
+            let capm = leveraged.capm_returns([1.0, 0.0], rate).unwrap();
+            assert!(capm[1].is_finite(), "{rate}: {capm:?}");
+            assert!(close(capm[1], -rate, 1e-12), "{rate}: {capm:?}");
         }
         // Against a market far smaller in scale than the rate, an asset with a beta of 1 still
         // gets about the market's mean, and one uncorrelated with it the rate, though the
@@ -527,6 +568,70 @@ mod tests {
         let mean = data.returns.column(0).mean();
         assert!(capm[0].abs() <= 1e-12 * 1e300, "{capm:?} vs {mean}");
         assert_eq!(capm[1], 1e300);
+    }
+
+    #[test]
+    fn capm_returns_scale_with_the_returns() {
+        // Returns divided by 2^600, near 1e-182, where their covariances underflow: the CAPM
+        // returns are divided by exactly the same, and the market's weights give its mean.
+        let returns = factor_returns(4, 30, 11);
+        let market = [400.0, 300.0, 200.0, 100.0];
+        let base = data(returns.clone()).capm_returns(market, 0.0).unwrap();
+        let scale = 2f64.powi(-600);
+        let small = data(returns.map(|r| r * scale));
+        let capm = small.capm_returns(market, 0.0).unwrap();
+        for (got, b) in capm.iter().zip(&base) {
+            assert_eq!(*got, b * scale, "{capm:?} vs {base:?}");
+        }
+        let mean = small
+            .stats(&Weights::from(vec![0.4, 0.3, 0.2, 0.1]))
+            .unwrap()
+            .expected_return();
+        let weighted: f64 = capm
+            .iter()
+            .zip([0.4, 0.3, 0.2, 0.1])
+            .map(|(m, w)| m * w)
+            .sum();
+        assert!(close(weighted, mean, 1e-12), "{weighted} vs {mean}");
+    }
+
+    #[test]
+    fn capm_returns_against_a_hedged_market() {
+        // Two assets that hedge each other to about 1e-9, far less than their returns but over
+        // the riskless rule: the betas are large, and the market's weights still give its mean.
+        let data = data(dmatrix![
+            0.01, -0.01 + 2e-9, 0.003;
+            -0.02, 0.02 + 1e-9, -0.001;
+            0.03, -0.03 - 1e-9, 0.002;
+            0.005, -0.005 + 3e-9, 0.0;
+        ]);
+        let market = [1.0, 1.0, 0.0];
+        let capm = data.capm_returns(market, 0.0).unwrap();
+        let mean = data
+            .stats(&Weights::from(vec![0.5, 0.5, 0.0]))
+            .unwrap()
+            .expected_return();
+        let weighted = 0.5 * capm[0] + 0.5 * capm[1];
+        assert!(close(weighted, mean, 1e-6), "{weighted} vs {mean}");
+        let want = capm_by_hand(&data.returns, &market, 0.0);
+        for (a, b) in capm.iter().zip(&want) {
+            assert!(close(*a, *b, 1e-6), "{capm:?} vs {want:?}");
+        }
+    }
+
+    #[test]
+    fn capm_returns_of_assets_with_large_means() {
+        // Returns near 1, with spreads near 1e-6: each asset's mean is far from 0 next to its
+        // spread, and so is the market's, so the comovement must be of the centered returns.
+        let noise = factor_returns(3, 30, 23);
+        let returns = noise.map(|r| 1.0 + r * 1e-4);
+        let market = [3.0, 2.0, 1.0];
+        let data = data(returns.clone());
+        let capm = data.capm_returns(market, 0.5).unwrap();
+        let want = capm_by_hand(&returns, &market, 0.5);
+        for (a, b) in capm.iter().zip(&want) {
+            assert!(close(*a, *b, 1e-9), "{capm:?} vs {want:?}");
+        }
     }
 
     /// An asset with returns near 1e-150 and another near 1e150, exactly uncorrelated.
