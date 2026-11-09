@@ -6,9 +6,9 @@
 //! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
 //! expected return and CVaR, and have shares summing to 1 and no NaN; there, a Sharpe ratio past
 //! `f64::MAX` is infinite, against a volatility far smaller than the returns. An expected-return
-//! estimate may fail only for its parameters, a riskless market, or a covariance Bayes-Stein
-//! can't invert, and is otherwise one value per asset, never NaN, and finite but for a CAPM
-//! return past `f64::MAX`.
+//! estimate may fail only for its parameters, a riskless market, a covariance Bayes-Stein
+//! can't invert, or one whose eigenvalues a Stein mean can't compute, and is otherwise one value
+//! per asset, never NaN, and finite but for a CAPM return past `f64::MAX`.
 
 #![no_main]
 
@@ -529,11 +529,13 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             max_sharpe,
             covariance,
         } => {
-            // An estimate fails only for its parameters, a riskless market, or a covariance
-            // Bayes-Stein can't invert. Otherwise it's one per asset, never NaN, and finite but
-            // for a CAPM return past f64::MAX.
+            // An estimate fails only for its parameters, a riskless market, a covariance
+            // Bayes-Stein can't invert, or one whose eigenvalues a Stein mean can't compute.
+            // Otherwise it's one per asset, never NaN, and finite but for a CAPM return past
+            // f64::MAX.
             let capm = matches!(estimate, Estimate::Capm(..));
             let bayes = matches!(estimate, Estimate::BayesStein);
+            let stein = bayes || matches!(estimate, Estimate::JamesStein);
             let mu = match estimate.estimate(data) {
                 Ok(mu) => mu,
                 Err(
@@ -544,10 +546,9 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                     | CutupError::DuplicateAsset { .. }
                     | CutupError::RisklessMarket,
                 ) if capm => return None,
-                Err(CutupError::ZeroVariance { .. } | CutupError::SingularCovariance) if bayes => {
-                    return None;
-                }
-                Err(CutupError::InvalidConfig { .. }) if !bayes => return None,
+                Err(CutupError::ZeroVariance { .. }) if bayes => return None,
+                Err(CutupError::SingularCovariance) if stein => return None,
+                Err(CutupError::InvalidConfig { .. }) if !stein => return None,
                 Err(e) => panic!("{e:?}"),
             };
             assert_eq!(mu.len(), data.labels().len());
