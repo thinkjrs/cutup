@@ -12,6 +12,7 @@ fixtures in `tests/fixtures/`.
 | `lp.py` | Solves random linear programs with `scipy.optimize.linprog` (HiGHS) and writes `tests/fixtures/lp.json`, which the unit tests in `src/lp.rs` check cutup's simplex solver against: the outcome (optimal, infeasible or unbounded) and the optimal objective, to 1e-9. |
 | `stats.py` | Computes the portfolio statistics of fixed weights on every dataset, also under three covariance configs, and writes `tests/fixtures/stats.json`, which `tests/reference.rs` checks `Returns::stats` and `Returns::stats_with` against. |
 | `covariance.py` | Computes the Ledoit-Wolf intensities and shrunk covariances, the exponentially weighted covariances, the semicovariances and Black-Litterman posterior covariances on fixed datasets and writes `tests/fixtures/covariance.json`, which the unit tests in `src/covariance.rs` and `src/black_litterman.rs` check `CovarianceConfig`'s estimates and `BlackLitterman::posterior_covariance` against, to 1e-12 of each covariance's largest entry. |
+| `expected_returns.py` | Computes the expected-return estimates on every dataset and writes `tests/fixtures/expected_returns.json`, which `tests/reference.rs` checks `Returns`' estimators against, to 1e-13 of each dataset's largest return. |
 | `fixtures.py` | Shared paths and JSON formatting. |
 | `pyproject.toml`, `uv.lock` | Pinned Python, NumPy, pandas, SciPy, PyPortfolioOpt and riskfolio-lib, and scikit-learn through them. |
 
@@ -40,6 +41,7 @@ fixtures in `tests/fixtures/`.
 | Semicovariance | Below each asset's mean over `T − 1`, cross-checked against riskfolio-lib's `covar_matrix(method="semi")`, and below 0 over `T`, against PyPortfolioOpt's `semicovariance(benchmark=0)`, to 1e-12. |
 | Black-Litterman | PyPortfolioOpt `market_implied_prior_returns` and `BlackLittermanModel.bl_returns`, with absolute, relative and portfolio views, and its `"default"` (He-Litterman) and `"idzorek"` view uncertainties. Cases that mix kinds of uncertainty pass a diagonal Ω built row by row with `BlackLittermanModel.default_omega` and `idzorek_method`. These cases hold expected returns rather than weights, checked to 1e-15. |
 | Black-Litterman posterior covariance | `Σ + τΣ − τΣPᵀ(τPΣPᵀ + Ω)⁻¹PτΣ` written out in NumPy, on four datasets with equal market weights: default views at `τ = 1/T`, an explicit variance, a confidence and a certain view at `τ = 0.05`, and no views. Cross-checked against PyPortfolioOpt's `BlackLittermanModel.bl_cov` to 1e-12, and the default views against riskfolio-lib's `black_litterman`, which fixes `τ` at `1/T`. riskfolio-lib inverts `τΣ`, so it's checked to 1e-15 times Σ's condition number where that's looser than 1e-12, and not on `scales4`, whose condition number is about 1e16. |
+| Exponentially weighted mean | Written out from its definition, at half-lives of 1, 5 and 20: weights `λ^(T−1−t)` with `λ = 2^(−1/h)` and `Σwₜrₜ / Σwₜ`. Cross-checked against pandas' `ewm(halflife=h).mean()`, riskfolio-lib's `mean_vector(method="ewma1", d=λ)` and PyPortfolioOpt's `ema_historical_return` with `span = 2 / (1 − λ) − 1`, per period and without compounding, to 1e-12 of the dataset's largest return. |
 
 Every covariance-based reference works in correlation units `u = diag(σ)w`, as cutup
 does: with `Σ = diag(σ) C diag(σ)`, linear solves, pseudo-inverses, null spaces and
@@ -66,6 +68,7 @@ uv run --project reference python reference/generate.py --check
 uv run --project reference python reference/lp.py --check
 uv run --project reference python reference/stats.py --check
 uv run --project reference python reference/covariance.py --check
+uv run --project reference python reference/expected_returns.py --check
 
 # Rewrite the expected weights after adding or changing a case
 uv run --project reference python reference/generate.py
