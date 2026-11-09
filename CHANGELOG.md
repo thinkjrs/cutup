@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-09
+
 ### Added
 
 - `CovarianceConfig::matrix(rows)`, `matrix_flat(values, assets)` and, with the `nalgebra`
@@ -669,7 +671,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.3...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.4...HEAD
+[0.3.4]: https://github.com/thinkjrs/cutup/compare/0.3.3...0.3.4
 [0.3.3]: https://github.com/thinkjrs/cutup/compare/0.3.2...0.3.3
 [0.3.2]: https://github.com/thinkjrs/cutup/compare/0.3.1...0.3.2
 [0.3.1]: https://github.com/thinkjrs/cutup/compare/0.3.0...0.3.1
