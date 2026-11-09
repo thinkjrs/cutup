@@ -92,7 +92,7 @@ cutup = { version = "0.3.4", features = ["nalgebra"] }
 
 ## Usage
 
-Pass prices to `Returns::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `Returns::new` instead.
+Pass prices to `Returns::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `Returns::new` instead. For log returns, convert either with `data.log_returns()`: see [Log returns](#log-returns).
 
 For data in one flat, row-major slice, such as a JavaScript `Float64Array` or a CSV read row by row, use `from_prices_flat(&values, assets)` or `new_flat(&values, assets)`. With the `nalgebra` feature, `from_prices_matrix` and `from_matrix` take a `DMatrix`.
 
@@ -185,6 +185,28 @@ fn main() -> Result<(), CutupError> {
 ```
 
 `println!("{weights}")` prints the same labels and weights as a table, with 4 decimals, or `{weights:.2}` for 2. `weights.iter()`, `weights[i]` and `as_slice()` still go by column. A label that isn't in the data returns `CutupError::UnknownAsset`, and one given twice `CutupError::DuplicateAsset`. Errors about one asset, such as `ZeroVariance`, give both its label and its column.
+
+### Log returns
+
+`Returns::from_prices` computes simple returns, `p_t / p_{t-1} - 1`, as pandas' `pct_change` does. `data.log_returns()` converts any `Returns` to log returns, `ln(1 + r)`, keeping the labels, and every method then works on those. It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with `ln_1p` so small returns keep their digits. A return of −100% or worse has no log, and gives `CutupError::TotalLoss`.
+
+```rust
+use cutup::{CutupError, MinVariance, Returns};
+
+fn main() -> Result<(), CutupError> {
+    let prices = [
+        [125.0, 1500.0, 210.0],
+        [123.0, 1520.0, 215.0],
+        [130.0, 1510.0, 220.0],
+        [128.0, 1530.0, 225.0],
+        [131.0, 1525.0, 223.0],
+    ];
+    let data = Returns::from_prices(&prices)?.log_returns()?;
+    let weights = data.allocate(&MinVariance::default())?;
+    println!("Min variance, log returns: {:?}", weights.as_slice());
+    Ok(())
+}
+```
 
 ### Rebalancing
 

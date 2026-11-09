@@ -422,8 +422,9 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   sample means toward their average with riskfolio-lib's intensity clamped to
   `[0, 1]`, and `data.bayes_stein_mean()`, toward the minimum variance
   portfolio's mean, as Jorion (1986) has it, in correlation units.
-- **Log returns:** `data.log_returns()`, a new `Returns` of `ln(1 + r)`.
-  Simple returns stay the default.
+- **Log returns:** `data.log_returns()`, a new `Returns` of `ln(1 + r)` with
+  the same labels, computed with `ln_1p`. A return of −1 or below is the new
+  `CutupError::TotalLoss`. Simple returns stay the default.
 
 ## 0.3.6: efficient frontier and target volatility
 
