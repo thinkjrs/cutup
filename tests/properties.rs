@@ -832,6 +832,50 @@ proptest! {
     }
 
     #[test]
+    fn stein_means_match_this_files(returns in returns(), shift in -0.05f64..0.05) {
+        // James-Stein and Bayes-Stein as written here, with an inverse from nalgebra; each mean
+        // moves toward its target and not past it; James-Stein keeps the average and moves with
+        // the returns, and Bayes-Stein keeps the minimum variance portfolio's return.
+        prop_assume!(well_posed(&returns));
+        let (t, n) = returns.shape();
+        let cov = covariance(&returns);
+        let mean = returns.row_mean().transpose();
+        let scale = returns.amax();
+        let allocator = returns_via_flat(returns.clone()).unwrap();
+
+        let average = mean.mean();
+        let spread = mean.add_scalar(-average).norm_squared();
+        let largest = cov.clone().symmetric_eigen().eigenvalues.max();
+        let alpha = ((cov.trace() - 2.0 * largest) / (t as f64 * spread)).clamp(0.0, 1.0);
+        let james = allocator.james_stein_mean().unwrap();
+        let shifted = returns_via_flat(returns.add_scalar(shift)).unwrap().james_stein_mean().unwrap();
+        for i in 0..n {
+            let want = mean[i] + alpha * (average - mean[i]);
+            prop_assert!((james[i] - want).abs() <= 1e-12 * scale, "{james:?}: {i} vs {want}");
+            prop_assert!((james[i] - average).abs() <= (mean[i] - average).abs() + 1e-15 * scale);
+            prop_assert!((shifted[i] - james[i] - shift).abs() <= 1e-12 * (scale + shift.abs()));
+        }
+        let kept = james.iter().sum::<f64>() / n as f64;
+        prop_assert!((kept - average).abs() <= 1e-13 * scale, "{kept} vs {average}");
+
+        let inverse = cov.try_inverse().unwrap();
+        let ones = DVector::from_element(n, 1.0);
+        let minimum = &inverse * &ones;
+        let target = minimum.dot(&mean) / minimum.sum();
+        let deviation = mean.add_scalar(-target);
+        let distance = deviation.dot(&(&inverse * &deviation));
+        let alpha = (n as f64 + 2.0) / (n as f64 + 2.0 + t as f64 * distance);
+        let bayes = allocator.bayes_stein_mean().unwrap();
+        for i in 0..n {
+            let want = mean[i] + alpha * (target - mean[i]);
+            prop_assert!((bayes[i] - want).abs() <= 1e-10 * scale, "{bayes:?}: {i} vs {want}");
+            prop_assert!((bayes[i] - target).abs() <= (mean[i] - target).abs() + 1e-12 * scale);
+        }
+        let kept: f64 = minimum.iter().zip(&bayes).map(|(w, m)| w * m).sum::<f64>() / minimum.sum();
+        prop_assert!((kept - target).abs() <= 1e-10 * scale, "{kept} vs {target}");
+    }
+
+    #[test]
     fn exponentially_weighted_means_match_this_files(
         returns in returns(),
         half_life in 0.1f64..100.0,
