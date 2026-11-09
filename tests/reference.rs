@@ -637,34 +637,57 @@ fn expected_returns_match_python_reference() {
         let data = allocator(dataset);
         // A mean can be near 0 next to the returns it comes from.
         let scale = returns_scale(dataset);
-        let mut compare = |what: String, got: Vec<f64>, want: Vec<f64>| {
-            let close = got.len() == want.len()
-                && got
-                    .iter()
-                    .zip(&want)
-                    .all(|(a, b)| (a - b).abs() <= 1e-13 * scale);
+        // An expected error is null in the fixture.
+        let mut compare = |what: String, got: Result<Vec<f64>, CutupError>, want: &Value| {
+            let close = match (&got, want.is_null()) {
+                (Err(_), true) => true,
+                (Ok(got), false) => {
+                    let want = floats(want);
+                    got.len() == want.len()
+                        && got
+                            .iter()
+                            .zip(&want)
+                            .all(|(a, b)| (a - b).abs() <= 1e-13 * scale)
+                }
+                _ => false,
+            };
             if !close {
-                failures.push(format!("{name} {what}: {got:?} vs {want:?}"));
+                failures.push(format!("{name} {what}: {got:?} vs {want}"));
             }
         };
         for estimate in case["exponentially_weighted_mean"].as_array().unwrap() {
             let half_life = estimate["half_life"].as_f64().unwrap();
-            let want = floats(&estimate["mean"]);
+            let want = &estimate["mean"];
             let decay = 2f64.powf(-1.0 / half_life);
             compare(
                 format!("exponentially weighted mean at a half-life of {half_life}"),
-                data.exponentially_weighted_mean(half_life).unwrap(),
-                want.clone(),
+                data.exponentially_weighted_mean(half_life),
+                want,
             );
             compare(
                 format!("exponentially weighted mean at a decay of {decay}"),
-                data.exponentially_weighted_mean_decay(decay).unwrap(),
+                data.exponentially_weighted_mean_decay(decay),
                 want,
             );
             checked += 1;
         }
+        for estimate in case["capm"].as_array().unwrap() {
+            let market = floats(&estimate["market_weights"]);
+            let rate = estimate["risk_free_rate"].as_f64().unwrap();
+            // A riskless market is the only expected error.
+            let got = data.capm_returns(market.clone(), rate).map_err(|e| {
+                assert_eq!(e, CutupError::RisklessMarket, "{name}");
+                e
+            });
+            compare(
+                format!("CAPM returns for {market:?} at {rate}"),
+                got,
+                &estimate["returns"],
+            );
+            checked += 1;
+        }
     }
-    assert_eq!(checked, 3 * cases.len());
+    assert_eq!(checked, 5 * cases.len());
     assert!(
         failures.is_empty(),
         "{} failures over {} cases:\n{}",
