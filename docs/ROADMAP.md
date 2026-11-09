@@ -407,12 +407,22 @@ them at once and two methods on the same data can use different estimates.
 
 Split from 0.3.4, so that release is about the covariance alone.
 
-- **Expected-return estimators:** an exponentially weighted mean, CAPM
-  implied returns, and James-Stein shrinkage, returning one expected return
-  per asset to pass to `.expected_returns(..)`, like
-  `BlackLitterman::expected_returns`.
-- **Log returns**, as an option on the data type. Simple returns stay the
-  default.
+Each estimator is a method on `Returns` giving one expected return per asset,
+to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
+
+- **Exponentially weighted mean:** `data.exponentially_weighted_mean(half_life)`
+  and `exponentially_weighted_mean_decay(λ)`, pandas' `ewm().mean()`, the mean
+  the 0.3.4 exponentially weighted covariance uses.
+- **CAPM returns:** `data.capm_returns(&market_weights, risk_free_rate)`, each
+  asset's beta to the market portfolio, as PyPortfolioOpt's `capm_return`, and
+  `data.implied_returns(&market_weights, delta, &covariance)`, the equilibrium
+  returns `δΣw` that `BlackLitterman` uses as its prior.
+- **James-Stein and Bayes-Stein:** `data.james_stein_mean()`, shrinking the
+  sample means toward their average with the intensity clamped to `[0, 1]`,
+  and `data.bayes_stein_mean()`, toward the minimum variance portfolio's mean,
+  as Jorion (1986) has it.
+- **Log returns:** `data.log_returns()`, a new `Returns` of `ln(1 + r)`.
+  Simple returns stay the default.
 
 ## 0.3.6: efficient frontier and target volatility
 
