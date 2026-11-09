@@ -296,19 +296,7 @@ impl BlackLitterman {
 
     fn prior(&self, cov: &DMatrix<f64>, labels: &[String]) -> Result<DVector<f64>, CutupError> {
         let n = cov.ncols();
-        let market_weights = self
-            .market_weights
-            .resolve("market_weights", labels, None)?;
-        check_values("market_weights", labels, &market_weights, |w| {
-            w.is_finite() && w >= 0.0
-        })?;
-        let total: f64 = market_weights.iter().sum();
-        if !(total.is_finite() && total > 0.0) {
-            return Err(CutupError::InvalidConfig {
-                field: "market_weights",
-                value: total,
-            });
-        }
+        let w = market_portfolio(&self.market_weights, labels)?;
         if !(self.risk_aversion.is_finite() && self.risk_aversion > 0.0) {
             return Err(CutupError::InvalidConfig {
                 field: "risk_aversion",
@@ -321,9 +309,31 @@ impl BlackLitterman {
                 value: self.risk_free_rate,
             });
         }
-        let w = DVector::from_iterator(n, market_weights.iter().map(|w| w / total));
         Ok((cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate))
     }
+}
+
+/// The market weights, one per asset in column order, divided by their sum, after checking
+/// they're finite and nonnegative and sum to more than 0, so capitalizations work too.
+pub(crate) fn market_portfolio(
+    market_weights: &PerAsset,
+    labels: &[String],
+) -> Result<DVector<f64>, CutupError> {
+    let weights = market_weights.resolve("market_weights", labels, None)?;
+    check_values("market_weights", labels, &weights, |w| {
+        w.is_finite() && w >= 0.0
+    })?;
+    let total: f64 = weights.iter().sum();
+    if !(total.is_finite() && total > 0.0) {
+        return Err(CutupError::InvalidConfig {
+            field: "market_weights",
+            value: total,
+        });
+    }
+    Ok(DVector::from_iterator(
+        weights.len(),
+        weights.iter().map(|w| w / total),
+    ))
 }
 
 /// The covariance, the prior, and the views if any are left, factored.
