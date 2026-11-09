@@ -22,6 +22,15 @@ All notable changes to this project are documented here. The format follows
   and normalized as `BlackLitterman`'s are, so capitalizations work too. A market with no
   variance is the new `CutupError::RisklessMarket`. For the returns the market implies through
   a risk aversion, `δΣw`, there's `BlackLitterman::prior_returns`.
+- `Returns::james_stein_mean()` and `Returns::bayes_stein_mean()`, the sample means shrunk
+  toward a common value to reduce their estimation error. James-Stein shrinks toward their
+  average with riskfolio-lib's `"JS"` intensity, `(tr Σ − 2λ_max) / (T‖μ − μ̄1‖²)`, clamped to
+  `[0, 1]`, so it keeps the average and gives the sample means for fewer than three assets.
+  Bayes-Stein (Jorion, 1986) shrinks toward the minimum variance portfolio's mean, keeping that
+  portfolio's return, with intensity `(n + 2) / (n + 2 + T(μ − μ₀1)ᵀΣ⁻¹(μ − μ₀1))`, riskfolio-lib's
+  `"BS"` with target `"b2"`. It works in correlation units, with each asset scaled on its own,
+  and returns `ZeroVariance` for a constant asset or `SingularCovariance` for a correlation
+  matrix singular to rounding.
 
 ## [0.3.4] - 2026-11-09
 
