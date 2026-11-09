@@ -764,7 +764,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         assert_reference, assert_weights_close, datasets, factor_returns, full_rank_prices,
-        rank_one_returns, two_block_returns, uncorrelated_returns,
+        rank_one_returns, rows, two_block_returns, uncorrelated_returns,
     };
     use crate::{
         Allocation, BlackLitterman, EqualWeight, Herc, Hrp, MaxDiversification, MaxSharpe,
@@ -886,10 +886,6 @@ mod tests {
 
         let mean_variance = MeanVariance::risk_aversion(2.0).covariance(shrunk);
         assert!(allocator.allocate(&mean_variance.allow_short()).is_ok());
-    }
-
-    fn rows(m: &DMatrix<f64>) -> Vec<Vec<f64>> {
-        m.row_iter().map(|r| r.iter().copied().collect()).collect()
     }
 
     /// Every method that takes a covariance config, with `config`.

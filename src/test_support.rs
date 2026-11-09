@@ -46,6 +46,11 @@ pub(crate) fn assert_weights_close(a: &Weights, b: &Weights, tol: f64) {
     }
 }
 
+/// The rows of `m`, for `CovarianceConfig::matrix`.
+pub(crate) fn rows(m: &DMatrix<f64>) -> Vec<Vec<f64>> {
+    m.row_iter().map(|r| r.iter().copied().collect()).collect()
+}
+
 pub(crate) fn portfolio_variance(allocator: &Returns, weights: &Weights) -> f64 {
     let w = DVector::from_column_slice(weights.as_slice());
     (w.transpose() * &allocator.cov_matrix * &w)[(0, 0)]
