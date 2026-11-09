@@ -413,8 +413,9 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 - **Exponentially weighted mean:** `data.exponentially_weighted_mean(half_life)`
   and `exponentially_weighted_mean_decay(λ)`, pandas' `ewm().mean()`, the mean
   the 0.3.4 exponentially weighted covariance uses.
-- **CAPM returns:** `data.capm_returns(&market_weights, risk_free_rate)`, each
-  asset's beta to the market portfolio, as PyPortfolioOpt's `capm_return`, and
+- **CAPM returns:** `data.capm_returns(&market_weights, risk_free_rate)`, the
+  risk-free rate plus each asset's beta to the market portfolio times the
+  market's excess return, as PyPortfolioOpt's `capm_return`, and
   `data.implied_returns(&market_weights, delta, &covariance)`, the equilibrium
   returns `δΣw` that `BlackLitterman` uses as its prior.
 - **James-Stein and Bayes-Stein:** `data.james_stein_mean()`, shrinking the
