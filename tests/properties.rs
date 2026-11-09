@@ -1873,8 +1873,10 @@ proptest! {
         let rounding = 1e-12;
         // When the expected returns are close, the target's constraint is resolved no better
         // than this: rounding the target by an ulp of μ moves the weights by about that over
-        // the spread of μ.
-        let resolution = f64::EPSILON * mu.amax() / (mu.max() - mu.min());
+        // the spread of μ. With every expected return equal, the target's constraint is the
+        // budget's, and resolves as well.
+        let spread = mu.max() - mu.min();
+        let resolution = if spread > 0.0 { f64::EPSILON * mu.amax() / spread } else { 0.0 };
         let method = |cap: Option<f64>| {
             let mut method = MeanVariance::target_return(target).current_weights(current.clone());
             if let Some(cap) = cap {
