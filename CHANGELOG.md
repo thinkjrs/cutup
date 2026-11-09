@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Returns::exponentially_weighted_mean(half_life)` and
+  `exponentially_weighted_mean_decay(λ)`, each asset's exponentially weighted mean, to pass
+  to `MeanVariance` or `MaxSharpe` through `.expected_returns(..)` in place of the sample
+  mean. It's pandas' `ewm().mean()`, the mean the exponentially weighted covariance uses: each
+  period's weight halves every `half_life` periods back from the last row, so a long half-life
+  gives the sample mean and a short one the last period's returns. An invalid half-life or
+  decay is `InvalidConfig`, as for the covariance.
+
 ## [0.3.4] - 2026-11-09
 
 ### Added
