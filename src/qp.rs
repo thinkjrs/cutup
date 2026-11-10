@@ -755,11 +755,8 @@ fn solve_piecewise_in_units(
 
 /// Solves [`solve_piecewise`]'s problem with the turnover `Σᵢ|xᵢ − aᵢ|` capped at `cap`, `a`
 /// being the kinks' points. A multiplier `λ ≥ 0` on the cap adds `λ` to every slope, and the
-/// turnover of the optimum with slopes `κ + λ` falls as `λ` grows. So if the problem without
-/// the cap turns over more than `cap`, or has no optimum, `λ` is bracketed by doubling and then
-/// found by alternating secant and bisection steps, each solve starting from the last solution
-/// within the cap. The turnover is piecewise linear in `λ`, so once both ends of the bracket
-/// share a support the secant step lands on the cap, and the search stops there.
+/// turnover of the optimum with slopes `κ + λ` falls as `λ` grows, so [`search_multiplier`]
+/// finds the `λ` that reaches the cap, each solve starting from the last solution within it.
 ///
 /// The caller checks that some feasible `x` turns over at most `cap`. Then a large enough `λ`
 /// reaches one: at the slopes `|Qa − c|` every variable that can stay at its kink does.
@@ -779,9 +776,6 @@ pub(crate) fn solve_turnover_capped(
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
     let turnover = |x: &DVector<f64>| (x - &kinks.at).abs().sum();
-    // Summing the turnover rounds by a few ulps of the largest weight, so within that of the
-    // cap counts as at it.
-    let slack = |x: &DVector<f64>| 4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0);
     // The optimum with every slope raised by `extra`, and its turnover. An objective with no
     // minimum runs the weights off without limit, past any cap, so it turns over infinitely.
     let solve = |extra: f64, start: DVector<f64>| {
@@ -795,25 +789,63 @@ pub(crate) fn solve_turnover_capped(
             Err(error) => Err(error),
         }
     };
+    let pull = (q * &kinks.at - c).amax();
+    search_multiplier(
+        solve,
+        // Summing the turnover rounds by a few ulps of the largest weight, so within that of
+        // the cap counts as at it.
+        (cap, |x: &DVector<f64>| {
+            4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0)
+        }),
+        if pull > 0.0 { pull } else { 1.0 },
+        start,
+    )
+}
 
-    let (mut low_turnover, unconstrained) = solve(0.0, start.clone())?;
+/// Finds the multiplier `λ ≥ 0` of a constraint `g(x) ≤ limit` on a convex problem whose
+/// other constraints `solve(λ, start)` handles, returning the solution there. `solve` returns
+/// the optimum of the objective plus `λg`, starting from `start`, with its `g`, or `(∞, None)`
+/// if that objective has no minimum. `g` at the optimum falls as `λ` grows.
+///
+/// If `λ = 0` already meets the limit, within `slack` of the solution, that's the answer.
+/// Otherwise `λ` is bracketed by doubling from `first`, and then found by alternating secant
+/// and bisection steps, each solve starting from the last solution within the limit. When `g`
+/// is piecewise linear in `λ`, as it is with the active set fixed, once both ends of the
+/// bracket share an active set the secant step lands on the limit, and the search stops there.
+///
+/// # Errors
+///
+/// Any error from `solve` at `λ = 0`. At a larger `λ`, [`CutupError::Unbounded`] from `solve`,
+/// and [`CutupError::NotConverged`] for any other error, or if no `λ` up to 2¹⁰⁰⁰ times `first`
+/// meets the limit.
+pub(crate) fn search_multiplier(
+    mut solve: impl FnMut(f64, DVector<f64>) -> Result<(f64, Option<DVector<f64>>), CutupError>,
+    (limit, slack): (f64, impl Fn(&DVector<f64>) -> f64),
+    first: f64,
+    start: DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    let (mut low_value, unconstrained) = solve(0.0, start.clone())?;
     if let Some(x) = unconstrained
         .as_ref()
-        .filter(|x| low_turnover <= cap + slack(x))
+        .filter(|x| low_value <= limit + slack(x))
     {
         return Ok(x.clone());
     }
     let mut low = 0.0;
     let mut warm = unconstrained.unwrap_or(start);
-    let pull = (q * &kinks.at - c).amax();
-    let mut high = if pull > 0.0 { pull } else { 1.0 };
-    let (mut high_turnover, mut best) = loop {
-        // The problem itself solved without the cap, so a failure only at a larger λ is its
-        // arithmetic breaking down short of the cap: no λ the solver can handle reaches it.
-        match solve(high, warm.clone()).map_err(|_| CutupError::NotConverged)? {
-            (used, Some(x)) if used <= cap + slack(&x) => break (used, x),
-            (used, x) => {
-                (low, low_turnover) = (high, used);
+    let mut high = first;
+    let (mut high_value, mut best) = loop {
+        // The problem itself solved at λ = 0, so a failure only at a larger λ is its arithmetic
+        // breaking down short of the limit: no λ the solver can handle reaches it. Unless the
+        // objective has no minimum, which no λ changes.
+        let solved = solve(high, warm.clone()).map_err(|error| match error {
+            CutupError::Unbounded => error,
+            _ => CutupError::NotConverged,
+        })?;
+        match solved {
+            (value, Some(x)) if value <= limit + slack(&x) => break (value, x),
+            (value, x) => {
+                (low, low_value) = (high, value);
                 warm = x.unwrap_or(warm);
             }
         }
@@ -824,10 +856,10 @@ pub(crate) fn solve_turnover_capped(
     };
 
     for step in 0.. {
-        if high_turnover >= cap - slack(&best) {
+        if high_value >= limit - slack(&best) {
             return Ok(best);
         }
-        let secant = low + (low_turnover - cap) / (low_turnover - high_turnover) * (high - low);
+        let secant = low + (low_value - limit) / (low_value - high_value) * (high - low);
         let middle = if step % 2 == 0 && secant > low && secant < high {
             secant
         } else {
@@ -837,10 +869,10 @@ pub(crate) fn solve_turnover_capped(
             return Ok(best);
         }
         match solve(middle, best.clone())? {
-            (used, Some(x)) if used <= cap + slack(&x) => {
-                (high, high_turnover, best) = (middle, used, x);
+            (value, Some(x)) if value <= limit + slack(&x) => {
+                (high, high_value, best) = (middle, value, x);
             }
-            (used, _) => (low, low_turnover) = (middle, used),
+            (value, _) => (low, low_value) = (middle, value),
         }
     }
     unreachable!("the loop returns once the bracket can't be split")
