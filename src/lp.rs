@@ -1,7 +1,7 @@
 //! Linear programs with bounded variables, solved by a two-phase revised simplex method.
 
 use crate::CutupError;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Dyn, LU};
 
 /// An optimal solution: `x`, the multipliers `y` of the equality constraints, and the
 /// objective `cᵀx`. At the optimum `c − Aᵀy` is the reduced cost of each variable: nonnegative
@@ -40,8 +40,14 @@ enum Status {
 /// problem keeps an `m × m` basis however many variables are bounded. Phase 1 starts from
 /// artificial variables carrying the residual of `Ax = b`, one per row, and minimizes their
 /// sum; if that can't reach zero, the problem is infeasible. Phase 2 then fixes the
-/// artificial variables at zero and minimizes `cᵀx`. Each iteration factors the basis afresh
-/// and recomputes the basic variables from the nonbasic ones, so rounding doesn't accumulate.
+/// artificial variables at zero and minimizes `cᵀx`.
+///
+/// The basis is factored once and then updated in product form: each pivot appends an eta
+/// matrix, so a solve costs `O(m²)` plus `O(m)` per eta instead of a fresh `O(m³)`
+/// factorization. The basis is factored afresh every [`REFACTOR`] pivots, or sooner after a
+/// pivot on an entry small enough to amplify rounding, and once more to confirm the optimum,
+/// so the solution comes from fresh factors. Each iteration still recomputes the basic
+/// variables from the nonbasic ones, so rounding in `x` doesn't accumulate.
 ///
 /// The entering variable is the one whose reduced cost improves the objective fastest
 /// (Dantzig's rule). On a degenerate vertex that rule can cycle, so after a few pivots in a
@@ -192,6 +198,81 @@ fn unconstrained(c: &DVector<f64>, lower: &DVector<f64>, upper: &DVector<f64>) -
 /// How many pivots in a row may leave `x` where it was before Bland's rule takes over.
 const STALL: usize = 10;
 
+/// How many pivots [`Problem::minimize`] takes at most, for `m` rows and `total` variables.
+fn iteration_cap(m: usize, total: usize) -> usize {
+    1000 + 100 * (m + total)
+}
+
+/// How many eta matrices the basis's factors may carry before it's factored afresh.
+const REFACTOR: usize = 32;
+
+/// The basis `B` as the LU factors of an earlier basis `B₀` times eta matrices `E₁ ⋯ Eₖ`, so
+/// `B = B₀E₁⋯Eₖ`. Each `Eᵢ` is the identity with column `r` replaced by `d`, the entering
+/// column in the basis before it, `B⁻¹aⱼ`, with `r` the row it entered at.
+struct Factors {
+    lu: LU<f64, Dyn, Dyn>,
+    etas: Vec<(usize, DVector<f64>)>,
+}
+
+impl Factors {
+    /// Factors the columns of `a` in `basis`.
+    fn new(a: &DMatrix<f64>, basis: &[usize]) -> Self {
+        Factors {
+            lu: a.select_columns(basis).lu(),
+            etas: Vec::new(),
+        }
+    }
+
+    /// The factors of `basis`, whose column at `row` was just replaced by one with `d = B⁻¹aⱼ`
+    /// in the basis before: one more eta matrix, or a fresh factorization every [`REFACTOR`]
+    /// pivots. A pivot on an entry within rounding of the column's largest, which only a long
+    /// step past a bound allows, would amplify that rounding in every later solve, so the new
+    /// basis is factored afresh then too.
+    fn update(&mut self, a: &DMatrix<f64>, basis: &[usize], row: usize, d: DVector<f64>) {
+        if self.etas.len() >= REFACTOR || d[row].abs() <= 1e-9 * d.amax() {
+            *self = Factors::new(a, basis);
+        } else {
+            self.etas.push((row, d));
+        }
+    }
+
+    /// `B⁻¹b`: `B₀⁻¹b`, then each `Eᵢ⁻¹` in turn.
+    fn solve(&self, b: &DVector<f64>) -> Result<DVector<f64>, CutupError> {
+        let mut x = self.lu.solve(b).ok_or(CutupError::NotConverged)?;
+        for (r, d) in &self.etas {
+            let pivot = x[*r] / d[*r];
+            x.axpy(-pivot, d, 1.0);
+            x[*r] = pivot;
+        }
+        Ok(x)
+    }
+
+    /// `B⁻ᵀc`: each `Eᵢ⁻ᵀ` from the last, then `B₀⁻ᵀ`. `Eᵢᵀ` is the identity with row `r`
+    /// replaced by `dᵀ`, so only entry `r` changes, to `(cᵣ − Σ_{i≠r} dᵢcᵢ) / dᵣ`.
+    fn solve_transpose(&self, c: &DVector<f64>) -> Result<DVector<f64>, CutupError> {
+        let mut z = c.clone();
+        for (r, d) in self.etas.iter().rev() {
+            let others = d.dot(&z) - d[*r] * z[*r];
+            z[*r] = (z[*r] - others) / d[*r];
+        }
+        // PB₀ = LU, so B₀ᵀ = UᵀLᵀP, solved by two triangular solves and the inverse
+        // permutation.
+        let mut y = self
+            .lu
+            .l()
+            .tr_solve_lower_triangular(
+                &self
+                    .lu
+                    .u()
+                    .tr_solve_upper_triangular(&z)
+                    .ok_or(CutupError::NotConverged)?,
+            )
+            .ok_or(CutupError::NotConverged)?;
+        self.lu.p().inv_permute_rows(&mut y);
+        Ok(y)
+    }
+}
+
 /// A step at which a variable reaches a bound: its length, the variable, and, for a basic
 /// variable, its row and the bound it reaches.
 type Block = (f64, usize, Option<(usize, Status)>);
@@ -218,8 +299,8 @@ impl Problem {
         // Pivots in a row that didn't move x. Past a few, Bland's rule takes over until one
         // does: only a run of such pivots can cycle, and Bland's can't.
         let mut stalled = 0;
-        for _ in 0..1000 + 100 * (m + total) {
-            let lu = self.a.select_columns(&self.basis).lu();
+        let mut factors = Factors::new(&self.a, &self.basis);
+        for _ in 0..iteration_cap(m, total) {
             // The basic variables from the nonbasic ones, which sit exactly at their bounds.
             let nonbasic = DVector::from_fn(total, |j, _| {
                 if self.status[j] == Status::Basic {
@@ -228,24 +309,13 @@ impl Problem {
                     self.x[j]
                 }
             });
-            let x_basis = lu
-                .solve(&(&self.b - &self.a * nonbasic))
-                .ok_or(CutupError::NotConverged)?;
+            let x_basis = factors.solve(&(&self.b - &self.a * nonbasic))?;
             for (i, &j) in self.basis.iter().enumerate() {
                 self.x[j] = x_basis[i];
             }
-            // Bᵀy = c_B from the same factors: PB = LU, so Bᵀ = UᵀLᵀP, solved by two triangular
-            // solves and the inverse permutation.
+            // Bᵀy = c_B from the same factors.
             let cost_basis = DVector::from_fn(m, |i, _| cost[self.basis[i]]);
-            let mut y = lu
-                .l()
-                .tr_solve_lower_triangular(
-                    &lu.u()
-                        .tr_solve_upper_triangular(&cost_basis)
-                        .ok_or(CutupError::NotConverged)?,
-                )
-                .ok_or(CutupError::NotConverged)?;
-            lu.p().inv_permute_rows(&mut y);
+            let y = factors.solve_transpose(&cost_basis)?;
             let reduced = cost - self.a.tr_mul(&y);
 
             // The variable that improves the objective fastest, and the direction it moves in
@@ -273,15 +343,19 @@ impl Problem {
             } else {
                 improving.min_by_key(|p| p.0)
             };
+            // The optimum is confirmed, and `x` and `y` returned, only from fresh factors, so
+            // the eta matrices' rounding never reaches the solution.
             let Some((j, sign)) = entering else {
-                return Ok(Some(y));
+                if factors.etas.is_empty() {
+                    return Ok(Some(y));
+                }
+                factors = Factors::new(&self.a, &self.basis);
+                continue;
             };
 
-            // Moving x_j by sign·t moves the basic variables by t·change.
-            let change = -lu
-                .solve(&self.a.column(j).into_owned())
-                .ok_or(CutupError::NotConverged)?
-                * sign;
+            // Moving x_j by sign·t moves the basic variables by t·change, with d = B⁻¹aⱼ.
+            let d = factors.solve(&self.a.column(j).into_owned())?;
+            let change = d.scale(-sign);
             let pivot = 1e-9 * change.amax();
             // The step at which each variable reaches a bound, the entering one included, by
             // variable index: the smallest step wins, and among equal steps the lowest index.
@@ -373,6 +447,7 @@ impl Problem {
                     };
                     self.status[j] = Status::Basic;
                     self.basis[row] = j;
+                    factors.update(&self.a, &self.basis, row, d);
                 }
             }
         }
@@ -394,6 +469,58 @@ mod tests {
             Outcome::Optimal(solution) => solution,
             other => panic!("expected an optimum, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn updated_factors_solve_like_fresh_ones() {
+        // A well-conditioned 5 × 9 matrix, and a run of column swaps into its basis.
+        let a = DMatrix::from_fn(5, 9, |i, j| {
+            if i == j {
+                4.0
+            } else {
+                ((i * 7 + j * 3) % 5) as f64 / 5.0 - 0.4
+            }
+        });
+        let mut basis = vec![0, 1, 2, 3, 4];
+        let mut factors = Factors::new(&a, &basis);
+        let b = DVector::from_fn(5, |i, _| i as f64 - 1.5);
+        for (row, j) in [(1, 6), (3, 8), (0, 5), (1, 7), (4, 1)] {
+            let d = factors.solve(&a.column(j).into_owned()).unwrap();
+            basis[row] = j;
+            factors.update(&a, &basis, row, d);
+            let fresh = Factors::new(&a, &basis);
+            let (x, y) = (
+                factors.solve(&b).unwrap(),
+                factors.solve_transpose(&b).unwrap(),
+            );
+            assert!((&x - fresh.solve(&b).unwrap()).amax() < 1e-13, "{x}");
+            assert!(
+                (&y - fresh.solve_transpose(&b).unwrap()).amax() < 1e-13,
+                "{y}"
+            );
+        }
+        assert_eq!(factors.etas.len(), 5);
+    }
+
+    #[test]
+    fn factors_are_refreshed_every_so_often_and_after_a_tiny_pivot() {
+        let a = DMatrix::<f64>::identity(3, 3);
+        let basis = [0, 1, 2];
+        let mut factors = Factors::new(&a, &basis);
+        let d = dvector![0.5, 1.0, 0.25];
+        for count in 1..=REFACTOR {
+            factors.update(&a, &basis, 0, d.clone());
+            assert_eq!(factors.etas.len(), count);
+        }
+        // One more is factored afresh.
+        factors.update(&a, &basis, 0, d.clone());
+        assert!(factors.etas.is_empty());
+        // So is a pivot at 1e-9 of the column's largest entry, but not one just above it.
+        factors.update(&a, &basis, 0, dvector![2e-9, 2.0, 0.0]);
+        assert!(factors.etas.is_empty());
+        factors.update(&a, &basis, 0, dvector![2.2e-9, 2.0, 0.0]);
+        assert_eq!(factors.etas.len(), 1);
+        assert_eq!(iteration_cap(2, 3), 1500);
     }
 
     #[test]
