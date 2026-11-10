@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-10
+
 ### Added
 
 - `MeanVariance::target_volatility(σ)`, the highest expected return at a volatility of at most
@@ -726,7 +728,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.5...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.6...HEAD
+[0.3.6]: https://github.com/thinkjrs/cutup/compare/0.3.5...0.3.6
 [0.3.5]: https://github.com/thinkjrs/cutup/compare/0.3.4...0.3.5
 [0.3.4]: https://github.com/thinkjrs/cutup/compare/0.3.3...0.3.4
 [0.3.3]: https://github.com/thinkjrs/cutup/compare/0.3.2...0.3.3
