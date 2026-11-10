@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `MeanVariance::target_volatility(σ)`, the highest expected return at a volatility of at most
+  `σ`: the efficient frontier portfolio at that risk, as PyPortfolioOpt's `efficient_risk`.
+  Long-short it's exact, the minimum variance portfolio plus the least-variance direction that
+  adds expected return. Long-only it searches over the target return until the frontier's ends
+  hold the same assets at their bounds, then solves the quadratic between them exactly. Past the
+  highest-return portfolio's volatility within the bounds, it returns that portfolio. A `σ`
+  below the minimum variance portfolio's volatility is the new
+  `CutupError::TargetVolatilityOutOfRange`, with that minimum. Rebalancing settings return
+  `NotSupported` with it for now.
+
 ## [0.3.5] - 2026-11-09
 
 ### Added

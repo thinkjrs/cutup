@@ -32,7 +32,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
-- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion or target return, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion, target return or target volatility, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
@@ -204,6 +204,32 @@ fn main() -> Result<(), CutupError> {
     let data = Returns::from_prices(&prices)?.log_returns()?;
     let weights = data.allocate(&MinVariance::default())?;
     println!("Min variance, log returns: {:?}", weights.as_slice());
+    Ok(())
+}
+```
+
+### Target volatility
+
+`MeanVariance::target_volatility(σ)` gives the highest expected return at a volatility of at most `σ`, the efficient frontier portfolio at that risk, like PyPortfolioOpt's `efficient_risk`. `σ` is a standard deviation per period, in the units of the returns. Below the minimum variance portfolio's volatility no portfolio is that safe, and it returns `CutupError::TargetVolatilityOutOfRange` with that minimum. Long-only, from the volatility of the highest-return portfolio within the bounds up, the limit doesn't bind and that portfolio is returned.
+
+```rust
+use cutup::{CutupError, MeanVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+    let method = MeanVariance::target_volatility(0.006)
+        .expected_returns([0.004, 0.006, 0.002])
+        .bounds(WeightBounds::uniform(0.0, 0.6));
+    let weights = data.allocate(&method)?;
+    let stats = data.stats(&weights)?;
+    println!("{:.4} at a volatility of {:.4}", stats.expected_return(), stats.volatility());
     Ok(())
 }
 ```

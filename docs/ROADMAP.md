@@ -432,8 +432,12 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   frontier, from the minimum variance portfolio to the highest reachable
   return, within the bounds.
 - **`MeanVariance::target_volatility(σ)`:** the highest expected return at a
-  volatility of `σ`, PyPortfolioOpt's `efficient_risk`, found by searching
-  over the risk aversion.
+  volatility of at most `σ`, PyPortfolioOpt's `efficient_risk`. Long-short in
+  closed form; long-only by searching over the target return, whose range is
+  bounded, rather than the risk aversion, then solving exactly on the last
+  stretch. Past the highest-return portfolio's volatility it returns that
+  portfolio, and below the minimum variance portfolio's it's the new
+  `CutupError::TargetVolatilityOutOfRange`.
 
 ## 0.3.7: solver work
 
