@@ -456,6 +456,15 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   bound, such as 0, starts its row without a residual.
 - **Factorization reuse** in the active-set solver, if the benchmarks show it
   matters.
+- **The target return's rounding tolerance:** `ReturnRange` moves a target
+  within `1e-12 · max(|lowest|, |highest|)` of an end of the bounds' range of
+  returns onto that end. One mean far from the rest, such as `−1e6` beside
+  means near `0.02`, widens that tolerance even when the portfolio near the
+  target doesn't hold that asset. A `target_return` near the top then snaps to
+  the top, and so do a narrow frontier's inner points, which collapse onto its
+  last one (raised in #61's review). Scale it by the rounding in `μᵀw` near the
+  target instead, `Σ|μᵢwᵢ|` of the end portfolio it's compared with, and check
+  that the frontier stays evenly spaced on such means.
 
 ## 0.3.8: group constraints
 
