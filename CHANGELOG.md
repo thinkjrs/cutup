@@ -9,9 +9,11 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The simplex solver behind `MinCvar` and the least-turnover check for a capped target
-  return updates its basis's LU factors in product form, factoring afresh every 32 pivots or
-  after a pivot on an entry within rounding, rather than factoring every iteration. `MinCvar`
-  takes 2.0 s at 500 assets rather than 10.7 s, and 16 ms at 100 rather than 28 ms.
+  return updates its basis's LU factors in product form, factoring afresh once 32 eta matrices
+  have built up or after a pivot below 1e-6 of its column's largest entry, rather than
+  factoring every iteration. An optimum or an unbounded direction is always confirmed from
+  fresh factors. `MinCvar` takes 1.06 s at 500 assets rather than 10.7 s, 8.6 ms at 100 rather
+  than 28 ms, and 39 µs at 10 rather than 46 µs.
 
 ### Fixed
 

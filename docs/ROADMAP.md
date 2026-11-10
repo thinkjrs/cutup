@@ -447,8 +447,9 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`, so `MeanVariance::target_return(..)` takes
   `.transaction_costs(..)` instead of returning `NotSupported`.
 - **LP speed:** product-form LU updates in the simplex solver, refactoring
-  every 32 pivots rather than every iteration. `MinCvar` went from 10.7 s to
-  2.0 s at 500 assets and from 28 ms to 16 ms at 100. Computing the
+  once 32 eta matrices build up rather than every iteration. `MinCvar` went from 10.7 s to
+  1.06 s at 500 assets, from 28 ms to 8.6 ms at 100 and from 46 µs to 39 µs
+  at 10. Computing the
   reduced costs and their magnitudes in one pass over the columns was slower
   than nalgebra's two vectorized products, by 15% at 10 assets, so it's not
   done.
