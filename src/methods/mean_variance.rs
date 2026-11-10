@@ -58,11 +58,12 @@ use nalgebra::{DMatrix, DVector};
 /// returns.
 ///
 /// With a target return, it minimizes `wᵀΣw + κ‖w − w₀‖²` at that return, optionally with
-/// the turnover capped. With transaction costs, the target is a floor on the net return
-/// instead: `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`. If the least variance portfolio, within the bounds and
-/// the cap, already nets `ρ`, that's the answer; otherwise the net return is exactly `ρ`. The
-/// net return is concave, so this is convex, and it's solved by a search on the target's
-/// multiplier, each step the same kinked problem as with a risk aversion.
+/// the turnover capped. With transaction costs, any of them above 0, the target is a floor on
+/// the net return instead: `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`. If the least variance portfolio, within
+/// the bounds and the cap, already nets `ρ`, that's the answer; otherwise the net return is
+/// exactly `ρ`. The net return is concave, so this is convex, and it's solved by a search on
+/// the target's multiplier, each step the same kinked problem as with a risk aversion. Costs
+/// of 0 charge nothing, and change nothing.
 ///
 /// # Errors
 ///
@@ -90,7 +91,8 @@ use nalgebra::{DMatrix, DVector};
 ///   variance portfolio's, by more than `1e-12` of it.
 /// * [`CutupError::Unbounded`], long-short, for a risk aversion or a target volatility when Σ
 ///   is singular and some fully invested portfolio gains expected return without adding
-///   variance.
+///   variance, or for a target return with transaction costs when one gains net return that
+///   way: the least variance is reached along a whole line of portfolios.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
 ///   shrinkage nor regularization is applied.
 /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance times
@@ -235,7 +237,8 @@ impl MeanVariance {
 
     /// Subtracts `κ‖w − w₀‖²` from the objective, pulling the weights toward the
     /// [current weights](MeanVariance::current_weights) `w₀`. `κ` is in the units of the
-    /// returns. With a target return, `κ‖w − w₀‖²` is added to the variance instead.
+    /// returns. With a target return, `κ‖w − w₀‖²` is added to the variance instead, so `κ`
+    /// is in the units of the variance there.
     pub fn turnover_penalty(mut self, kappa: f64) -> Self {
         self.trading.penalty = Some(kappa);
         self
