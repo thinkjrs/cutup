@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A long-only target return, for `MeanVariance` with or without a turnover cap and for
+  `MinCvar`, is measured against the rounding of the end of the range it's near, `1e-12` of
+  `Σ|μᵢwᵢ|` for the portfolio at that end, rather than `1e-12` of the larger end in magnitude.
+  One expected return far from the rest, such as `−1000` beside means near `0.002`, no longer
+  widens the tolerance at an end that doesn't hold its asset. Targets just inside that end were
+  moved onto it, which also collapsed a narrow `Returns::frontier`'s inner points onto its last;
+  now they're solved as given. A target that far past the end is now
+  `TargetReturnOutOfRange` rather than moved onto it.
+- The long-only target-return solve starts from a portfolio holding only assets next to each
+  other in expected return: the budget left after the lower bounds, slid along the assets
+  sorted by expected return until it reaches the target. It started from a mix of the lowest
+  and highest return portfolios, which held a little of every asset, so a far expected return
+  left free in the first step swamped the target's constraint, and a target near the top
+  beside one could fail with `SingularCovariance`.
+
 ## [0.3.6] - 2026-11-10
 
 ### Added
