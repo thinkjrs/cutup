@@ -1624,14 +1624,10 @@ mod tests {
             let sigma = w.dot(&(&cov * &w)).sqrt();
             assert!((point.volatility() - sigma).abs() <= 1e-12 * sigma);
         }
-        // The target pins the weights only to about ε·max|μ| over the range of returns, which
-        // is far coarser than 1e-9 when the expected returns are nearly equal.
-        let range = frontier[frontier.len() - 1].expected_return() - frontier[0].expected_return();
-        let tolerance = 1e-9 + 1e3 * f64::EPSILON * mu.amax() / range;
         for point in &frontier[1..] {
             let mut target = method.clone();
             target.objective = Objective::TargetReturn(point.expected_return());
-            assert_weights_close(point.weights(), &data.allocate(&target).unwrap(), tolerance);
+            assert_weights_close(point.weights(), &data.allocate(&target).unwrap(), 1e-9);
         }
     }
 
@@ -1719,7 +1715,20 @@ mod tests {
             MeanVariance::risk_aversion(1.0).expected_returns([0.01, 0.01, 0.01, 0.01 + 1e-11]);
         let frontier = data.frontier(&close, 5).unwrap();
         assert_eq!(frontier.len(), 5);
-        assert_frontier(&data, &close, &frontier);
+        // There the target pins the weights only to about ε·max|μ| over the range, far coarser
+        // than 1e-9, so it's the returns that are checked: evenly spaced, to that resolution.
+        assert_eq!(
+            frontier[0].weights(),
+            &data.allocate(&MinVariance::default()).unwrap()
+        );
+        let (lowest, highest) = (frontier[0].expected_return(), 0.01 + 1e-11);
+        for (k, point) in frontier.iter().enumerate() {
+            let want = lowest + (highest - lowest) * k as f64 / 4.0;
+            assert!(
+                (point.expected_return() - want).abs() <= 1e-15,
+                "{k}: {point:?}"
+            );
+        }
         // Long-short, the minimum variance portfolio shorts an asset with a negative return
         // to earn more than any asset.
         let data = Returns::new(&[
