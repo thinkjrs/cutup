@@ -382,8 +382,10 @@ impl Problem {
             }
             // A run of pivots that don't move x is on a degenerate vertex, where basic variables
             // sit at their bounds. Widening those bounds, each by a different amount, moves the
-            // vertex apart, so later steps move x.
-            if stalled >= STALL
+            // vertex apart, so later steps move x. Only when the run reaches STALL: past it,
+            // Bland's rule has taken over, and widening a variable it brought into the basis
+            // would hand the run back to Dantzig's, which can cycle.
+            if stalled == STALL
                 && matches!(perturbation, Perturbation::Off | Perturbation::On)
                 && self.perturb(&mut perturbed)
             {
@@ -539,9 +541,9 @@ impl Problem {
     }
 
     /// Widens the finite bounds of each basic variable not yet perturbed, returning whether
-    /// there were any. Each bound `l` moves out by `self.perturbation` times `max(1, |l|)` times a
-    /// factor from 1 to 2 that differs from bound to bound, so that no two variables reach
-    /// their bounds on the same step. Widening keeps `x` within them.
+    /// any had a finite bound to widen. Each bound `l` moves out by `self.perturbation` times
+    /// `max(1, |l|)` times a factor from 1 to 2 that differs from bound to bound, so that no two
+    /// variables reach their bounds on the same step. Widening keeps `x` within them.
     fn perturb(&mut self, perturbed: &mut [bool]) -> bool {
         // The fractional parts of the multiples of an irrational number spread evenly over
         // [0, 1).
@@ -552,13 +554,14 @@ impl Problem {
                 continue;
             }
             perturbed[j] = true;
-            any = true;
             if self.lower[j].is_finite() {
                 self.lower[j] -= self.perturbation * spread(2 * j) * self.lower[j].abs().max(1.0);
+                any = true;
             }
             if self.upper[j].is_finite() {
                 self.upper[j] +=
                     self.perturbation * spread(2 * j + 1) * self.upper[j].abs().max(1.0);
+                any = true;
             }
         }
         any
@@ -982,6 +985,12 @@ mod tests {
         assert!(problem.perturb(&mut perturbed));
         assert!(problem.lower[2] < 0.0 && problem.upper[2] > 1.0);
         assert_eq!(problem.lower[1], lower[1]);
+        // A free variable has no bound to widen, so one entering leaves nothing to do, and
+        // Bland's rule takes over.
+        problem.basis[0] = 3;
+        problem.status[3] = Basic;
+        assert!(!problem.perturb(&mut perturbed));
+        assert!(perturbed[3]);
     }
 
     #[test]
@@ -1098,86 +1107,36 @@ mod tests {
 
     #[test]
     fn restoring_wide_bounds_is_repaired_by_dual_pivots() {
-        // A degenerate problem whose optimum is x₀, mostly at its bounds. Widened by 1e-2, the
-        // solve ends with a basic variable beyond its restored bound, which a dual pivot
-        // brings back. Widened by the usual 1e-7, it doesn't.
-        let third = 1.0 / 3.0;
-        let a = DMatrix::from_column_slice(
-            6,
-            10,
-            &[
-                -3.0,
-                -1.0,
-                0.0,
-                0.0,
-                3.0,
-                -1.0, //
-                0.0,
-                0.0,
-                0.0,
-                -1.0,
-                4.0,
-                0.5, //
-                0.0,
-                -4.0,
-                -4.0,
-                -1.0,
-                -third,
-                0.0, //
-                -2.0 * third,
-                0.0,
-                0.0,
-                -third,
-                0.0,
-                -2.0, //
-                third,
-                2.0,
-                2.0 * third,
-                0.5,
-                1.0,
-                -3.0, //
-                0.0,
-                0.0,
-                0.0,
-                2.0,
-                -3.0,
-                0.0, //
-                -0.5,
-                -third,
-                0.0,
-                -1.5,
-                0.0,
-                1.0, //
-                -1.0,
-                0.0,
-                3.0,
-                0.0,
-                0.0,
-                0.0, //
-                third,
-                0.0,
-                0.0,
-                2.0 * third,
-                0.0,
-                0.0, //
-                3.0,
-                third,
-                0.0,
-                -4.0,
-                -4.0,
-                0.0,
-            ],
-        );
-        let x0 = dvector![-0.25, 2.5, -0.25, -0.5, 0.5, -0.5, 0.25, -0.25, 0.0, 0.5];
+        // A degenerate problem, b = Ax₀ with x₀ mostly at its bounds. Widened by 1e-2, the
+        // solve leaves a basic variable beyond its restored bound, which a dual pivot brings
+        // back; widened by the usual 1e-7, or not at all, it doesn't. Each reaches the same
+        // optimum.
+        let a = dmatrix![
+            -0.5, 1.0, 1.0, 1.0, -1.5, -0.5, 1.0, -0.5, 1.5, 0.5, 0.5;
+            1.0, 0.5, 0.0, 1.5, 0.0, -0.5, -1.5, -1.0, 0.5, -1.5, 1.5;
+            1.5, -2.0, 1.0, 1.5, 0.5, 0.5, 1.0, -1.0, 0.5, 1.5, 0.0;
+            0.5, -1.0, -2.0, -0.5, 0.0, 1.0, -0.5, 1.5, -1.5, -1.0, 0.5;
+            0.5, 1.5, 0.0, 0.0, 0.0, -1.5, -2.0, 1.5, -1.0, -2.0, -1.5;
+            -2.0, -1.0, 1.5, 1.5, -1.0, 0.5, -2.0, -0.5, -1.5, -0.5, -2.0;
+            1.5, -2.0, -1.0, 0.5, 0.0, 0.5, -2.0, -2.0, 0.0, -1.0, -1.5;
+            0.5, -1.5, -0.5, -2.0, -2.0, 1.5, 1.0, -1.0, -1.0, -1.0, -1.5
+        ];
+        let x0 = dvector![
+            0.0, 0.25, 0.0, 0.0, 0.75, 0.75, -0.5, -0.5, -0.25, 0.25, 0.5
+        ];
         let b = &a * &x0;
-        let c = dvector![0.0, -1.0, 1.0, 2.0, 1.0, -1.0, 1.0, 2.0, 0.0, -3.0];
-        let lower = dvector![-0.25, 0.5, -0.25, -0.5, 0.5, -0.5, 0.25, -0.25, 0.0, 0.5];
-        let upper = dvector![1.75, 2.5, 2.75, 2.5, 1.5, 0.5, 1.25, INF, INF, 2.5];
+        let c = dvector![0.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.5, 1.0, 0.5, -1.0];
+        let lower = dvector![
+            0.0, 0.25, -1.0, 0.0, 0.75, 0.75, -0.5, -0.5, -0.25, 0.25, -0.5
+        ];
+        let upper = dvector![2.0, INF, 0.0, INF, 2.75, INF, INF, -0.5, INF, INF, 0.5];
+        let plain = optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0).unwrap());
+        assert_optimal(&plain, (&c, &a, &b), (&lower, &upper));
         for perturbation in [PERTURBATION, 1e-2] {
             let solution =
                 optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], perturbation).unwrap());
             assert_optimal(&solution, (&c, &a, &b), (&lower, &upper));
-            assert!((solution.objective - c.dot(&x0)).abs() < 1e-12);
+            assert!((solution.objective - plain.objective).abs() < 1e-12);
         }
     }
 
