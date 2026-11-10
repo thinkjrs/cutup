@@ -16,7 +16,7 @@ All notable changes to this project are documented here. The format follows
   multiplier, each step the kinked problem a risk aversion solves. A target above the
   highest net return within the bounds and the cap, found by the simplex solver, is
   `TargetReturnOutOfRange` with that as `highest` and `lowest` −∞, since every target below
-  it is reachable.
+  it is reachable. Costs of 0 change nothing: the target stays exact.
 - `MeanVariance::target_return(ρ)` takes `.turnover_penalty(κ)` too, minimizing
   `wᵀΣw + κ‖w − w₀‖²` at that return, so a target return no longer returns `NotSupported`
   for any rebalancing setting.
