@@ -1,5 +1,6 @@
 //! [`MeanVariance`]: Markowitz mean-variance optimization.
 
+use super::min_variance::{bounded_min_variance, min_variance};
 use super::{correlation, in_null_space, long_only_weights, normalized};
 use crate::bounds::{ReturnRange, interior_start};
 use crate::turnover::{Costs, Trading};
@@ -489,6 +490,8 @@ impl Returns {
             None => None,
         };
         let cov = self.adjusted_covariance(&method.covariance)?;
+        // Before any point is solved, so a covariance it can't measure fails first.
+        let risk = Risk::new(&cov)?;
         let (minimum, highest) = match &bounds {
             Some(bounds) => (
                 bounded_min_variance(&cov, bounds)?,
@@ -510,7 +513,6 @@ impl Returns {
                 });
             }
         }
-        let risk = Risk::new(&cov)?;
         portfolios
             .into_iter()
             .map(|w| {
@@ -622,10 +624,11 @@ impl Risk {
         x.dot(&(&self.correlation * y))
     }
 
-    /// The volatility of `w`, divided by [`Risk::scale`].
+    /// The volatility of `w`, divided by [`Risk::scale`]. A variance that's NaN, from weights
+    /// so large that it overflows both ways, stays NaN rather than reading as 0.
     fn volatility(&self, w: &DVector<f64>) -> f64 {
         let u = self.units(w);
-        self.product(&u, &u).max(0.0).sqrt()
+        self.product(&u, &u).clamp(0.0, f64::INFINITY).sqrt()
     }
 }
 
@@ -644,20 +647,6 @@ fn volatility_floor(risk: &Risk, w: &DVector<f64>, sigma: f64) -> Result<f64, Cu
     Ok(target.max(floor))
 }
 
-/// The long-short minimum variance portfolio. It always exists, since `wᵀΣw ≥ 0` on the
-/// budget's plane, so failing to find one is numerical.
-fn min_variance(cov: &DMatrix<f64>) -> Result<DVector<f64>, CutupError> {
-    let n = cov.ncols();
-    Ok(qp::solve_kkt(
-        cov,
-        &DVector::zeros(n),
-        &DMatrix::from_element(n, 1, 1.0),
-        &DVector::from_element(1, 1.0),
-    )?
-    .ok_or(CutupError::SingularCovariance)?
-    .0)
-}
-
 /// The long-short portfolio with the least variance at expected return `target`.
 fn target_return(
     cov: &DMatrix<f64>,
@@ -673,23 +662,6 @@ fn target_return(
     )?
     .ok_or(CutupError::DegenerateExpectedReturns)?
     .0)
-}
-
-/// The minimum variance portfolio within `bounds`, as [`MinVariance`](crate::MinVariance)
-/// finds it.
-fn bounded_min_variance(
-    cov: &DMatrix<f64>,
-    bounds: &qp::Bounds,
-) -> Result<DVector<f64>, CutupError> {
-    let n = cov.ncols();
-    Ok(DVector::from_vec(long_only_weights(
-        cov,
-        &DVector::zeros(n),
-        &DMatrix::from_element(n, 1, 1.0),
-        &DVector::from_element(1, 1.0),
-        bounds,
-        interior_start(bounds),
-    )?))
 }
 
 /// The portfolio within `bounds` with the least variance at expected return `target`.
@@ -1591,6 +1563,17 @@ mod tests {
         assert_eq!(larger_root(1.0, 1.0, 3.0), 1.0);
         let t = larger_root(1.0, 1e8, 1.0);
         assert!((t - 5e-9).abs() <= 1e-12 * 5e-9, "{t}");
+    }
+
+    #[test]
+    fn test_risk_keeps_a_nan_volatility() {
+        let correlated = DMatrix::from_fn(3, 3, |i, j| if i == j { 1.0 } else { 0.9 });
+        let risk = Risk::new(&correlated).unwrap();
+        // No variance is no volatility.
+        assert_eq!(risk.volatility(&DVector::zeros(3)), 0.0);
+        // Overflowing to inf + inf − inf is NaN, not 0.
+        let huge = DVector::from_vec(vec![1e308, 1e308, -1e308]);
+        assert!(risk.volatility(&huge).is_nan());
     }
 
     #[test]

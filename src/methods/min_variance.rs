@@ -186,19 +186,7 @@ impl Returns {
     /// The minimum variance portfolio with short positions allowed, for [`MinVariance`].
     fn min_variance(&self, covariance: &CovarianceConfig) -> Result<Weights, CutupError> {
         let cov = self.adjusted_covariance(covariance)?;
-        let n = cov.ncols();
-        let ones = DMatrix::from_element(n, 1, 1.0);
-
-        // Variance is bounded below and full investment is always feasible, so an optimum
-        // exists; failing to find one is numerical.
-        let weights = qp::solve_kkt(
-            &cov,
-            &DVector::zeros(n),
-            &ones,
-            &DVector::from_element(1, 1.0),
-        )?
-        .ok_or(CutupError::SingularCovariance)?
-        .0;
+        let weights = min_variance(&cov)?;
         Ok(self.weights(weights.iter().copied().collect()))
     }
 
@@ -210,20 +198,42 @@ impl Returns {
     ) -> Result<Weights, CutupError> {
         let bounds = bounds.resolve(&self.labels)?;
         let cov = self.adjusted_covariance(covariance)?;
-        let n = cov.ncols();
-        // From a point strictly inside the bounds, the solver's first step is to the
-        // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
-        let start = interior_start(&bounds);
-        long_only_weights(
-            &cov,
-            &DVector::zeros(n),
-            &DMatrix::from_element(n, 1, 1.0),
-            &DVector::from_element(1, 1.0),
-            &bounds,
-            start,
-        )
-        .map(|w| self.weights(w))
+        let weights = bounded_min_variance(&cov, &bounds)?;
+        Ok(self.weights(weights.iter().copied().collect()))
     }
+}
+
+/// The long-short minimum variance portfolio. It always exists, since `wᵀΣw ≥ 0` on the
+/// budget's plane and full investment is always feasible, so failing to find one is
+/// numerical.
+pub(super) fn min_variance(cov: &DMatrix<f64>) -> Result<DVector<f64>, CutupError> {
+    let n = cov.ncols();
+    Ok(qp::solve_kkt(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_element(n, 1, 1.0),
+        &DVector::from_element(1, 1.0),
+    )?
+    .ok_or(CutupError::SingularCovariance)?
+    .0)
+}
+
+/// The minimum variance portfolio within resolved `bounds`.
+pub(super) fn bounded_min_variance(
+    cov: &DMatrix<f64>,
+    bounds: &qp::Bounds,
+) -> Result<DVector<f64>, CutupError> {
+    let n = cov.ncols();
+    // From a point strictly inside the bounds, the solver's first step is to the
+    // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
+    Ok(DVector::from_vec(long_only_weights(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_element(n, 1, 1.0),
+        &DVector::from_element(1, 1.0),
+        bounds,
+        interior_start(bounds),
+    )?))
 }
 
 #[cfg(test)]
