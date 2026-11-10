@@ -57,10 +57,12 @@ use nalgebra::{DMatrix, DVector};
 /// capped by [`MeanVariance::max_turnover`]. Costs and the penalty are in the units of the
 /// returns.
 ///
-/// With a target return, it minimizes the variance at that return with the turnover capped.
-/// Only the cap works there: the objective is a variance, so neither costs nor the penalty,
-/// both in the units of the returns, has anything to be traded off against, and they return
-/// [`CutupError::NotSupported`].
+/// With a target return, it minimizes `wᵀΣw + κ‖w − w₀‖²` at that return, optionally with
+/// the turnover capped. With transaction costs, the target is a floor on the net return
+/// instead: `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`. If the least variance portfolio, within the bounds and
+/// the cap, already nets `ρ`, that's the answer; otherwise the net return is exactly `ρ`. The
+/// net return is concave, so this is convex, and it's solved by a search on the target's
+/// multiplier, each step the same kinked problem as with a risk aversion.
 ///
 /// # Errors
 ///
@@ -78,7 +80,10 @@ use nalgebra::{DMatrix, DVector};
 ///   bounds to less, by more than `1e-12`.
 /// * [`CutupError::TargetReturnOutOfRange`], long-only, for a target return below the lowest
 ///   or above the highest reachable within the bounds, by more than `1e-12` of `Σ|μᵢwᵢ|` for
-///   the portfolio that reaches that end.
+///   the portfolio that reaches that end. With transaction costs, for a target above the
+///   highest net return within the bounds and the cap, by more than `1e-12` of
+///   `Σ|μᵢwᵢ| + Σcᵢ|wᵢ − w₀ᵢ|` there, with `lowest` −∞, since every target up to it is
+///   reachable.
 /// * [`CutupError::DegenerateExpectedReturns`], long-short, for a target return when every
 ///   asset has the same expected return and the target differs from it.
 /// * [`CutupError::TargetVolatilityOutOfRange`] for a target volatility below the minimum
@@ -105,9 +110,9 @@ use nalgebra::{DMatrix, DVector};
 /// * [`CutupError::DimensionMismatch`] if there isn't one current weight, or per-asset cost,
 ///   per asset.
 /// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
-///   current weights into the bounds, and to the target return if there is one.
-/// * [`CutupError::NotSupported`] for a penalty or costs with a target return, or any of
-///   them with a target volatility.
+///   current weights into the bounds, and to the target return if there is one without
+///   transaction costs.
+/// * [`CutupError::NotSupported`] for any of them with a target volatility.
 ///
 /// # Example
 ///
@@ -175,7 +180,9 @@ impl MeanVariance {
         Self::new(Objective::RiskAversion(gamma))
     }
 
-    /// Minimizes variance subject to an expected portfolio return of `target`.
+    /// Minimizes variance subject to an expected portfolio return of `target`. With
+    /// [transaction costs](MeanVariance::transaction_costs), `target` is a floor on the return
+    /// net of them; see [Rebalancing](MeanVariance#rebalancing).
     pub fn target_return(target: f64) -> Self {
         Self::new(Objective::TargetReturn(target))
     }
@@ -228,7 +235,7 @@ impl MeanVariance {
 
     /// Subtracts `κ‖w − w₀‖²` from the objective, pulling the weights toward the
     /// [current weights](MeanVariance::current_weights) `w₀`. `κ` is in the units of the
-    /// returns.
+    /// returns. With a target return, `κ‖w − w₀‖²` is added to the variance instead.
     pub fn turnover_penalty(mut self, kappa: f64) -> Self {
         self.trading.penalty = Some(kappa);
         self
@@ -236,6 +243,7 @@ impl MeanVariance {
 
     /// Charges `cost` per unit of weight traded, `Σ cost·|wᵢ − w₀ᵢ|`, against the expected
     /// return: 0.001 is 10 basis points. Needs [current weights](MeanVariance::current_weights).
+    /// With a target return, the target is on the return net of them.
     pub fn transaction_costs(mut self, cost: f64) -> Self {
         self.trading.costs = Some(Costs::Uniform(cost));
         self
@@ -277,32 +285,42 @@ impl Allocation for MeanVariance {
         if self.trading.first_setting().is_some() {
             check_objective(self.objective)?;
             let covariance = || data.adjusted_covariance(&self.covariance);
-            return match (self.objective, self.trading.first_charge()) {
-                (Objective::RiskAversion(gamma), _) => {
+            return match self.objective {
+                Objective::RiskAversion(gamma) => {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
                     let cov = covariance()? * gamma;
                     turnover::rebalance(data, cov, mu, self.bounds.as_ref(), &self.trading, 2.0)
                 }
-                (Objective::TargetReturn(_), Some(setting)) => Err(CutupError::NotSupported {
-                    setting,
-                    with: "a target return",
-                }),
-                (Objective::TargetVolatility(_), _) => {
+                Objective::TargetVolatility(_) => {
                     unreachable!("a target volatility with trading settings is rejected above")
                 }
-                // Neither a penalty nor costs, so the setting is the cap.
-                (Objective::TargetReturn(target), None) => {
+                // With costs the target is a net return, and at least it; otherwise the
+                // expected return, exactly.
+                Objective::TargetReturn(target) => {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
                     let cap = self.trading.max_turnover.unwrap_or(f64::INFINITY);
-                    turnover::rebalance_to_target(
-                        data,
-                        covariance,
-                        mu,
-                        target,
-                        self.bounds.as_ref(),
-                        &self.trading,
-                        cap,
-                    )
+                    let bounds = self.bounds.as_ref();
+                    if self.trading.costs.is_some() {
+                        turnover::rebalance_to_net_target(
+                            data,
+                            covariance,
+                            mu,
+                            target,
+                            bounds,
+                            &self.trading,
+                            cap,
+                        )
+                    } else {
+                        turnover::rebalance_to_target(
+                            data,
+                            covariance,
+                            mu,
+                            target,
+                            bounds,
+                            &self.trading,
+                            cap,
+                        )
+                    }
                 }
             };
         }
