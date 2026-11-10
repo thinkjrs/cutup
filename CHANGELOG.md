@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The simplex solver behind `MinCvar` and the least-turnover check for a capped target
+  return updates its basis's LU factors in product form, factoring afresh every 32 pivots or
+  after a pivot on an entry within rounding, rather than factoring every iteration. `MinCvar`
+  takes 2.0 s at 500 assets rather than 10.7 s, and 16 ms at 100 rather than 28 ms.
+
 ### Fixed
 
 - A long-only target return, for `MeanVariance` with or without a turnover cap and for

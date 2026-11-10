@@ -446,16 +446,22 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 - **Costs with a target return:** transaction costs as a net-return target,
   `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`, so `MeanVariance::target_return(..)` takes
   `.transaction_costs(..)` instead of returning `NotSupported`.
-- **LP speed:** LU updates in the simplex solver rather than refactoring the
-  basis every iteration, and computing the reduced-cost magnitudes in the same
-  pass over the columns. Measured with the 0.3.2 benchmarks.
+- **LP speed:** product-form LU updates in the simplex solver, refactoring
+  every 32 pivots rather than every iteration. `MinCvar` went from 10.7 s to
+  2.0 s at 500 assets and from 28 ms to 16 ms at 100. Computing the
+  reduced costs and their magnitudes in one pass over the columns was slower
+  than nalgebra's two vectorized products, by 15% at 10 assets, so it's not
+  done.
 - **Degenerate starts in the LP:** `MinCvar` avoids one by choosing its
   starting point, but the simplex solver itself still stalls under Bland's rule
   on a degenerate vertex. Perturbing the bounds would fix it for every caller.
   The turnover LP may need it: each asset whose current weight is at its lower
   bound, such as 0, starts its row without a residual.
-- **Factorization reuse** in the active-set solver, if the benchmarks show it
-  matters.
+- **Factorization reuse** in the active-set solver: profiling `MinVariance`
+  at 500 assets, 18 s a solve, puts about two-thirds of its time in the
+  symmetric eigendecomposition of each KKT solve. A Cholesky factorization of
+  the reduced Hessian, updated as the active set changes, with the
+  eigendecomposition kept for a singular one.
 - **The target return's rounding tolerance:** `ReturnRange` moved a target
   within `1e-12 · max(|lowest|, |highest|)` of an end of the bounds' range of
   returns onto that end, so one mean far from the rest widened it even at an

@@ -35,8 +35,8 @@ mod native {
     /// minute and a half to measure.
     const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
-    /// The sizes for `MinVariance` and `MinCvar`, where a solve at 500 assets takes 10 to 20
-    /// seconds.
+    /// The sizes for `MinVariance` and `MinCvar`, where a solve at 500 assets takes seconds:
+    /// about 18 for `MinVariance` and 2 for `MinCvar`.
     const SLOW_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
 
     /// Periods per asset. Twice as many periods as assets keeps the sample covariance well
