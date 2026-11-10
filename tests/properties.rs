@@ -944,6 +944,53 @@ proptest! {
     }
 
     #[test]
+    fn the_frontier_rises_from_min_variance_to_the_highest_return(
+        returns in returns(),
+        points in 2usize..=8,
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = returns_via_flat(returns).unwrap();
+        let earned = |w: &Weights| mu.dot(&DVector::from_column_slice(w.as_slice()));
+        let (method, minimum) = if long_short {
+            (MeanVariance::risk_aversion(1.0).allow_short(), MinVariance::default().allow_short())
+        } else {
+            (MeanVariance::risk_aversion(1.0), MinVariance::default())
+        };
+        let frontier = allocator.frontier(&method, points).unwrap();
+        let minimum = allocator.allocate(&minimum).unwrap();
+        prop_assert_eq!(frontier[0].weights(), &minimum);
+        let lowest = earned(&minimum);
+        let highest = mu.max().max(lowest);
+        let scale = mu.amax();
+        // One point only when there's no range of returns to cover.
+        if frontier.len() == 1 {
+            prop_assert!(highest - lowest <= 1e-12 * scale, "{lowest} to {highest}");
+            return Ok(());
+        }
+        prop_assert_eq!(frontier.len(), points);
+        for (k, point) in frontier.iter().enumerate() {
+            let w = point.weights();
+            prop_assert!(long_short || w.iter().all(|&w| w >= 0.0), "{w:?}");
+            prop_assert_eq!(point.expected_return(), earned(w));
+            let sigma = variance(&cov, w).sqrt();
+            prop_assert!((point.volatility() - sigma).abs() <= 1e-9 * sigma, "{} vs {sigma}", point.volatility());
+            // Evenly spaced from the minimum variance portfolio's return to the highest.
+            let t = k as f64 / (points - 1) as f64;
+            let target = lowest * (1.0 - t) + highest * t;
+            prop_assert!((point.expected_return() - target).abs() <= 1e-9 * scale, "{} vs {target}", point.expected_return());
+        }
+        // Each step up in return costs volatility.
+        for pair in frontier.windows(2) {
+            let (low, high) = (&pair[0], &pair[1]);
+            prop_assert!(low.expected_return() <= high.expected_return() + 1e-12 * scale);
+            prop_assert!(low.volatility() <= high.volatility() * (1.0 + 1e-9), "{} > {}", low.volatility(), high.volatility());
+        }
+    }
+
+    #[test]
     fn log_returns_add_up_to_the_growth(returns in returns()) {
         // Prices that compound the returns from 100: the log returns of the prices sum to
         // ln(p_T / p_0), and average no more than ln(1 + r̄), by Jensen's inequality.
