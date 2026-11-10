@@ -789,17 +789,29 @@ pub(crate) fn solve_turnover_capped(
             Err(error) => Err(error),
         }
     };
-    let pull = (q * &kinks.at - c).amax();
     search_multiplier(
         solve,
         // Summing the turnover rounds by a few ulps of the largest weight, so within that of
         // the cap counts as at it.
         (cap, |x: &DVector<f64>| {
-            4.0 * x.len() as f64 * f64::EPSILON * x.amax().max(1.0)
+            sum_rounding(x.len(), x.amax().max(1.0))
         }),
-        if pull > 0.0 { pull } else { 1.0 },
+        kink_multiplier(q, c, kinks),
         start,
     )
+}
+
+/// The slope `max |Qa − c|` at which every variable that can stay at its kink `a` does, where
+/// [`solve_turnover_capped`]'s search starts, or 1 if that's 0.
+fn kink_multiplier(q: &DMatrix<f64>, c: &DVector<f64>, kinks: &Kinks) -> f64 {
+    let pull = (q * &kinks.at - c).amax();
+    if pull > 0.0 { pull } else { 1.0 }
+}
+
+/// How far a sum of `terms` terms, none larger than `size`, can round: a few ulps of `size`
+/// for each.
+pub(crate) fn sum_rounding(terms: usize, size: f64) -> f64 {
+    4.0 * terms as f64 * f64::EPSILON * size
 }
 
 /// Finds the multiplier `λ ≥ 0` of a constraint `g(x) ≤ limit` on a convex problem whose
@@ -1371,5 +1383,60 @@ mod tests {
         .unwrap();
         assert!(two_kinked([2.0, 1.0], [0.9, 0.1], 0.3, [0.0, 0.0]) > 0.4);
         assert_close(&x, &dvector![0.4, 0.6], 1e-14);
+    }
+
+    #[test]
+    fn the_multiplier_search_lands_on_a_linear_limit() {
+        // g(λ) = 10 − λ, limit 3: doubling from 1 brackets λ = 7 between 4 and 8, where g is
+        // 6 and 2, and the secant step lands on it.
+        let mut tried = Vec::new();
+        let solve = |lambda: f64, _: DVector<f64>| {
+            tried.push(lambda);
+            Ok((10.0 - lambda, Some(dvector![lambda])))
+        };
+        let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), 1.0, dvector![0.0]);
+        assert_eq!(x, Ok(dvector![7.0]));
+        assert_eq!(tried, [0.0, 1.0, 2.0, 4.0, 8.0, 7.0]);
+    }
+
+    #[test]
+    fn the_multiplier_search_accepts_zero_within_its_slack() {
+        // At λ = 0, g is past the limit only by less than the slack, so that's the answer.
+        let solve = |lambda: f64, _: DVector<f64>| Ok((3.0005 - lambda, Some(dvector![lambda])));
+        let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 1e-3), 1.0, dvector![0.0]);
+        assert_eq!(x, Ok(dvector![0.0]));
+    }
+
+    #[test]
+    fn an_objective_unbounded_past_zero_stays_unbounded() {
+        // Any other failure past λ = 0 is the arithmetic breaking down, but an objective with
+        // no minimum is reported as such.
+        let solve = |lambda: f64, _: DVector<f64>| {
+            if lambda == 0.0 {
+                Ok((5.0, Some(dvector![0.0])))
+            } else {
+                Err(CutupError::Unbounded)
+            }
+        };
+        let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), 1.0, dvector![0.0]);
+        assert_eq!(x, Err(CutupError::Unbounded));
+    }
+
+    #[test]
+    fn the_turnover_search_starts_where_every_variable_can_stay_at_its_kink() {
+        // Qa − c = [2 − 1, 2 − 0], so the largest pull is 2.
+        let kinks = Kinks {
+            at: dvector![1.0, 2.0],
+            slopes: DVector::zeros(2),
+        };
+        let q = dmatrix![2.0, 0.0; 0.0, 1.0];
+        assert_eq!(kink_multiplier(&q, &dvector![1.0, 0.0], &kinks), 2.0);
+        // With no pull at all, it starts at 1.
+        assert_eq!(kink_multiplier(&q, &dvector![2.0, 2.0], &kinks), 1.0);
+    }
+
+    #[test]
+    fn a_sum_rounds_by_a_few_ulps_of_its_terms() {
+        assert_eq!(sum_rounding(3, 2.0), 24.0 * f64::EPSILON);
     }
 }
