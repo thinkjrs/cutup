@@ -248,7 +248,35 @@ fn min_cvar(params: &Value) -> MinCvar {
     method
 }
 
-const METHODS: [&str; 17] = [
+/// The method a frontier case's points come from. Its objective is ignored.
+fn frontier_method(params: &Value) -> MeanVariance {
+    let method = MeanVariance::risk_aversion(1.0).covariance(covariance_config(params));
+    if params["expected_returns"].is_array() {
+        method.expected_returns(floats(&params["expected_returns"]))
+    } else {
+        method
+    }
+}
+
+/// The weights of a frontier case's point.
+fn frontier_point(
+    allocator: &Returns,
+    method: &MeanVariance,
+    params: &Value,
+) -> Result<Weights, CutupError> {
+    let count = |field: &str| params[field].as_u64().unwrap() as usize;
+    let frontier = allocator.frontier(method, count("points"))?;
+    // A point past the end is reported as a mismatch, not a panic.
+    frontier
+        .get(count("point"))
+        .map(|point| point.weights().clone())
+        .ok_or(CutupError::InvalidConfig {
+            field: "point",
+            value: frontier.len() as f64,
+        })
+}
+
+const METHODS: [&str; 19] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -266,6 +294,8 @@ const METHODS: [&str; 17] = [
     "rebalance_min_variance",
     "rebalance_mean_variance",
     "min_cvar",
+    "frontier",
+    "long_only_frontier",
 ];
 
 fn run(allocator: &Returns, method: &str, params: &Value) -> Result<Weights, CutupError> {
@@ -304,6 +334,13 @@ fn run(allocator: &Returns, method: &str, params: &Value) -> Result<Weights, Cut
         "rebalance_min_variance" => allocator.allocate(&rebalance!(MinVariance::default(), params)),
         "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
         "min_cvar" => allocator.allocate(&min_cvar(params)),
+        "frontier" => frontier_point(allocator, &frontier_method(params).allow_short(), params),
+        "long_only_frontier" => match weight_bounds(params) {
+            Some(bounds) => {
+                frontier_point(allocator, &frontier_method(params).bounds(bounds), params)
+            }
+            None => frontier_point(allocator, &frontier_method(params), params),
+        },
         "black_litterman" => black_litterman(params)
             .expected_returns(allocator)
             .map(Weights::from),

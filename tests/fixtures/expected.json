@@ -2145,6 +2145,910 @@
       "condition_number": 2.751
     },
     {
+      "dataset": "two_asset",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.26115618661257606, 0.7388438133874241],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4458671399594323, 0.5541328600405673],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6305780933062878, 0.36942190669371033],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.8152890466531447, 0.18471095334685358],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9999999999999997, 0.0],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.08609666503447441, 0.10432886101119992, 0.33900590986308515, 0.4705685640912407],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.4894435516799996, 0.041938585045783086, 0.011939445754993923, 0.4566784175192232],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.6622955756358753, 0.0, 0.0, 0.3377044243641252],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.8311477878179376, 0.0, 0.0, 0.1688522121820628],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.9999999999999994, 0.0, 0.0, 0.0],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.11444497568914777, 0.12635158145944306, 0.0, 0.0, 0.30108099841730485, 0.1414942157438927, 0.15670800504368226, 0.0, 0.0, 0.15992022364652922],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.10328144811239164, 0.13137663116652396, 0.022582620484609052, 0.0, 0.28780461005716923, 0.20182848022922795, 0.21657126060352358, 0.0, 0.03655494934655515, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.03077438217419906, 0.0764934951516575, 0.0, 0.0, 0.16815283655999547, 0.3551646658581237, 0.21941603862824266, 0.0, 0.14999858162778165, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.02353977914673303, 0.0, 0.0, 0.035787864796248944, 0.4966806414336485, 0.18341082767036057, 0.0, 0.2605808869530095, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.0, 0.0, 0.0, 0.9999999999999847, 0.0, 0.0, 1.5124407504115397e-14, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.26033668445185754, 0.6133546099073913, 0.0, 0.1263087056407511],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.19579181629938186, 0.710129588586037, 0.0, 0.0940785951145814],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.13124694814690568, 0.8069045672646828, 0.0, 0.06184848458841146],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.06670207999442945, 0.9036795459433288, 0.0, 0.029618374062241475],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.0, 1.0, 0.0, 0.0],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7619047619047619, 0.19047619047619047, 0.047619047619047616],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.14384723494667878, 0.1717020730033385, 0.0, 0.0, 0.2, 0.12229121467146584, 0.15666938859952687, 0.0, 0.01960120526309226, 0.18588888351589775],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.13558100393300315, 0.17205025227791731, 0.00642224585794019, 0.0, 0.2, 0.15127140505386671, 0.1884964516678111, 0.0, 0.04417724539099532, 0.10200139581846598],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.13693300346966963, 0.17325161499696373, 0.02540163436951878, 0.0, 0.2, 0.176868413472617, 0.20000000000000004, 0.0, 0.06873724013421537, 0.018808093557015414],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.08236961122338034, 0.1377225777967532, 0.022553855935536375, 0.0, 0.17501486647668588, 0.2, 0.20000000000000004, 0.0, 0.18233908856764422, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.2, 3.192602288100712e-12, 0.2, 0.0, 0.0, 0.2, 0.19999999999685897, 0.0, 0.2, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.09686781300112463, 0.13011564824255814, 0.05, 0.05, 0.2541852707608044, 0.08199145942293908, 0.1194380483533326, 0.05, 0.05, 0.11740176021924101],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1183281939298929, 0.12050186725230122, 0.05, 0.05, 0.2668235542830932, 0.07625572833217388, 0.08759636083245491, 0.05, 0.05, 0.13049429537008417],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1397885748586615, 0.11088808626204409, 0.05, 0.05, 0.27946183780538203, 0.07051999724140853, 0.05575467331157663, 0.05, 0.05, 0.14358683052092744],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.15791480883321266, 0.08210512644512746, 0.05, 0.05, 0.3, 0.05470659063570682, 0.05000000000000001, 0.05, 0.05, 0.15527347408595302],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.29999999999999244, 0.05, 0.05, 0.05, 0.3, 0.05, 0.05000000000000001, 0.05, 0.05, 0.050000000000007865],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.13454882214704547, 0.1799595242572633, 0.026643208374720822, 0.16093515116899287, 0.18888658500591832, 0.3090267090460593],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.06405511965160408, 0.18590323193928632, 0.0, 0.18251098560465645, 0.3306169239474839, 0.236913738856969],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.1783821409664739, 0.0, 0.2254131232129279, 0.47638178469502135, 0.11982295112557671],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.06339702727234815, 0.0, 0.26535372360270987, 0.6712492491249427, 0.0],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 3.693328202645445e-17, 0.0, 1.0, 4.885511920950297e-16],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [4.0155247618373675e-10, 0.0, 0.0026348364032112415, 0.9973651631952364],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.2483579154519071, 0.7516420845478217, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4989052769679383, 0.5010947230313474, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7494526384839695, 0.25054736151521617, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9999999999999998, 0.0, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "two_asset",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.26115618661257606, 0.738843813387424],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.4458671399594325, 0.5541328600405682],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6305780933062883, 0.3694219066937106],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.8152890466531445, 0.18471095334685275],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [1.0000000000000013, -2.553081555691155e-15],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [-0.3962259555127961, 0.10068893258722883, 0.271240129623889, 0.35079013944493964, 0.6735067538567387],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [-0.6039408145422512, 0.18410230765263416, 0.34702135682724145, 0.29553251836547123, 0.7772846316969041],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [-0.811655673571707, 0.2675156827180397, 0.4228025840305944, 0.2402748972860027, 0.8810625095370701],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [-1.0193705326011626, 0.35092905778344524, 0.4985838112339471, 0.1850172762065341, 0.9848403873772359],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [-1.2270853916306181, 0.4343424328488507, 0.5743650384372999, 0.12975965512706567, 1.0886182652174017],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.14350959665281737, 0.15092219229947032, 0.029598319793174302, -0.04869285765295527, 0.3809113939707501, 0.13805804118873968, 0.15674853625722587, -0.1639285184060309, 0.018802132604720148, 0.19407116329208826],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1389406981553511, 0.1607574602415143, 0.06127211831529014, -0.07693737954766336, 0.38177311153916593, 0.1812438925964687, 0.21490548756022004, -0.19150245613896566, 0.0712023990230818, 0.058344668255537094],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1343717996578848, 0.17059272818355828, 0.092945916837406, -0.10518190144237147, 0.38263482910758156, 0.22442974400419768, 0.2730624388632142, -0.21907639387190045, 0.12360266544144348, -0.07738182678101416],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.12980290116041848, 0.1804279961256022, 0.12461971535952185, -0.13342642333707957, 0.38349654667599725, 0.2676155954119267, 0.3312193901662083, -0.2466503316048352, 0.17600293185980515, -0.2131083218175654],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.12523400266295218, 0.1902632640676462, 0.15629351388163773, -0.16167094523178768, 0.38435826424441305, 0.3108014468196557, 0.3893763414692026, -0.27422426933777, 0.22840319827816685, -0.3488348168541168],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.2519893862243079, 0.615342253323739, -161.34126412042318, 161.47393248087513],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.20224537164313636, 0.6871609519325851, -203.71096212175692, 203.82155579818124],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.15250135706195364, 0.7589796505414712, -246.08066012310948, 246.16917911550604],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.10275734248077087, 0.8307983491503572, -288.45035812446196, 288.5168024328309],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.053013327899588285, 0.9026170477592433, -330.82005612581446, 330.86442575015565],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "frontier",
+      "params": {
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.761904761904762, 0.1904761904761905, 0.04761904761904762],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.13454882214704547, 0.17995952425726328, 0.026643208374720822, 0.16093515116899287, 0.18888658500591832, 0.3090267090460592],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1009669802297229, 0.1771095029487521, -0.02949408215100224, 0.18982693783508184, 0.32228591517006977, 0.23930474596737536],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.06738513831240035, 0.174259481640241, -0.0856313726767253, 0.21871872450117083, 0.45568524533422133, 0.16958278288869152],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.033803296395077786, 0.17140946033172988, -0.14176866320244838, 0.24761051116725982, 0.5890845754983729, 0.09986081981000768],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "frontier",
+      "params": {
+        "shrinkage": 0.3,
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.00022145447775522383, 0.16855943902321874, -0.19790595372817146, 0.27650229783334884, 0.7224839056625246, 0.030138856731323833],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "shrinkage": 0.1,
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.13722393387979143, 0.15332873891098064, 0.03499447493568148, -0.016558152615063396, 0.32100535877106845, 0.12262296496203882, 0.14647839977698668, -0.09911969683329848, 0.02836901922100552, 0.17165495899080888],
+      "condition_number": 13.65
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "shrinkage": 0.1,
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1832378170345297, 0.12644509224387687, 0.06099376719821959, -0.06949238273687659, 0.3648473030317706, 0.11730341478226017, 0.09699280893724231, -0.10454911722052143, 0.015089467696965366, 0.20913182903253327],
+      "condition_number": 13.65
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "shrinkage": 0.1,
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.22925170018926813, 0.0995614455767731, 0.08699305946075776, -0.1224266128586899, 0.4086892472924729, 0.11198386460248151, 0.04750721809749788, -0.10997853760774443, 0.0018099161729251971, 0.2466086990742578],
+      "condition_number": 13.65
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "shrinkage": 0.1,
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.27526558334400647, 0.07267779890966933, 0.11299235172329591, -0.17536084298050317, 0.4525311915531753, 0.10666431442270287, -0.001978372742246523, -0.1154079579949674, -0.011469635351114966, 0.28408556911598226],
+      "condition_number": 13.65
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "shrinkage": 0.1,
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.3212794664987447, 0.045794152242565604, 0.138991643985834, -0.2282950731023163, 0.4963731358138773, 0.10134476424292423, -0.05146396358199083, -0.12083737838219037, -0.024749186875155097, 0.3215624391577066],
+      "condition_number": 13.65
+    },
+    {
+      "dataset": "scales4",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "weights": [3.06119013699084e-10, -4.741144888027211e-06, 0.0031449139934151583, 0.9968598268453538],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.03225940657606381, 64.29725167840489, 44011.353644867566, -44074.68315595258],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0645188128460086, 128.59450809795467, 88022.70414482114, -88150.363171732],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.09677821911595341, 192.8917645175044, 132034.0546447747, -132226.04318751153],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "frontier",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "points": 5,
+        "point": 4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.12903762538589822, 257.18902093705424, 176045.40514472828, -176301.72320329084],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 0.05],
+        "points": 3,
+        "point": 0
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds",
+      "condition_number": 19.98
+    },
+    {
       "dataset": "rank_deficient6",
       "method": "risk_parity",
       "params": {

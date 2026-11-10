@@ -43,6 +43,11 @@ cutup's implementation:
   more than 1e-12 of it, is an error, and so is a free direction adding return with no
   variance, long-short. Each long-only case is cross-checked against PyPortfolioOpt's
   efficient_risk, to 1e-4: cvxpy meets its volatility constraint only to its own tolerance.
+* Efficient frontier: each point on its own, the minimum variance portfolio first, then
+  the target-return portfolio above, by the closed form or support enumeration, at
+  returns evenly spaced up to the highest reachable, the highest asset mean long-short.
+  Each is cross-checked against PyPortfolioOpt's efficient_return, to 1e-6, with cvxpy's
+  CLARABEL solver at a tolerance of 1e-12 in place of its default, OSQP.
 * Long-only max Sharpe: the same support enumeration, on the change of variables
   y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
@@ -462,6 +467,61 @@ def long_only_target_volatility(cov: np.ndarray, mu: np.ndarray, params: dict) -
         # more than a fixed return does.
         if np.abs(theirs - weights).max() > 1e-4:
             raise ValueError(f"PyPortfolioOpt disagrees on target volatility {sigma}: {theirs} vs {weights}")
+    return weights
+
+
+def frontier_ends(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: bool):
+    """The minimum variance portfolio, its expected return and the highest on the frontier,
+    which has only that one point if the two are within 1e-12 of their size."""
+    n = cov.shape[0]
+    if long_short:
+        minimum, highest = min_variance(cov), mu.max()
+    else:
+        bounds = weight_bounds(params, n)
+        minimum = long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *(bounds or (None, None)))
+        highest = mu.max() if bounds is None else return_range(mu, bounds)[1]
+    lowest = float(mu @ minimum)
+    highest = max(float(highest), lowest)
+    one_point = not highest - lowest > 1e-12 * max(abs(lowest), abs(highest))
+    return minimum, lowest, highest, one_point
+
+
+def frontier(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: bool) -> np.ndarray | str:
+    """Point `point` of `points` on the efficient frontier: the minimum variance portfolio,
+    then the least-variance portfolios at returns evenly spaced up to the highest."""
+    n = cov.shape[0]
+    bounds = None if long_short else weight_bounds(params, n)
+    if bounds is not None and infeasible(bounds):
+        return "InfeasibleBounds"
+    minimum, lowest, highest, one_point = frontier_ends(cov, mu, params, long_short)
+    point = params["point"]
+    if point == 0:
+        return minimum
+    if one_point:
+        raise ValueError(f"a frontier of one point has no point {point}")
+    t = point / (params["points"] - 1)
+    rho = lowest * (1.0 - t) + highest * t
+    if long_short:
+        weights = target_return(cov, mu, rho)
+        lower, upper = None, None
+    else:
+        lower, upper = bounds or (np.zeros(n), np.ones(n))
+        weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), lower, upper)
+    # PyPortfolioOpt only accepts targets below the highest return, and its absolute
+    # tolerances can't tell apart variances of badly conditioned covariances.
+    if rho < highest and np.linalg.cond(cov) <= 1e8:
+        # Long-short, PyPortfolioOpt needs bounds to find the highest return it accepts, so
+        # these are ten times wider than any weight, where they can't bind.
+        wide = 10.0 * max(np.abs(weights).max(), 1.0)
+        box = [(-wide, wide)] * n if long_short else list(zip(lower, np.minimum(upper, 1.0)))
+        # cvxpy's default for a quadratic program, OSQP, is accurate only to about 1e-3 in the
+        # weights here, so this asks an interior-point solver for 1e-12.
+        tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12}
+        ef = EfficientFrontier(mu, cov, weight_bounds=box, solver="CLARABEL", solver_options=tight)
+        ef.efficient_return(rho)
+        theirs = np.array(list(ef.weights))
+        if np.abs(theirs - weights).max() > 1e-6 * max(np.abs(weights).max(), 1.0):
+            raise ValueError(f"PyPortfolioOpt disagrees on the frontier at {rho}: {theirs} vs {weights}")
     return weights
 
 
@@ -948,6 +1008,10 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return long_only_target_volatility(adjusted, mu, params)
         case "long_only_mean_variance":
             return long_only_mean_variance(adjusted, mu, params)
+        case "frontier":
+            return frontier(adjusted, mu, params, long_short=True)
+        case "long_only_frontier":
+            return frontier(adjusted, mu, params, long_short=False)
         case "mean_variance" if "target_volatility" in params:
             return target_volatility(adjusted, mu, params["target_volatility"])
         case "mean_variance" if "risk_aversion" in params:
@@ -1216,6 +1280,35 @@ def cases(datasets: dict) -> list[dict]:
     out.append({"dataset": "rank_deficient6", "method": "mean_variance", "params": {"target_volatility": 0.01}, "tolerance": solver})
     out.append({"dataset": "scales4", "method": "mean_variance", "params": {"target_volatility": 2e-6, "expected_returns": scaled_mu}, "tolerance": solver})
 
+    # Efficient frontiers of five points, each point a case: long-only, within bounds and
+    # long-short. orthogonal3's expected returns are all 0, so its frontier is one point.
+    for method, name, params in [
+        ("long_only_frontier", "two_asset", {}),
+        ("long_only_frontier", "two_blocks5", {}),
+        ("long_only_frontier", "prices10x60", {}),
+        ("long_only_frontier", "near_singular4", {}),
+        ("long_only_frontier", "orthogonal3", {}),
+        ("long_only_frontier", "prices10x60", {"bounds": [0.0, 0.2]}),
+        ("long_only_frontier", "prices10x60", {"bounds": [0.05, 0.3], "expected_returns": mu10}),
+        ("long_only_frontier", "rank_deficient6", {"shrinkage": 0.3}),
+        ("long_only_frontier", "scales4", {"expected_returns": scaled_mu}),
+        ("frontier", "two_asset", {}),
+        ("frontier", "two_blocks5", {}),
+        ("frontier", "prices10x60", {}),
+        ("frontier", "near_singular4", {}),
+        ("frontier", "orthogonal3", {}),
+        ("frontier", "rank_deficient6", {"shrinkage": 0.3}),
+        ("frontier", "prices10x60", {"expected_returns": mu10, "shrinkage": 0.1}),
+        ("frontier", "scales4", {"expected_returns": scaled_mu}),
+    ]:
+        returns = load_returns(datasets[name])
+        cov = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
+        mu = np.array(params.get("expected_returns", returns.mean(axis=0)))
+        one_point = frontier_ends(cov, mu, params, method == "frontier")[3]
+        for point in range(1 if one_point else 5):
+            out.append({"dataset": name, "method": method, "params": {**params, "points": 5, "point": point}, "tolerance": solver})
+    out.append({"dataset": "prices10x60", "method": "long_only_frontier", "params": {"bounds": [0.0, 0.05], "points": 3, "point": 0}, "tolerance": solver})
+
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.
     out.append({"dataset": "rank_deficient6", "method": "risk_parity", "params": {"shrinkage": 0.3}, "tolerance": solver})
@@ -1402,7 +1495,7 @@ def main() -> None:
             raise ValueError(f"non-finite reference weights for {case}: {outcome}")
         else:
             case["weights"] = [float(w) for w in outcome]
-        if case["method"] in ("rebalance_min_variance", "rebalance_mean_variance", "min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "max_diversification", "mean_variance", "max_sharpe"):
+        if case["method"] in ("rebalance_min_variance", "rebalance_mean_variance", "min_variance", "long_only_min_variance", "long_only_mean_variance", "long_only_max_sharpe", "max_diversification", "mean_variance", "max_sharpe", "frontier", "long_only_frontier"):
             # A numerically singular covariance has its null space truncated, which
             # every solver does alike. Short of that, any solver loses about cond(Σ) · ε
             # of accuracy, so ill-conditioned cases get a proportionally looser tolerance.
