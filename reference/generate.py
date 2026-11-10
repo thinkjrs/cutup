@@ -876,8 +876,9 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         k, c = gamma * cov + 2 * kappa * np.eye(n), mu + 2 * kappa * current
     else:
         k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
-    if cap is not None:
-        if target is None or net is not None:
+    # With costs, the cap was checked above.
+    if cap is not None and net is None:
+        if target is None:
             minimum = turnover_into_bounds(current, lower, upper)
         else:
             minimum = least_turnover(current, mu, target[1], lower, upper)
