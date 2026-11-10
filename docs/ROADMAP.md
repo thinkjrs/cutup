@@ -453,11 +453,14 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   reduced costs and their magnitudes in one pass over the columns was slower
   than nalgebra's two vectorized products, by 15% at 10 assets, so it's not
   done.
-- **Degenerate starts in the LP:** `MinCvar` avoids one by choosing its
-  starting point, but the simplex solver itself still stalls under Bland's rule
-  on a degenerate vertex. Perturbing the bounds would fix it for every caller.
-  The turnover LP may need it: each asset whose current weight is at its lower
-  bound, such as 0, starts its row without a residual.
+- **Degenerate starts in the LP:** after 10 pivots that don't move the
+  solution, the simplex solver widens the basic variables' bounds by about
+  `1e-7`, a different amount for each, and restores them at the optimum, with
+  dual simplex pivots for any variable left beyond its bounds. Started with no
+  scenario in its tail, `MinCvar` at 200 assets returned `NotConverged` after
+  16 s under Bland's rule, and now solves in 0.1 s. `MinCvar` keeps its
+  starting point, which is still faster. The turnover LP widens its bounds at
+  100 and 200 assets too, but its time is in the QP, so it's no faster.
 - **Factorization reuse** in the active-set solver: profiling `MinVariance`
   at 500 assets, 18 s a solve, puts about two-thirds of its time in the
   symmetric eigendecomposition of each KKT solve. A Cholesky factorization of

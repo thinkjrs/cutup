@@ -32,6 +32,16 @@ All notable changes to this project are documented here. The format follows
   and highest return portfolios, which held a little of every asset, so a far expected return
   left free in the first step swamped the target's constraint, and a target near the top
   beside one could fail with `SingularCovariance`.
+- The simplex solver behind `MinCvar` and the least-turnover check for a capped target
+  return gets off a degenerate vertex, where basic variables sit at their bounds, by widening
+  those bounds. After 10 pivots in a row that don't move the solution, each basic variable's
+  bounds widen by about `1e-7` of their size, by a different amount for each, and at the
+  optimum they're restored, with dual simplex pivots to bring back any variable left beyond
+  them. It used to switch to Bland's rule, which could run into the iteration cap: started
+  with no scenario in its tail, `MinCvar` returned `NotConverged` after 16 s at 200 assets,
+  and now solves in 0.1 s. Bland's rule stays for a vertex the widening doesn't resolve.
+  `MinCvar` still starts from its worst scenarios, which is faster, so its times are
+  unchanged.
 
 ## [0.3.6] - 2026-11-10
 
