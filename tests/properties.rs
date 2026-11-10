@@ -2014,6 +2014,70 @@ proptest! {
     }
 
     #[test]
+    fn net_target_returns_are_floors_on_the_return_net_of_costs(
+        returns in returns(),
+        fractions in prop::collection::vec(0.05f64..1.0, 6),
+        cost in 0.0f64..1.0,
+        mix in 0.0f64..1.0,
+        lower in 0.0f64..1.0,
+        cap in prop::option::of(0.0f64..2.0),
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let n = returns.ncols();
+        let current = current_weights(&fractions, n);
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = returns_via_flat(returns).unwrap();
+        // Costs up to the spread of the expected returns, so some trades pay and some don't.
+        let cost = cost * (mu.max() - mu.min());
+        let target = mu.min() + mix * (mu.max() - mu.min());
+        let method = |target: f64| {
+            let mut method = MeanVariance::target_return(target)
+                .current_weights(current.clone())
+                .transaction_costs(cost);
+            if let Some(cap) = cap {
+                method = method.max_turnover(cap);
+            }
+            if long_short {
+                method = method.allow_short();
+            }
+            method
+        };
+        let held = DVector::from_column_slice(&current);
+        let net = |w: &Weights| {
+            let w = DVector::from_column_slice(w.as_slice());
+            mu.dot(&w) - cost * (&w - &held).abs().sum()
+        };
+        // The net return sums terms up to this, and rounds by a few ulps of it.
+        let rounding = 1e-12 * (mu.amax() + cost).max(1e-300);
+        let weights = match allocator.allocate(&method(target)) {
+            Ok(weights) => weights,
+            Err(CutupError::TargetReturnOutOfRange { target_return, lowest, highest }) => {
+                // The current weights are within any cap and, long-only, the bounds.
+                let unmoved = mu.dot(&held);
+                prop_assert!(target_return == target && lowest == f64::NEG_INFINITY);
+                prop_assert!(highest < target && highest >= unmoved - rounding, "{highest} vs {unmoved}");
+                return Ok(());
+            }
+            Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
+        };
+        prop_assert!(net(&weights) >= target - rounding, "{} < {target}", net(&weights));
+        prop_assert!(long_short || weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        if let Some(cap) = cap {
+            prop_assert!(turnover(&weights, &current) <= cap + 1e-12, "{weights:?}");
+        }
+        // A lower target never has more variance, and one the least variance portfolio
+        // already nets gives that portfolio.
+        let lower = allocator.allocate(&method(target - lower * (target - mu.min()) - 1.0)).unwrap();
+        let v = |w: &Weights| variance(&cov, w);
+        prop_assert!(v(&lower) <= v(&weights) * (1.0 + 1e-9) + 1e-18, "{} > {}", v(&lower), v(&weights));
+        if net(&weights) > target + 1e-9 * (mu.amax() + cost) {
+            prop_assert!((v(&lower) - v(&weights)).abs() <= 1e-9 * v(&weights) + 1e-18);
+        }
+    }
+
+    #[test]
     fn trading_settings_that_cost_nothing_change_nothing(
         returns in returns(),
         fractions in prop::collection::vec(0.05f64..1.0, 6),
