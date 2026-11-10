@@ -461,7 +461,8 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   returns onto that end, so one mean far from the rest widened it even at an
   end that doesn't hold that asset, and a narrow frontier's inner points
   collapsed onto its last (raised in #61's review). Each end now rounds by
-  `Σ|μᵢwᵢ|` of its own portfolio. That uncovered the solve's start, a mix of
+  `Σ|μᵢwᵢ|` of its own portfolio plus `|μₖ|` of the next asset a target just
+  inside it moves into. That uncovered the solve's start, a mix of
   the lowest and highest return portfolios, which left the far asset free and
   failed near the top; it now slides the budget along the assets sorted by
   expected return, holding only neighbors.

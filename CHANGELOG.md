@@ -10,9 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - A long-only target return, for `MeanVariance` with or without a turnover cap and for
   `MinCvar`, is measured against the rounding of the end of the range it's near, `1e-12` of
-  `Σ|μᵢwᵢ|` for the portfolio at that end, rather than `1e-12` of the larger end in magnitude.
-  One expected return far from the rest, such as `−1000` beside means near `0.002`, no longer
-  widens the tolerance at an end that doesn't hold its asset. Targets just inside that end were
+  `Σ|μᵢwᵢ| + |μₖ|`, rather than `1e-12` of the larger end in magnitude. The sum is over that
+  end's portfolio, and `k` is the next asset a target just inside it moves weight into. One
+  expected return far from the rest, such as `−1000` beside means near `0.002`, no longer
+  widens the tolerance at an end that neither holds its asset nor moves into it next. Targets just inside that end were
   moved onto it, which also collapsed a narrow `Returns::frontier`'s inner points onto its last;
   now they're solved as given. A target that far past the end is now
   `TargetReturnOutOfRange` rather than moved onto it.
