@@ -329,29 +329,19 @@ impl Returns {
         let mu = self.expected_returns(expected_returns)?;
 
         let cov = self.adjusted_covariance(covariance)?;
-        let ones = DVector::from_element(n, 1.0);
 
         let weights = match objective {
             Objective::RiskAversion(gamma) => {
                 qp::solve_kkt(
                     &(cov * gamma),
                     &mu,
-                    &DMatrix::from_column_slice(n, 1, ones.as_slice()),
+                    &DMatrix::from_element(n, 1, 1.0),
                     &DVector::from_element(1, 1.0),
                 )?
                 .ok_or(CutupError::Unbounded)?
                 .0
             }
-            Objective::TargetReturn(target) => {
-                qp::solve_kkt(
-                    &cov,
-                    &DVector::zeros(n),
-                    &DMatrix::from_columns(&[ones, mu]),
-                    &DVector::from_vec(vec![1.0, target]),
-                )?
-                .ok_or(CutupError::DegenerateExpectedReturns)?
-                .0
-            }
+            Objective::TargetReturn(target) => target_return(&cov, &mu, target)?,
             Objective::TargetVolatility(sigma) => target_volatility(&cov, &mu, sigma)?,
         };
         Ok(self.weights(weights.iter().copied().collect()))
@@ -407,6 +397,163 @@ impl Returns {
             problem.start,
         )
         .map(|w| self.weights(w))
+    }
+}
+
+impl Returns {
+    /// The efficient frontier: `points` portfolios with the least variance for their
+    /// expected return, at returns evenly spaced from the minimum variance portfolio's to the
+    /// highest reachable, as PyPortfolioOpt's `efficient_return` at each.
+    ///
+    /// It uses `method`'s expected returns, covariance adjustments and bounds, and ignores its
+    /// objective. The first point is the minimum variance portfolio, as
+    /// [`MinVariance`](crate::MinVariance) with the same covariance and bounds finds it, and
+    /// each after it is [`MeanVariance::target_return`] at its return:
+    ///
+    /// * Long-only, or within bounds, the last is the portfolio with the highest expected
+    ///   return within the bounds.
+    /// * Long-short, the expected return grows without limit, so the frontier stops at the
+    ///   highest expected return of any one asset. If the minimum variance portfolio's return
+    ///   is already at or above it, the frontier is that one point.
+    ///
+    /// When the range of returns is within `1e-12` of their size, as when every asset has the
+    /// same expected return, the frontier is the single minimum variance portfolio.
+    ///
+    /// Each point's [expected return](FrontierPoint::expected_return) and
+    /// [volatility](FrontierPoint::volatility) are under the method's expected returns and its
+    /// adjusted covariance, which can differ from [`Returns::stats`]' sample estimates.
+    ///
+    /// # Errors
+    ///
+    /// * [`CutupError::InvalidConfig`] if `points` is less than 2.
+    /// * [`CutupError::NotSupported`] if `method` has rebalancing settings.
+    /// * [`CutupError::NonFiniteWeight`] if a point's weights aren't finite, as for
+    ///   [`Returns::allocate`].
+    /// * Otherwise, the errors [`MeanVariance`] returns for its settings, other than for its
+    ///   objective.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, MinVariance, Returns};
+    ///
+    /// let returns = [
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let expected = [0.004, 0.006, 0.002];
+    ///
+    /// // The objective is ignored; the expected returns, covariance and bounds are used.
+    /// let method = MeanVariance::risk_aversion(1.0).expected_returns(expected);
+    /// let frontier = data.frontier(&method, 5)?;
+    /// assert_eq!(frontier.len(), 5);
+    ///
+    /// // From the minimum variance portfolio to all in the asset with the highest return.
+    /// assert_eq!(frontier[0].weights(), &data.allocate(&MinVariance::default())?);
+    /// assert!((frontier[4].expected_return() - 0.006).abs() < 1e-12);
+    ///
+    /// // Each step up in return costs more volatility.
+    /// for pair in frontier.windows(2) {
+    ///     assert!(pair[0].expected_return() < pair[1].expected_return());
+    ///     assert!(pair[0].volatility() < pair[1].volatility());
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn frontier(
+        &self,
+        method: &MeanVariance,
+        points: usize,
+    ) -> Result<Vec<FrontierPoint>, CutupError> {
+        if points < 2 {
+            return Err(CutupError::InvalidConfig {
+                field: "points",
+                value: points as f64,
+            });
+        }
+        let expected_returns =
+            self.resolve("expected_returns", method.expected_returns.as_ref())?;
+        if let Some(setting) = method.trading.first_setting() {
+            return Err(CutupError::NotSupported {
+                setting,
+                with: "a frontier",
+            });
+        }
+        method.trading.check(self.labels())?;
+        let mu = self.expected_returns(expected_returns.as_ref())?;
+        let bounds = match &method.bounds {
+            Some(bounds) => Some(bounds.resolve(&self.labels)?),
+            None => None,
+        };
+        let cov = self.adjusted_covariance(&method.covariance)?;
+        let (minimum, highest) = match &bounds {
+            Some(bounds) => (
+                bounded_min_variance(&cov, bounds)?,
+                ReturnRange::new(&mu, bounds).highest(),
+            ),
+            None => (min_variance(&cov)?, mu.max()),
+        };
+        let lowest = mu.dot(&minimum);
+        let highest = highest.max(lowest);
+        let mut portfolios = vec![minimum];
+        if highest - lowest > 1e-12 * lowest.abs().max(highest.abs()) {
+            for k in 1..points {
+                // A weighted average, which can't overflow where the difference could.
+                let t = k as f64 / (points - 1) as f64;
+                let target = lowest * (1.0 - t) + highest * t;
+                portfolios.push(match &bounds {
+                    Some(bounds) => bounded_target_return(&cov, &mu, bounds, target)?,
+                    None => target_return(&cov, &mu, target)?,
+                });
+            }
+        }
+        let risk = Risk::new(&cov)?;
+        portfolios
+            .into_iter()
+            .map(|w| {
+                // As `allocate` checks every method's weights.
+                if let Some(column) = w.iter().position(|w| !w.is_finite()) {
+                    return Err(CutupError::NonFiniteWeight {
+                        column,
+                        asset: self.labels[column].clone(),
+                    });
+                }
+                Ok(FrontierPoint {
+                    expected_return: mu.dot(&w),
+                    volatility: risk.volatility(&w) * risk.scale,
+                    weights: self.weights(w.iter().copied().collect()),
+                })
+            })
+            .collect()
+    }
+}
+
+/// A portfolio on the efficient frontier, from [`Returns::frontier`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct FrontierPoint {
+    expected_return: f64,
+    volatility: f64,
+    weights: Weights,
+}
+
+impl FrontierPoint {
+    /// The portfolio's expected return, `μᵀw`, under the method's expected returns.
+    pub fn expected_return(&self) -> f64 {
+        self.expected_return
+    }
+
+    /// The portfolio's volatility, `sqrt(wᵀΣw)`, under the method's adjusted covariance.
+    pub fn volatility(&self) -> f64 {
+        self.volatility
+    }
+
+    /// The portfolio's weights.
+    pub fn weights(&self) -> &Weights {
+        &self.weights
     }
 }
 
@@ -497,6 +644,72 @@ fn volatility_floor(risk: &Risk, w: &DVector<f64>, sigma: f64) -> Result<f64, Cu
     Ok(target.max(floor))
 }
 
+/// The long-short minimum variance portfolio. It always exists, since `wᵀΣw ≥ 0` on the
+/// budget's plane, so failing to find one is numerical.
+fn min_variance(cov: &DMatrix<f64>) -> Result<DVector<f64>, CutupError> {
+    let n = cov.ncols();
+    Ok(qp::solve_kkt(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_element(n, 1, 1.0),
+        &DVector::from_element(1, 1.0),
+    )?
+    .ok_or(CutupError::SingularCovariance)?
+    .0)
+}
+
+/// The long-short portfolio with the least variance at expected return `target`.
+fn target_return(
+    cov: &DMatrix<f64>,
+    mu: &DVector<f64>,
+    target: f64,
+) -> Result<DVector<f64>, CutupError> {
+    let n = cov.ncols();
+    Ok(qp::solve_kkt(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
+        &DVector::from_vec(vec![1.0, target]),
+    )?
+    .ok_or(CutupError::DegenerateExpectedReturns)?
+    .0)
+}
+
+/// The minimum variance portfolio within `bounds`, as [`MinVariance`](crate::MinVariance)
+/// finds it.
+fn bounded_min_variance(
+    cov: &DMatrix<f64>,
+    bounds: &qp::Bounds,
+) -> Result<DVector<f64>, CutupError> {
+    let n = cov.ncols();
+    Ok(DVector::from_vec(long_only_weights(
+        cov,
+        &DVector::zeros(n),
+        &DMatrix::from_element(n, 1, 1.0),
+        &DVector::from_element(1, 1.0),
+        bounds,
+        interior_start(bounds),
+    )?))
+}
+
+/// The portfolio within `bounds` with the least variance at expected return `target`.
+fn bounded_target_return(
+    cov: &DMatrix<f64>,
+    mu: &DVector<f64>,
+    bounds: &qp::Bounds,
+    target: f64,
+) -> Result<DVector<f64>, CutupError> {
+    let problem = ReturnRange::target_problem(mu, bounds.clone(), target)?;
+    Ok(DVector::from_vec(long_only_weights(
+        cov,
+        &DVector::zeros(cov.ncols()),
+        &problem.e,
+        &problem.b,
+        &problem.bounds,
+        problem.start,
+    )?))
+}
+
 /// The long-short portfolio with the highest expected return at a volatility of at most
 /// `sigma`, for [`MeanVariance::target_volatility`].
 fn target_volatility(
@@ -505,16 +718,7 @@ fn target_volatility(
     sigma: f64,
 ) -> Result<DVector<f64>, CutupError> {
     let n = mu.len();
-    let ones = DVector::from_element(n, 1.0);
-    let zeros = DVector::zeros(n);
-    // The minimum variance portfolio w₀ always exists: wᵀΣw ≥ 0 on the budget's plane.
-    let (minimum, _) = qp::solve_kkt(
-        cov,
-        &zeros,
-        &DMatrix::from_column_slice(n, 1, ones.as_slice()),
-        &DVector::from_element(1, 1.0),
-    )?
-    .ok_or(CutupError::SingularCovariance)?;
+    let minimum = min_variance(cov)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
     // The direction z adding one unit of expected return with the least variance. Σw₀ is a
@@ -522,8 +726,8 @@ fn target_volatility(
     // expected return is the same: then w₀ is as good as any portfolio.
     let Some((direction, _)) = qp::solve_kkt(
         cov,
-        &zeros,
-        &DMatrix::from_columns(&[ones, mu.clone()]),
+        &DVector::zeros(n),
+        &DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
         &DVector::from_vec(vec![0.0, 1.0]),
     )?
     else {
@@ -563,30 +767,10 @@ fn bounded_target_volatility(
     bounds: &qp::Bounds,
     sigma: f64,
 ) -> Result<Vec<f64>, CutupError> {
-    let n = mu.len();
-    let zeros = DVector::zeros(n);
-    let minimum = DVector::from_vec(long_only_weights(
-        cov,
-        &zeros,
-        &DMatrix::from_element(n, 1, 1.0),
-        &DVector::from_element(1, 1.0),
-        bounds,
-        interior_start(bounds),
-    )?);
+    let minimum = bounded_min_variance(cov, bounds)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
-    let at = |rho: f64| -> Result<DVector<f64>, CutupError> {
-        let problem = ReturnRange::target_problem(mu, bounds.clone(), rho)?;
-        let w = long_only_weights(
-            cov,
-            &zeros,
-            &problem.e,
-            &problem.b,
-            &problem.bounds,
-            problem.start,
-        )?;
-        Ok(DVector::from_vec(w))
-    };
+    let at = |rho: f64| bounded_target_return(cov, mu, bounds, rho);
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
     // there up to some return and above it after.
@@ -1428,6 +1612,218 @@ mod tests {
                     &data.allocate(&method).unwrap(),
                     1e-12,
                 );
+            }
+        }
+    }
+
+    /// Checks `frontier` against `method`'s minimum variance and target return portfolios, and
+    /// each point's return and volatility against its weights.
+    fn assert_frontier(data: &Returns, method: &MeanVariance, frontier: &[FrontierPoint]) {
+        let minimum = match &method.bounds {
+            Some(bounds) => MinVariance::default().bounds(bounds.clone()),
+            None => MinVariance::default().allow_short(),
+        };
+        assert_eq!(
+            frontier[0].weights(),
+            &data
+                .allocate(&minimum.covariance(method.covariance.clone()))
+                .unwrap()
+        );
+        // Under the method's expected returns and covariance.
+        let given = data
+            .resolve("expected_returns", method.expected_returns.as_ref())
+            .unwrap();
+        let mu = data.expected_returns(given.as_ref()).unwrap();
+        let cov = data.adjusted_covariance(&method.covariance).unwrap();
+        for point in frontier {
+            let w = DVector::from_column_slice(point.weights().as_slice());
+            assert_eq!(point.expected_return(), mu.dot(&w));
+            let sigma = w.dot(&(&cov * &w)).sqrt();
+            assert!((point.volatility() - sigma).abs() <= 1e-12 * sigma);
+        }
+        for point in &frontier[1..] {
+            let mut target = method.clone();
+            target.objective = Objective::TargetReturn(point.expected_return());
+            assert_weights_close(point.weights(), &data.allocate(&target).unwrap(), 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_frontier_long_only_runs_from_min_variance_to_the_highest_return() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        let mu = sample_mean(&data);
+        let method = MeanVariance::risk_aversion(1.0);
+        let frontier = data.frontier(&method, 6).unwrap();
+        assert_eq!(frontier.len(), 6);
+        assert_frontier(&data, &method, &frontier);
+        assert_eq!(frontier[5].expected_return(), mu.max());
+        // Evenly spaced in return, rising in volatility.
+        let lowest = frontier[0].expected_return();
+        for (k, pair) in frontier.windows(2).enumerate() {
+            let step = (mu.max() - lowest) / 5.0;
+            let want = lowest + step * (k + 1) as f64;
+            assert!((pair[1].expected_return() - want).abs() <= 1e-12 * mu.amax());
+            assert!(pair[0].volatility() < pair[1].volatility());
+            assert!(pair[1].weights().iter().all(|&w| w >= 0.0));
+        }
+        // Two points are its ends.
+        let ends = data.frontier(&method, 2).unwrap();
+        assert_eq!(ends[0], frontier[0]);
+        assert_eq!(ends[1].expected_return(), mu.max());
+    }
+
+    #[test]
+    fn test_frontier_long_short_stops_at_the_highest_asset_return() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        let mu = sample_mean(&data);
+        let method = MeanVariance::target_return(0.0)
+            .allow_short()
+            .shrinkage(0.2);
+        let frontier = data.frontier(&method, 4).unwrap();
+        assert_eq!(frontier.len(), 4);
+        assert_frontier(&data, &method, &frontier);
+        // Under the shrunk covariance, which the sample volatility doesn't use.
+        let sample = data.frontier(&MeanVariance::target_return(0.0).allow_short(), 4);
+        assert_ne!(sample.unwrap()[0], frontier[0]);
+        assert!((frontier[3].expected_return() - mu.max()).abs() <= 4.0 * f64::EPSILON * mu.amax());
+        assert!(frontier[3].weights().iter().any(|&w| w < 0.0));
+        for pair in frontier.windows(2) {
+            assert!(pair[0].volatility() < pair[1].volatility());
+        }
+    }
+
+    #[test]
+    fn test_frontier_within_bounds() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        let bounds = WeightBounds::uniform(0.05, 0.3);
+        let mu = sample_mean(&data);
+        let method = MeanVariance::risk_aversion(1.0).bounds(bounds.clone());
+        let frontier = data.frontier(&method, 5).unwrap();
+        assert_frontier(&data, &method, &frontier);
+        let highest = ReturnRange::new(&mu, &bounds.resolve(data.labels()).unwrap()).highest();
+        assert!((frontier[4].expected_return() - highest).abs() <= 4.0 * f64::EPSILON * mu.amax());
+        for point in &frontier {
+            assert!(
+                point
+                    .weights()
+                    .iter()
+                    .all(|&w| (0.05 - 1e-15..=0.3 + 1e-15).contains(&w))
+            );
+        }
+    }
+
+    #[test]
+    fn test_frontier_of_one_return_is_one_point() {
+        let data = Returns::returns_matrix(factor_returns(4, 30, 5)).unwrap();
+        // Every expected return the same, or all 0, so there's nothing to trade volatility for.
+        for expected in [[0.01; 4], [0.0; 4]] {
+            for method in [
+                MeanVariance::risk_aversion(1.0),
+                MeanVariance::risk_aversion(1.0).allow_short(),
+            ] {
+                let method = method.expected_returns(expected);
+                let frontier = data.frontier(&method, 5).unwrap();
+                assert_eq!(frontier.len(), 1);
+                assert_frontier(&data, &method, &frontier);
+            }
+        }
+        // A range of 1e-9 of the returns is enough for a frontier.
+        let close =
+            MeanVariance::risk_aversion(1.0).expected_returns([0.01, 0.01, 0.01, 0.01 + 1e-11]);
+        let frontier = data.frontier(&close, 5).unwrap();
+        assert_eq!(frontier.len(), 5);
+        assert_frontier(&data, &close, &frontier);
+        // Long-short, the minimum variance portfolio shorts an asset with a negative return
+        // to earn more than any asset.
+        let data = Returns::new(&[
+            [0.010, 0.021, 0.004],
+            [-0.008, -0.015, -0.002],
+            [0.004, 0.009, 0.006],
+            [-0.002, -0.006, -0.003],
+            [0.006, 0.011, 0.001],
+        ])
+        .unwrap();
+        let method = MeanVariance::risk_aversion(1.0)
+            .expected_returns([0.0, -0.01, 0.0])
+            .allow_short();
+        let frontier = data.frontier(&method, 3).unwrap();
+        assert_eq!(frontier.len(), 1);
+        assert!(frontier[0].expected_return() > 0.0);
+        // Long-only, it holds none of that asset, so earns 0, as much as any portfolio.
+        let long_only = MeanVariance::risk_aversion(1.0).expected_returns([0.0, -0.01, 0.0]);
+        let frontier = data.frontier(&long_only, 3).unwrap();
+        assert_eq!(frontier.len(), 1);
+        assert_eq!(frontier[0].expected_return(), 0.0);
+    }
+
+    #[test]
+    fn test_frontier_rejects_bad_settings() {
+        let data = Returns::returns_matrix(factor_returns(4, 30, 5)).unwrap();
+        let method = MeanVariance::risk_aversion(1.0);
+        for points in [0, 1] {
+            assert_eq!(
+                data.frontier(&method, points),
+                Err(CutupError::InvalidConfig {
+                    field: "points",
+                    value: points as f64,
+                })
+            );
+        }
+        let rebalance = method.clone().current_weights([0.25; 4]).max_turnover(0.1);
+        assert_eq!(
+            data.frontier(&rebalance, 3),
+            Err(CutupError::NotSupported {
+                setting: "max_turnover",
+                with: "a frontier",
+            })
+        );
+        // Current weights alone change nothing, but are still checked.
+        let current = method.clone().current_weights([0.25; 4]);
+        assert_eq!(data.frontier(&current, 3), data.frontier(&method, 3));
+        let unbalanced = method.clone().current_weights([0.5; 4]);
+        assert!(matches!(
+            data.frontier(&unbalanced, 3),
+            Err(CutupError::InvalidConfig { .. })
+        ));
+        // The objective is ignored, even an invalid one.
+        assert_eq!(
+            data.frontier(&MeanVariance::risk_aversion(f64::NAN), 3),
+            data.frontier(&method, 3)
+        );
+        assert!(matches!(
+            data.frontier(&method.clone().expected_returns([0.0; 3]), 3),
+            Err(CutupError::DimensionMismatch { .. })
+        ));
+        let infeasible = method.bounds(WeightBounds::uniform(0.0, 0.2));
+        assert!(matches!(
+            data.frontier(&infeasible, 3),
+            Err(CutupError::InfeasibleBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn test_frontier_scales_with_the_returns() {
+        let returns = factor_returns(5, 40, 13);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        for method in [
+            MeanVariance::risk_aversion(1.0),
+            MeanVariance::risk_aversion(1.0).allow_short(),
+        ] {
+            let frontier = data.frontier(&method, 4).unwrap();
+            for exponent in [-500, 500] {
+                let scale = 2f64.powi(exponent);
+                let scaled = Returns::returns_matrix(&returns * scale).unwrap();
+                let at_scale = scaled.frontier(&method, 4).unwrap();
+                for (got, want) in at_scale.iter().zip(&frontier) {
+                    assert_weights_close(got.weights(), want.weights(), 1e-12);
+                    let rho = got.expected_return() / scale;
+                    assert!(
+                        (rho - want.expected_return()).abs()
+                            <= 1e-12 * want.expected_return().abs()
+                    );
+                    let sigma = got.volatility() / scale;
+                    assert!((sigma - want.volatility()).abs() <= 1e-12 * want.volatility());
+                }
             }
         }
     }

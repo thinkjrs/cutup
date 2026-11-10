@@ -90,8 +90,8 @@ pub use cvar::MinCvar;
 pub use deprecated::PortfolioAllocator;
 pub use error::CutupError;
 pub use methods::{
-    EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification, MaxSharpe,
-    MeanVariance, MinVariance, RiskParity,
+    EqualWeight, FrontierPoint, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification,
+    MaxSharpe, MeanVariance, MinVariance, RiskParity,
 };
 pub use returns::Returns;
 pub use stats::PortfolioStats;

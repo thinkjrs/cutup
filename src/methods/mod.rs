@@ -16,7 +16,7 @@ pub use hrp::Hrp;
 pub use inverse::{InverseVariance, InverseVolatility};
 pub use max_diversification::MaxDiversification;
 pub use max_sharpe::MaxSharpe;
-pub use mean_variance::MeanVariance;
+pub use mean_variance::{FrontierPoint, MeanVariance};
 pub use min_variance::MinVariance;
 pub use risk_parity::RiskParity;
 
