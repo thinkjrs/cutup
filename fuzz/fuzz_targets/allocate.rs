@@ -256,6 +256,8 @@ enum Method {
         trading: Trading,
         costs: Option<Costs>,
         covariance: Covariance,
+        /// Also checks the method's efficient frontier, with this many points.
+        frontier: Option<u8>,
     },
     MaxSharpe {
         risk_free_rate: Option<f64>,
@@ -406,6 +408,25 @@ fn black_litterman(spec: BlackLittermanSpec) -> BlackLitterman {
     covariance!(model, spec.covariance)
 }
 
+/// Checks that `method`'s efficient frontier, if it has one, is `points` finite portfolios, or
+/// one, each with a return that isn't NaN and a volatility that isn't negative.
+fn check_frontier(data: &Returns, method: &MeanVariance, points: usize) {
+    let Ok(frontier) = data.frontier(method, points) else {
+        return;
+    };
+    assert!(points >= 2, "{points} points");
+    assert!(
+        frontier.len() == points || frontier.len() == 1,
+        "{frontier:?}"
+    );
+    for point in &frontier {
+        assert_eq!(point.weights().len(), data.labels().len());
+        assert!(point.weights().iter().all(|w| w.is_finite()), "{point:?}");
+        assert!(!point.expected_return().is_nan(), "{point:?}");
+        assert!(point.volatility() >= 0.0, "{point:?}");
+    }
+}
+
 fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
     Some(match method {
         Method::EqualWeight => Box::new(EqualWeight),
@@ -434,6 +455,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             trading,
             costs,
             covariance,
+            frontier,
         } => {
             let mut m = match objective {
                 Objective::RiskAversion(gamma) => MeanVariance::risk_aversion(gamma),
@@ -454,7 +476,11 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                 Some(Costs::PerAsset(costs)) => m = m.transaction_costs_per_asset(costs),
                 None => {}
             }
-            Box::new(covariance!(trading!(m, trading), covariance))
+            let m = covariance!(trading!(m, trading), covariance);
+            if let Some(points) = frontier {
+                check_frontier(data, &m, points.into());
+            }
+            Box::new(m)
         }
         Method::MaxSharpe {
             risk_free_rate,
