@@ -72,7 +72,11 @@ cutup's implementation:
   w₀: support enumeration with five states per asset, at its lower bound, at its upper
   bound, at w₀, or free above or below w₀, where the cost cᵢ|wᵢ − w₀ᵢ| is the linear term
   ±cᵢ. A turnover cap adds, on each support, a candidate with the cap as an equality
-  Σ sign(wᵢ − w₀ᵢ)(wᵢ − w₀ᵢ) = T. The best feasible candidate is the optimum, as above. The
+  Σ sign(wᵢ − w₀ᵢ)(wᵢ − w₀ᵢ) = T. With a target return and costs, the target is a floor
+  on the net return μᵀw − Σcᵢ|wᵢ − w₀ᵢ|, which on a support is linear, so it adds a
+  candidate with it as an equality too; a target above the highest net return, from
+  scipy.optimize.linprog, is an expected error. The best feasible candidate is the
+  optimum, as above. The
   objective is written out from each method's definition, not from cutup's. Each result
   is cross-checked against PyPortfolioOpt, with an L1 cost, a squared-distance objective
   and an L1 constraint on cvxpy with Clarabel at tight tolerances, to 1e-6. A cap below the turnover needed to
@@ -753,10 +757,13 @@ def kinked(
     upper: np.ndarray,
     cap: float | None,
     target: tuple[np.ndarray, float] | None = None,
+    net: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Minimizes ½wᵀKw − cᵀw + Σᵢ costsᵢ|wᵢ − currentᵢ| subject to 1ᵀw = 1, l ≤ w ≤ u, with a
     target (μ, ρ) μᵀw = ρ, and with a cap Σᵢ|wᵢ − currentᵢ| ≤ cap, by support enumeration
-    over five states per asset."""
+    over five states per asset. With `net`, per-asset costs cᵢ, the target is instead a net
+    return μᵀw − Σᵢ cᵢ|wᵢ − currentᵢ| ≥ ρ. On a support that's linear, so each support has a
+    candidate without it and one with it as an equality."""
     n = len(c)
     # 0: lower bound, 1: upper bound, 2: at current, 3: free above it, 4: free below it.
     def choices(i):
@@ -784,15 +791,21 @@ def kinked(
         for i in held:
             w[i] = (lower[i], upper[i], current[i])[states[i]]
         sign = np.array([1.0 if states[i] == 3 else -1.0 for i in free])
-        for capped in ([False, True] if cap is not None else [False]):
+        options = [(capped, netted) for capped in ([False, True] if cap is not None else [False]) for netted in ([False, True] if net is not None else [False])]
+        for capped, netted in options:
             if not free:
                 candidates = [w.copy()]
             else:
                 columns = [np.ones(len(free))]
                 rhs = [1.0 - w[held].sum()]
-                if target is not None:
+                if target is not None and net is None:
                     columns.append(target[0][free])
                     rhs.append(target[1] - target[0][held] @ w[held])
+                if netted:
+                    mu, rho = target
+                    # μᵀw − Σ_held cᵢ|wᵢ − currentᵢ| − Σ_free cᵢ sᵢ (wᵢ − currentᵢ) = ρ.
+                    columns.append(mu[free] - net[free] * sign)
+                    rhs.append(rho - mu[held] @ w[held] + net[held] @ np.abs(w[held] - current[held]) - (net[free] * sign) @ current[free])
                 if capped:
                     columns.append(sign)
                     rhs.append(cap - np.abs(w[held] - current[held]).sum() + sign @ current[free])
@@ -808,7 +821,9 @@ def kinked(
                 tolerance = 1e-12 * max(1.0, np.abs(candidate).max())
                 if abs(candidate.sum() - 1.0) > 1e-9:
                     continue
-                if target is not None and abs(target[0] @ candidate - target[1]) > 1e-9 * np.abs(target[0]).max():
+                if target is not None and net is None and abs(target[0] @ candidate - target[1]) > 1e-9 * np.abs(target[0]).max():
+                    continue
+                if net is not None and target[0] @ candidate - net @ np.abs(candidate - current) < target[1] - 1e-9 * np.abs(target[0]).max():
                     continue
                 if np.any(candidate < lower - tolerance) or np.any(candidate > upper + tolerance):
                     continue
@@ -826,7 +841,8 @@ def kinked(
 def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool) -> np.ndarray | str:
     """Min variance, wᵀΣw + κ‖w − w₀‖², or mean-variance, −μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖²
     + Σcᵢ|wᵢ − w₀ᵢ|, from current weights w₀, as ½wᵀKw − cᵀw plus the costs. With a target
-    return ρ, mean-variance is min variance subject to μᵀw = ρ, and only takes a cap."""
+    return ρ, mean-variance is wᵀΣw + κ‖w − w₀‖² subject to μᵀw = ρ, or with costs to a net
+    return μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ."""
     n = cov.shape[0]
     current = np.array(params["current_weights"], dtype=float)
     kappa = params.get("turnover_penalty", 0.0)
@@ -840,30 +856,68 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
         # Each cap lowered to what the other floors leave, as cutup resolves them.
         upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
-    target = None
+    target, net = None, None
     if mean_variance and "target_return" in params:
         rho = params["target_return"]
-        if np.all(np.isfinite(lower)):
+        if "transaction_costs" in params:
+            # The cap is checked first, as only the budget limits it.
+            if cap is not None and turnover_into_bounds(current, lower, upper) > cap + 1e-12:
+                return "InfeasibleTurnover"
+            if rho > highest_net_return(current, mu, costs, lower, upper, cap) + 1e-12:
+                return "TargetReturnOutOfRange"
+            net = costs
+        elif np.all(np.isfinite(lower)):
             if out_of_range(range_ends(mu, (lower, upper)), rho):
                 return "TargetReturnOutOfRange"
         target = (mu, rho)
-        k, c = 2 * cov, np.zeros(n)
+        k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
     elif mean_variance:
         gamma = params["risk_aversion"]
         k, c = gamma * cov + 2 * kappa * np.eye(n), mu + 2 * kappa * current
     else:
         k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
     if cap is not None:
-        if target is None:
-            clipped = np.clip(current, lower, upper)
-            minimum = np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
+        if target is None or net is not None:
+            minimum = turnover_into_bounds(current, lower, upper)
         else:
             minimum = least_turnover(current, mu, target[1], lower, upper)
         if minimum > cap + 1e-12:
             return "InfeasibleTurnover"
-    weights = kinked(k, c, current, costs, lower, upper, cap, target)
+    # With a target, costs only count against its net return.
+    charged = np.zeros(n) if target is not None else costs
+    weights = kinked(k, c, current, charged, lower, upper, cap, target, net)
     cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, params if mean_variance else None)
     return weights
+
+
+def turnover_into_bounds(current: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> float:
+    """The least turnover from current to a portfolio summing to 1 within the bounds: clip each
+    weight into its bounds, then trade what that leaves over or short of 1."""
+    clipped = np.clip(current, lower, upper)
+    return np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
+
+
+def highest_net_return(current: np.ndarray, mu: np.ndarray, costs: np.ndarray, lower: np.ndarray, upper: np.ndarray, cap: float | None) -> float:
+    """The highest μᵀw − Σᵢ cᵢ|wᵢ − currentᵢ| over portfolios summing to 1 within the bounds
+    and the cap, from scipy.optimize.linprog over w and the purchases and sales
+    w − current = p − s, or infinity if it's unbounded."""
+    n = len(current)
+    c = np.concatenate([-mu, costs, costs])
+    a_eq = np.vstack([
+        np.hstack([np.eye(n), -np.eye(n), np.eye(n)]),
+        np.concatenate([np.ones(n), np.zeros(2 * n)]),
+    ])
+    b_eq = np.concatenate([current, [1.0]])
+    a_ub = None if cap is None else np.concatenate([np.zeros(n), np.ones(2 * n)])[None, :]
+    b_ub = None if cap is None else [cap]
+    box = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(0, None)] * (2 * n)
+    tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
+    result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=b_eq, bounds=box, method="highs", options=tight)
+    if result.status == 3:
+        return np.inf
+    if result.status != 0:
+        raise ValueError(f"highest net return: {result.message}")
+    return -result.fun
 
 
 def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.ndarray, upper: np.ndarray) -> float:
@@ -892,13 +946,18 @@ def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, wei
     # Clarabel at tight tolerances: at its defaults it stops about 2e-5 short at the kinks.
     tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}
     frontier = EfficientFrontier(mu, cov, weight_bounds=bounds, solver="CLARABEL", solver_options=tight)
-    if np.any(costs > 0):
+    targeted = mean_variance is not None and "target_return" in mean_variance
+    if np.any(costs > 0) and not targeted:
         frontier.add_objective(lambda w: cp.sum(cp.multiply(costs, cp.abs(w - current))))
     if kappa > 0:
         frontier.add_objective(lambda w: kappa * cp.sum_squares(w - current))
     if cap is not None:
         frontier.add_constraint(lambda w: cp.norm(w - current, 1) <= cap)
-    if mean_variance is not None and "target_return" in mean_variance:
+    if targeted and "transaction_costs" in mean_variance:
+        rho = mean_variance["target_return"]
+        frontier.add_constraint(lambda w: mu @ w - cp.sum(cp.multiply(costs, cp.abs(w - current))) >= rho)
+        frontier.min_volatility()
+    elif targeted:
         rho = mean_variance["target_return"]
         frontier.add_constraint(lambda w: mu @ w == rho)
         frontier.min_volatility()
@@ -1439,6 +1498,20 @@ def cases(datasets: dict) -> list[dict]:
         ("orthogonal3", {"target_return": 0.0015, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "max_turnover": 1.0, "bounds": [0.0, 0.5]}),
         ("near_singular4", {"target_return": 0.0013, "expected_returns": [0.001, 0.002, 0.0015, 0.0005], "current_weights": [0.1, 0.2, 0.3, 0.4], "max_turnover": 0.25}),
         ("two_blocks5", {"target_return": 0.002, "expected_returns": mu5, "current_weights": [0.2] * 5, "max_turnover": 0.3}),
+        # A target return with a penalty, alone and with a cap: still an equality.
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "turnover_penalty": 2e-4}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "turnover_penalty": 1e-4, "max_turnover": 0.4}),
+        # A target net return with costs: binding, slack below the least variance portfolio's
+        # net return, per asset with bounds, with a cap, with a penalty, long-short with a cap,
+        # just under the highest net return, and above it.
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0001}),
+        ("two_blocks5", {"target_return": 0.0002, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0005}),
+        ("orthogonal3", {"target_return": 0.0012, "expected_returns": [0.002, 0.001, 0.0], "current_weights": [0.1, 0.1, 0.8], "transaction_costs": [0.0004, 0.0001, 0.0], "bounds": [0.0, 0.5]}),
+        ("two_blocks5", {"target_return": 0.00085, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0001, "max_turnover": 0.6}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "transaction_costs": 0.0002, "turnover_penalty": 1e-4}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1], "transaction_costs": 0.0003, "max_turnover": 0.8, "long_short": True}),
+        ("two_blocks5", {"target_return": 0.00103, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0001}),
+        ("two_blocks5", {"target_return": 0.0009, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0005}),
     ]:
         out.append({"dataset": name, "method": "rebalance_mean_variance", "params": params, "tolerance": solver})
 

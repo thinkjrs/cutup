@@ -4128,6 +4128,142 @@
       "condition_number": 82.05
     },
     {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25],
+        "turnover_penalty": 0.0002
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6036809022007195, 0.027937759090788924, 0.005679667219729719, 0.18919011363416352, 0.1735115578545983],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25],
+        "turnover_penalty": 0.0001,
+        "max_turnover": 0.4
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6220476772476541, 0.06362569088363024, 0.0, 0.18387226271748455, 0.13045436915123115],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "transaction_costs": 0.0001
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6848582228891722, 0.2, 0.10301917384092106, 0.01212260326990681, 0.0],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0002,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "transaction_costs": 0.0005
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.11925361990597237, 0.1408606226999534, 0.3050205623482818, 0.434865195045792],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0012,
+        "expected_returns": [0.002, 0.001, 0.0],
+        "current_weights": [0.1, 0.1, 0.8],
+        "transaction_costs": [0.0004, 0.0001, 0.0],
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "weights": [0.5, 0.39999999999999164, 0.10000000000000818],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.00085,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "transaction_costs": 0.0001,
+        "max_turnover": 0.6
+      },
+      "tolerance": 1e-09,
+      "weights": [0.5000000000000001, 0.2, 0.2, 0.03999999999999962, 0.06000000000000043],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.5, 0.0, 0.0, 0.25, 0.25],
+        "transaction_costs": 0.0002,
+        "turnover_penalty": 0.0001
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6250000000000001, 0.0, 0.0, 0.1249999999999996, 0.25],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.4, 0.3, 0.1, 0.1, 0.1],
+        "transaction_costs": 0.0003,
+        "max_turnover": 0.8,
+        "long_short": true
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6999999999999993, 0.3, 0.1, -0.19999999999999987, 0.1],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.00103,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "transaction_costs": 0.0001
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9833333333333341, 0.016666666666666028, 0.0, 0.0, 0.0],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "target_return": 0.0009,
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0002, 0.0007],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "transaction_costs": 0.0005
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 82.05
+    },
+    {
       "dataset": "orthogonal3",
       "method": "min_cvar",
       "tolerance": 1e-09,
