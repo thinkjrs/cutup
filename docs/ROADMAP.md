@@ -445,7 +445,11 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 
 - **Costs with a target return:** transaction costs as a net-return target,
   `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`, so `MeanVariance::target_return(..)` takes
-  `.transaction_costs(..)` instead of returning `NotSupported`.
+  `.transaction_costs(..)` instead of returning `NotSupported`. Solved by a
+  search on the target's multiplier, sharing its bracket and secant steps with
+  the turnover cap's. Above the highest net return, from the simplex solver,
+  it's `TargetReturnOutOfRange` with `lowest` −∞. A turnover penalty works
+  with a target return too, added to the variance.
 - **LP speed:** product-form LU updates in the simplex solver, refactoring
   once 32 eta matrices build up rather than every iteration. `MinCvar` went from 10.7 s to
   1.06 s at 500 assets, from 28 ms to 8.6 ms at 100 and from 46 µs to 39 µs

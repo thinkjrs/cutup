@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `MeanVariance::target_return(ρ)` takes `.transaction_costs(..)`, uniform or per asset,
+  rather than returning `NotSupported`. The target is then a floor on the return net of
+  them, `μᵀw − Σcᵢ|wᵢ − w₀ᵢ| ≥ ρ`: if the least variance portfolio within the bounds and any
+  turnover cap already nets `ρ`, that's the answer, and otherwise the net return is `ρ`. The
+  net return is concave, so this is convex, and it's solved by a search on the target's
+  multiplier, each step the kinked problem a risk aversion solves. A target above the
+  highest net return within the bounds and the cap, found by the simplex solver, is
+  `TargetReturnOutOfRange` with that as `highest` and `lowest` −∞, since every target below
+  it is reachable.
+- `MeanVariance::target_return(ρ)` takes `.turnover_penalty(κ)` too, minimizing
+  `wᵀΣw + κ‖w − w₀‖²` at that return, so a target return no longer returns `NotSupported`
+  for any rebalancing setting.
+
 ### Changed
 
 - The simplex solver behind `MinCvar` and the least-turnover check for a capped target
