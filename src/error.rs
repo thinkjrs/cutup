@@ -127,12 +127,16 @@ pub enum CutupError {
     NotConverged,
     /// No long-only portfolio has the target return: it must be between the lowest and the
     /// highest expected return of any asset, or of any portfolio within the weight bounds.
+    /// With transaction costs, long-only or long-short, no portfolio within the bounds and the
+    /// turnover cap nets the target: `lowest` is −∞ and `highest` the highest net return.
     TargetReturnOutOfRange {
         /// The target return supplied.
         target_return: f64,
-        /// The lowest expected return of any long-only portfolio within the bounds.
+        /// The lowest expected return of any long-only portfolio within the bounds, or −∞
+        /// with transaction costs.
         lowest: f64,
-        /// The highest expected return of any long-only portfolio within the bounds.
+        /// The highest expected return of any long-only portfolio within the bounds, or with
+        /// transaction costs the highest return net of them.
         highest: f64,
     },
     /// No asset's expected return is above the risk-free rate by more than rounding, so no
@@ -334,6 +338,15 @@ impl fmt::Display for CutupError {
             CutupError::NotConverged => {
                 write!(f, "the solver stopped before reaching a solution")
             }
+            CutupError::TargetReturnOutOfRange {
+                target_return,
+                lowest,
+                highest,
+            } if *lowest == f64::NEG_INFINITY => write!(
+                f,
+                "target return {target_return} is above the highest return net of transaction \
+                 costs, {highest}, so no portfolio within the bounds and the turnover cap nets it"
+            ),
             CutupError::TargetReturnOutOfRange {
                 target_return,
                 lowest,
@@ -558,6 +571,16 @@ mod tests {
             .to_string(),
             "target return 0.5 is outside the reachable expected returns, from 0.1 to 0.2, so \
              no long-only portfolio reaches it"
+        );
+        assert_eq!(
+            CutupError::TargetReturnOutOfRange {
+                target_return: 0.5,
+                lowest: f64::NEG_INFINITY,
+                highest: 0.2
+            }
+            .to_string(),
+            "target return 0.5 is above the highest return net of transaction costs, 0.2, so no \
+             portfolio within the bounds and the turnover cap nets it"
         );
         assert_eq!(
             CutupError::NoPositiveExcessReturn {
