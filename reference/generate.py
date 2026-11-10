@@ -25,7 +25,8 @@ cutup's implementation:
   long-only optimum, since each candidate is feasible and the optimum is one of them. This
   checks neither the multipliers' signs nor uses an iterative solver, unlike cutup's
   active-set method. Only covariances that aren't singular are used, where the optimum is
-  unique. A target return outside the assets' expected returns is an error.
+  unique. A target return outside the assets' expected returns, by more than 1e-12 of
+  Σ|μᵢwᵢ| for the portfolio at the end it's past, is an error.
 
   With weight bounds, each asset is held at its lower bound, at its upper bound, or left
   free. The range of reachable target returns comes from scipy.optimize.linprog, not the
@@ -251,11 +252,21 @@ def long_only(
             if np.linalg.cond(k_s) < WELL_CONDITIONED:
                 # Kx = c − Eλ, so the multipliers solve (EᵀK⁻¹E)λ = EᵀK⁻¹c − b. Unlike a
                 # least-squares solve of the whole KKT matrix, this stays accurate when E's
-                # entries are many orders of magnitude apart.
+                # entries are many orders of magnitude apart. Each constraint is first scaled
+                # by its largest entry on this support, not over every asset: an expected
+                # return far from the rest, off the support, would otherwise leave the target's
+                # row nearly a multiple of the budget's, and squaring that conditioning in
+                # EᵀK⁻¹E loses the target.
+                largest = np.abs(e_s).max(axis=0)
+                largest[largest == 0] = 1.0
+                e_s, b_s = e_s / largest, b_s / largest
                 k_e, k_c = np.linalg.solve(k_s, e_s), np.linalg.solve(k_s, c_s)
                 lam, *_ = np.linalg.lstsq(e_s.T @ k_e, e_s.T @ k_c - b_s, rcond=None)
                 x = k_c - k_e @ lam
-                residual, size = e_s.T @ x - b_s, np.abs(e_s).max() * np.abs(x).max() + np.abs(b).max()
+                # Each row against its own terms: one constraint's entries far larger than
+                # another's, such as a far expected return beside the budget, mustn't loosen
+                # the other.
+                residual, size = e_s.T @ x - b_s, np.abs(e_s).T @ np.abs(x) + np.abs(b_s)
             else:
                 kkt = np.block([[k_s, e_s], [e_s.T, np.zeros((m, m))]])
                 rhs = np.concatenate([c_s, b_s])
@@ -263,7 +274,7 @@ def long_only(
                 x = solution[: len(support)]
                 residual, size = kkt @ solution - rhs, np.abs(kkt).max() * np.abs(solution).max() + np.abs(rhs).max()
             # No feasible point on this support, such as a single asset away from the target.
-            if np.abs(residual).max() > 1e-9 * size:
+            if np.any(np.abs(residual) > 1e-9 * size):
                 continue
             if np.any(x < lower[support]) or np.any(x > upper[support]):
                 continue
@@ -294,13 +305,29 @@ def infeasible(bounds: tuple[np.ndarray, np.ndarray]) -> bool:
 def return_range(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray]) -> tuple[float, float]:
     """The lowest and highest expected return of a portfolio summing to 1 within the bounds,
     from two linear programs."""
+    return range_ends(mu, bounds)[:2]
+
+
+def range_ends(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray] | None):
+    """The lowest and highest expected return within the bounds, or long-only without them,
+    and how far past each a target is still within rounding of it: 1e-12 of Σ|μᵢwᵢ| for the
+    portfolio at that end, the size of the terms its return sums."""
+    if bounds is None:
+        low, high = mu.min(), mu.max()
+        return float(low), float(high), 1e-12 * abs(low), 1e-12 * abs(high)
     lower, upper = bounds
     box = list(zip(lower, upper))
     budget = {"A_eq": np.ones((1, len(mu))), "b_eq": [1.0], "bounds": box}
     lowest, highest = linprog(mu, **budget), linprog(-mu, **budget)
     if lowest.status != 0 or highest.status != 0:
         raise ValueError(f"linprog failed: {lowest.message} / {highest.message}")
-    return float(lowest.fun), float(-highest.fun)
+    rounding = lambda x: 1e-12 * float(np.abs(mu * x).sum())
+    return float(lowest.fun), float(-highest.fun), rounding(lowest.x), rounding(highest.x)
+
+
+def out_of_range(mu: np.ndarray, bounds, target: float) -> bool:
+    lowest, highest, low, high = range_ends(mu, bounds)
+    return not lowest - low <= target <= highest + high
 
 
 def long_only_min_variance(cov: np.ndarray, params: dict) -> np.ndarray | str:
@@ -329,8 +356,7 @@ def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np
         return weights
     target = params["target_return"]
     lowest, highest = (mu.min(), mu.max()) if bounds is None else return_range(mu, bounds)
-    tolerance = 1e-12 * max(abs(lowest), abs(highest))
-    if not lowest - tolerance <= target <= highest + tolerance:
+    if out_of_range(mu, bounds, target):
         return "TargetReturnOutOfRange"
     target = min(max(target, lowest), highest)
     weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]), *bounds_or_none)
@@ -797,8 +823,7 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
     if mean_variance and "target_return" in params:
         rho = params["target_return"]
         if np.all(np.isfinite(lower)):
-            lowest, highest = return_range(mu, (lower, upper))
-            if not lowest - 1e-12 * max(abs(lowest), abs(highest)) <= rho <= highest + 1e-12 * max(abs(lowest), abs(highest)):
+            if out_of_range(mu, (lower, upper), rho):
                 return "TargetReturnOutOfRange"
         target = (mu, rho)
         k, c = 2 * cov, np.zeros(n)
@@ -894,7 +919,7 @@ def min_cvar(returns: np.ndarray, params: dict) -> tuple[np.ndarray, float] | st
     if "target_return" in params:
         lowest, highest = return_range(mu, (lower, upper))
         target = params["target_return"]
-        if not lowest - 1e-12 * max(abs(lowest), abs(highest)) <= target <= highest + 1e-12 * max(abs(lowest), abs(highest)):
+        if out_of_range(mu, (lower, upper), target):
             return "TargetReturnOutOfRange"
         a_eq.append(np.concatenate([mu, [0.0], np.zeros(t)]))
         b_eq.append(min(max(target, lowest), highest))
@@ -1243,6 +1268,13 @@ def cases(datasets: dict) -> list[dict]:
         ("two_blocks5", {"risk_aversion": 5.0, "bounds": [0.0, 0.15]}),
     ]:
         out.append({"dataset": name, "method": "long_only_mean_variance", "params": params, "tolerance": solver})
+    # A mean far below the rest, which the top of the range doesn't hold: it doesn't widen the
+    # top's rounding, so targets within 1e-12 of 1000 of the top are solved as given rather
+    # than moved onto it, and one just over it is out of range. The last needs a little of
+    # the far asset.
+    far = [-1000.0, 0.002, 0.0015, 0.001, 0.0005]
+    for target in [0.002 - 1e-10, 0.002 - 5e-13, 0.0019, 0.0012, 0.002 + 1e-14, 0.0004]:
+        out.append({"dataset": "two_blocks5", "method": "long_only_mean_variance", "params": {"target_return": target, "expected_returns": far}, "tolerance": solver})
 
     # Target volatility: between the minimum variance and highest-return portfolios', above the
     # latter's, where the limit doesn't bind, and below the former's, an error. Long-short, the
