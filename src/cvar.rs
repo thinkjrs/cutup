@@ -252,11 +252,11 @@ pub(crate) fn tail_loss(mut losses: Vec<f64>, cap: f64) -> f64 {
 /// one.
 ///
 /// Every asset row of the LP has `b = 0`, so starting every `zₜ` at 0 leaves all those rows
-/// without a residual: a degenerate start, which stalls the LP from about 200 assets. Starting
-/// these at the cap leaves asset `i`'s row a residual unless its returns over them sum to zero,
-/// and starts `z` near a tail the optimum is likely to share. From 200 assets that's faster
-/// than starting the first scenarios there: 0.31 s against 0.48 s at 200, and 1.4 s against
-/// 2.7 s at 300.
+/// without a residual: a degenerate start, which the LP leaves only by widening its bounds,
+/// and more slowly. Starting these at the cap leaves asset `i`'s row a residual unless its
+/// returns over them sum to zero, and starts `z` near a tail the optimum is likely to share.
+/// From 200 assets that's faster than starting the first scenarios there: 0.31 s against
+/// 0.48 s at 200, and 1.4 s against 2.7 s at 300.
 ///
 /// The nearest whole number, not the floor: `1/cap` is `(1 − β)T`, which rounding can leave
 /// just under a whole number, as for `β = 0.9` and `T = 10`. At least one, so that a cap over 1,
