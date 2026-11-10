@@ -902,6 +902,48 @@ proptest! {
     }
 
     #[test]
+    fn target_volatility_is_the_frontier_at_that_volatility(
+        returns in returns(),
+        fraction in 0.0f64..1.0,
+        further in 0.0f64..1.0,
+        long_short in prop::bool::ANY,
+    ) {
+        prop_assume!(well_posed(&returns));
+        let mu = returns.row_mean().transpose();
+        let cov = covariance(&returns);
+        let allocator = returns_via_flat(returns).unwrap();
+        let volatility = |w: &Weights| variance(&cov, w).sqrt();
+        let earned = |w: &Weights| mu.dot(&DVector::from_column_slice(w.as_slice()));
+        let shorting = |method: MeanVariance| if long_short { method.allow_short() } else { method };
+        let minimum = allocator
+            .allocate(&if long_short { MinVariance::default().allow_short() } else { MinVariance::default() })
+            .unwrap();
+        let floor = volatility(&minimum);
+        // Long-only, up to the highest-return portfolio's volatility; long-short, three times
+        // the minimum's.
+        let ceiling = if long_short {
+            3.0 * floor
+        } else {
+            volatility(&allocator.allocate(&MeanVariance::target_return(mu.max())).unwrap())
+        };
+        let sigma = floor + fraction * (ceiling - floor);
+        let weights = allocator.allocate(&shorting(MeanVariance::target_volatility(sigma))).unwrap();
+        prop_assert!(long_short || weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+        let got = volatility(&weights);
+        prop_assert!((got - sigma).abs() <= 1e-9 * sigma, "{got} vs {sigma}");
+        // On the frontier: the least variance at its expected return.
+        let frontier = allocator
+            .allocate(&shorting(MeanVariance::target_return(earned(&weights))))
+            .unwrap();
+        prop_assert!(variance(&cov, &weights) <= variance(&cov, &frontier) * (1.0 + 1e-9), "{weights:?} vs {frontier:?}");
+        // A higher volatility never earns less.
+        let higher = allocator
+            .allocate(&shorting(MeanVariance::target_volatility(sigma + further * (ceiling - sigma))))
+            .unwrap();
+        prop_assert!(earned(&higher) >= earned(&weights) - 1e-12 * mu.amax(), "{} < {}", earned(&higher), earned(&weights));
+    }
+
+    #[test]
     fn log_returns_add_up_to_the_growth(returns in returns()) {
         // Prices that compound the returns from 100: the log returns of the prices sum to
         // ln(p_T / p_0), and average no more than ln(1 + r̄), by Jensen's inequality.
