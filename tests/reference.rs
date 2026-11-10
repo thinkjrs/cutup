@@ -94,10 +94,14 @@ fn mean_variance(params: &Value) -> MeanVariance {
     let method = match (
         params["risk_aversion"].as_f64(),
         params["target_return"].as_f64(),
+        params["target_volatility"].as_f64(),
     ) {
-        (Some(gamma), None) => MeanVariance::risk_aversion(gamma),
-        (None, Some(target)) => MeanVariance::target_return(target),
-        _ => panic!("mean_variance needs exactly one of risk_aversion or target_return"),
+        (Some(gamma), None, None) => MeanVariance::risk_aversion(gamma),
+        (None, Some(target), None) => MeanVariance::target_return(target),
+        (None, None, Some(sigma)) => MeanVariance::target_volatility(sigma),
+        _ => panic!(
+            "mean_variance needs exactly one of risk_aversion, target_return or target_volatility"
+        ),
     };
     let method = method.covariance(covariance_config(params));
     if params["expected_returns"].is_array() {

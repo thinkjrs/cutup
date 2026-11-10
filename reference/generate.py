@@ -32,6 +32,17 @@ cutup's implementation:
   greedy fill cutup uses, and bounds that can't sum to 1 are an error. Each bounded result
   is cross-checked against PyPortfolioOpt's EfficientFrontier with the same weight_bounds,
   which uses cvxpy, to 1e-5.
+* Target volatility, the highest expected return at a volatility of at most σ: long-short,
+  Merton's closed form for the return on the frontier at σ, ρ = B/A + sqrt(D(Aσ² − 1))/A,
+  then the target-return portfolio there, or with Σ singular the minimum variance
+  portfolio plus the least-variance direction adding return, from the KKT system's
+  minimum-norm solution. Long-only, scipy.optimize.brentq finds the target return whose
+  support-enumerated frontier portfolio has volatility σ, between the minimum variance
+  portfolio's return and the highest reachable; at or above the highest-return portfolio's
+  volatility, that portfolio. A σ below the minimum variance portfolio's volatility, by
+  more than 1e-12 of it, is an error, and so is a free direction adding return with no
+  variance, long-short. Each long-only case is cross-checked against PyPortfolioOpt's
+  efficient_risk, to 1e-4: cvxpy meets its volatility constraint only to its own tolerance.
 * Long-only max Sharpe: the same support enumeration, on the change of variables
   y = w / (μ − r_f)ᵀw that turns it into minimizing yᵀΣy subject to (μ − r_f)ᵀy = 1 and
   y ≥ 0. An unbounded Sharpe ratio is decided by scipy.optimize.linprog finding a
@@ -93,7 +104,7 @@ from pypfopt import EfficientCVaR, EfficientFrontier, HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel, market_implied_prior_returns
 import scipy.cluster.hierarchy as sch
 import scipy.spatial.distance as ssd
-from scipy.optimize import linprog, nnls
+from scipy.optimize import brentq, linprog, nnls
 
 from fixtures import FIXTURES, write_json
 
@@ -374,6 +385,84 @@ def target_return(cov: np.ndarray, mu: np.ndarray, target: float) -> np.ndarray 
         d = a * c - b * b
         return ((c - b * target) * inv_ones + (a * target - b) * inv_mu) / d
     return kkt_min_norm(cov, np.zeros(n), np.column_stack([ones, mu]), np.array([1.0, target]))
+
+
+def volatility(cov: np.ndarray, w: np.ndarray) -> float:
+    """sqrt(wᵀΣw) in correlation units, so assets of very different scales stay accurate."""
+    d = np.sqrt(np.diag(cov))
+    u = w * d
+    return float(np.sqrt(max(u @ correlation(cov) @ u, 0.0)))
+
+
+def below_floor(sigma: float, floor: float) -> bool:
+    return sigma < floor * (1.0 - 1e-12)
+
+
+def target_volatility(cov: np.ndarray, mu: np.ndarray, sigma: float) -> np.ndarray | str:
+    """The long-short portfolio with the highest expected return at a volatility of at most
+    σ, or the error cutup should return."""
+    n = cov.shape[0]
+    ones = np.ones(n)
+    minimum = min_variance(cov)
+    floor = volatility(cov, minimum)
+    if below_floor(sigma, floor):
+        return "TargetVolatilityOutOfRange"
+    sigma = max(sigma, floor)
+    scale = np.abs(mu).max()
+    if np.ptp(mu) <= 1e-12 * scale:
+        return minimum
+    if well_conditioned(cov):
+        inv_ones = solve(cov, ones)
+        inv_mu = solve(cov, mu)
+        a, b, c = ones @ inv_ones, ones @ inv_mu, mu @ inv_mu
+        d = a * c - b * b
+        rho = b / a + np.sqrt(max(d * (a * sigma * sigma - 1.0), 0.0)) / a
+        return target_return(cov, mu, rho)
+    # Some change to the portfolio that adds no variance adds expected return.
+    if free_fraction(cov, mu) > 1e-9:
+        return "Unbounded"
+    direction = kkt_min_norm(cov, np.zeros(n), np.column_stack([ones, mu]), np.array([0.0, 1.0]))
+    step = np.sqrt((sigma - floor) * (sigma + floor)) / volatility(cov, direction)
+    return minimum + step * direction
+
+
+def long_only_target_volatility(cov: np.ndarray, mu: np.ndarray, params: dict) -> np.ndarray | str:
+    """The long-only portfolio within the case's bounds with the highest expected return at a
+    volatility of at most σ, or the error cutup should return."""
+    n = cov.shape[0]
+    sigma = params["target_volatility"]
+    bounds = weight_bounds(params, n)
+    if bounds is not None and infeasible(bounds):
+        return "InfeasibleBounds"
+    bounds_or_none = bounds or (None, None)
+    budget = (np.ones((n, 1)), np.array([1.0]))
+    minimum = long_only(cov, np.zeros(n), *budget, *bounds_or_none)
+    floor = volatility(cov, minimum)
+    if below_floor(sigma, floor):
+        return "TargetVolatilityOutOfRange"
+
+    def at(rho: float) -> np.ndarray:
+        return long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), *bounds_or_none)
+
+    highest = mu.max() if bounds is None else return_range(mu, bounds)[1]
+    top = at(highest)
+    if volatility(cov, top) <= sigma:
+        weights = top
+    else:
+        low = float(mu @ minimum)
+        rho = brentq(lambda r: volatility(cov, at(r)) - sigma, low, highest, xtol=1e-18, rtol=4 * np.finfo(float).eps, maxiter=500)
+        weights = at(rho)
+    # With every expected return equal, any portfolio within the volatility is optimal.
+    if np.linalg.cond(cov) <= 1e8 and np.ptp(mu) > 1e-12 * np.abs(mu).max():
+        lower, upper = bounds if bounds is not None else (np.zeros(n), np.ones(n))
+        frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))))
+        frontier.efficient_risk(sigma)
+        theirs = np.array(list(frontier.weights))
+        # cvxpy meets the volatility constraint only to its tolerance, which moves the weights
+        # more than a fixed return does.
+        if np.abs(theirs - weights).max() > 1e-4:
+            raise ValueError(f"PyPortfolioOpt disagrees on target volatility {sigma}: {theirs} vs {weights}")
+    return weights
 
 
 def max_sharpe(cov: np.ndarray, mu: np.ndarray, risk_free_rate: float) -> np.ndarray | str:
@@ -855,8 +944,12 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return min_variance(adjusted)
         case "long_only_min_variance":
             return long_only_min_variance(adjusted, params)
+        case "long_only_mean_variance" if "target_volatility" in params:
+            return long_only_target_volatility(adjusted, mu, params)
         case "long_only_mean_variance":
             return long_only_mean_variance(adjusted, mu, params)
+        case "mean_variance" if "target_volatility" in params:
+            return target_volatility(adjusted, mu, params["target_volatility"])
         case "mean_variance" if "risk_aversion" in params:
             return risk_aversion(adjusted, mu, params["risk_aversion"])
         case "mean_variance":
@@ -1086,6 +1179,42 @@ def cases(datasets: dict) -> list[dict]:
         ("two_blocks5", {"risk_aversion": 5.0, "bounds": [0.0, 0.15]}),
     ]:
         out.append({"dataset": name, "method": "long_only_mean_variance", "params": params, "tolerance": solver})
+
+    # Target volatility: between the minimum variance and highest-return portfolios', above the
+    # latter's, where the limit doesn't bind, and below the former's, an error. Long-short, the
+    # return grows without limit with the volatility, and rank_deficient6 has a free direction.
+    def significant(x: float) -> float:
+        return float(f"{x:.6g}")
+
+    for name, params in [
+        ("two_asset", {}),
+        ("two_blocks5", {}),
+        ("prices10x60", {}),
+        ("near_singular4", {}),
+        ("orthogonal3", {}),
+        ("prices10x60", {"bounds": [0.0, 0.2]}),
+        ("prices10x60", {"bounds": [0.05, 0.3], "expected_returns": mu10}),
+        ("rank_deficient6", {"shrinkage": 0.3}),
+        ("scales4", {"expected_returns": scaled_mu}),
+    ]:
+        returns = load_returns(datasets[name])
+        cov = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
+        mu = np.array(params.get("expected_returns", returns.mean(axis=0)))
+        n = cov.shape[0]
+        bounds = weight_bounds(params, n) or (None, None)
+        floor = volatility(cov, long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *bounds))
+        highest = mu.max() if bounds[0] is None else return_range(mu, bounds)[1]
+        top = volatility(cov, long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, highest]), *bounds))
+        for sigma in [floor + 0.5 * (top - floor), 2.0 * top, 0.5 * floor]:
+            out.append({"dataset": name, "method": "long_only_mean_variance", "params": {**params, "target_volatility": significant(sigma)}, "tolerance": solver})
+    for name in ["two_asset", "two_blocks5", "prices10x60", "near_singular4", "orthogonal3"]:
+        cov = np.cov(load_returns(datasets[name]), rowvar=False)
+        floor = volatility(cov, min_variance(cov))
+        for multiple in [1.5, 3.0, 0.5]:
+            out.append({"dataset": name, "method": "mean_variance", "params": {"target_volatility": significant(multiple * floor)}, "tolerance": solver})
+    # Its minimum variance is 0 to rounding, so only the free direction is checked.
+    out.append({"dataset": "rank_deficient6", "method": "mean_variance", "params": {"target_volatility": 0.01}, "tolerance": solver})
+    out.append({"dataset": "scales4", "method": "mean_variance", "params": {"target_volatility": 2e-6, "expected_returns": scaled_mu}, "tolerance": solver})
 
     # rank_deficient6 has a long-only portfolio with zero variance, so it only has a risk
     # parity portfolio once shrinkage removes it.

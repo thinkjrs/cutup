@@ -1689,6 +1689,462 @@
       "condition_number": 82.05
     },
     {
+      "dataset": "two_asset",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00672469
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7247637303278331, 0.2752362696721655],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0191666
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9999999999999997, 0.0],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00193305
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00930153
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.7907716843972409, 0.0, 0.0, 0.2092283156027592],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0240558
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.9999999999999994, 0.0, 0.0, 0.0],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00328759
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0116814
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.021801850766247837, 0.0, 0.0, 0.0308849780631336, 0.5014338847254013, 0.18143010390090938, 0.0, 0.26444918254430855, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0304638
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.0, 0.0, 0.0, 0.9999999999999847, 0.0, 0.0, 1.5124407504115397e-14, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00406544
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00845222
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.08348228055226392, 0.8785202482688543, 0.0, 0.03799747117888119],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0189859
+      },
+      "tolerance": 8.2e-08,
+      "weights": [3.993130610501107e-16, 1.0, 0.0, 0.0],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00370576
+      },
+      "tolerance": 8.2e-08,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0100791
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7619047619047619, 0.19047619047619047, 0.047619047619047616],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.0201581
+      },
+      "tolerance": 1e-09,
+      "weights": [0.7619047619047619, 0.19047619047619047, 0.047619047619047616],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "target_volatility": 0.00503953
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "target_volatility": 0.00944319
+      },
+      "tolerance": 1e-09,
+      "weights": [0.09541301947075422, 0.15248661073394623, 0.09057210668630415, 0.0, 0.08908905799649679, 0.2, 0.17243920511249886, 0.0, 0.2, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "target_volatility": 0.0213027
+      },
+      "tolerance": 1e-09,
+      "weights": [0.2, 3.192602288100712e-12, 0.2, 0.0, 0.0, 0.2, 0.19999999999685897, 0.0, 0.2, 0.0],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 0.2],
+        "target_volatility": 0.00411752
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "target_volatility": 0.0085849
+      },
+      "tolerance": 1e-09,
+      "weights": [0.21608832938361217, 0.05, 0.05, 0.05, 0.3, 0.05, 0.05000000000000001, 0.05, 0.05, 0.13391167061638795],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "target_volatility": 0.0175834
+      },
+      "tolerance": 1e-09,
+      "weights": [0.29999999999999244, 0.05, 0.05, 0.05, 0.3, 0.05, 0.05000000000000001, 0.05, 0.05, 0.050000000000007865],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.05, 0.3],
+        "expected_returns": [0.001, 0.0004, 0.0007, 0.0002, 0.0012, 0.0005, 0.0003, 0.0008, 0.0006, 0.0009],
+        "target_volatility": 0.00418905
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_mean_variance",
+      "params": {
+        "shrinkage": 0.3,
+        "target_volatility": 0.00841973
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.019661536279398036, 0.0, 0.2570664011420093, 0.7232720625785936, 0.0],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_mean_variance",
+      "params": {
+        "shrinkage": 0.3,
+        "target_volatility": 0.0251534
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.0, 0.0, 0.9999999999999999, 0.0],
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "long_only_mean_variance",
+      "params": {
+        "shrinkage": 0.3,
+        "target_volatility": 0.00213136
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 14.0
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "target_volatility": 0.00347128
+      },
+      "tolerance": 1e-09,
+      "weights": [0.5000020836464598, 0.4999979163528205, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "target_volatility": 0.0138851
+      },
+      "tolerance": 1e-09,
+      "weights": [0.9999999999999998, 0.0, 0.0, 0.0],
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "scales4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12],
+        "target_volatility": 4.33583e-11
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 2.751
+    },
+    {
+      "dataset": "two_asset",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00579915
+      },
+      "tolerance": 1e-09,
+      "weights": [0.6253548583915884, 0.37464514160841034],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0115983
+      },
+      "tolerance": 1e-09,
+      "weights": [1.182514572990441, -0.18251457299044355],
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_asset",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00193305
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 1.694
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00968084
+      },
+      "tolerance": 1e-09,
+      "weights": [-2.3597941772114295, 0.8892114933147357, 0.9876145393945747, -0.1715707030353878, 1.6545388475375067],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0193617
+      },
+      "tolerance": 1e-09,
+      "weights": [-5.363708748475099, 2.0955125445155116, 2.0835415890435023, -0.9706910640416428, 3.1553456789577274],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00322695
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0119286
+      },
+      "tolerance": 1e-09,
+      "weights": [0.12233745992053216, 0.19649852492824144, 0.17637373918867535, -0.1795771134149087, 0.3849045669846019, 0.3381799636634106, 0.42624608049084634, -0.29170530754962043, 0.26162337409935255, -0.4348812883111314],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0238571
+      },
+      "tolerance": 1e-09,
+      "weights": [0.08994819224240672, 0.2662214846826779, 0.4009116971417216, -0.3798046694868355, 0.3910133481277678, 0.6443277369020527, 0.8385251153919228, -0.48717904168209447, 0.6330928336136306, -1.39705669693325],
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00397619
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 19.98
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0107919
+      },
+      "tolerance": 8.2e-08,
+      "weights": [-0.08473789803357146, 1.1014975334135015, -448.15030964966, 448.13355001428016],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0215838
+      },
+      "tolerance": 8.2e-08,
+      "weights": [-0.5998700447136994, 1.8452276223026982, -886.9165344786828, 886.6711769010941],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0035973
+      },
+      "tolerance": 8.2e-08,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0151186
+      },
+      "tolerance": 1e-09,
+      "weights": [0.761904761904762, 0.1904761904761905, 0.04761904761904762],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.0302372
+      },
+      "tolerance": 1e-09,
+      "weights": [0.761904761904762, 0.1904761904761905, 0.04761904761904762],
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.00503953
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 0.01
+      },
+      "tolerance": 1e-09,
+      "error": "Unbounded",
+      "condition_number": 4.333e+16
+    },
+    {
+      "dataset": "scales4",
+      "method": "mean_variance",
+      "params": {
+        "target_volatility": 2e-06,
+        "expected_returns": [0.0003471, 7.583e-07, 6.112e-10, 1.783e-12]
+      },
+      "tolerance": 1e-09,
+      "weights": [9.584327148389913e-05, 0.1910229445015599, 130.76123470434533, -129.95235349211848],
+      "condition_number": 2.751
+    },
+    {
       "dataset": "rank_deficient6",
       "method": "risk_parity",
       "params": {
