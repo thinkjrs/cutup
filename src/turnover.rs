@@ -317,23 +317,15 @@ pub(crate) fn rebalance_to_net_target(
         Ok((-net(&w), Some(w)))
     };
     // The net return is a sum over the assets, which rounds by a few ulps of its terms.
-    let slack = |w: &DVector<f64>| {
-        let terms = mu.component_mul(w).abs().sum() + costs.dot(&(w - &current).abs());
-        4.0 * n as f64 * f64::EPSILON * terms
-    };
+    let slack = |w: &DVector<f64>| qp::sum_rounding(n, net_terms(&mu, &costs, &current, w));
     let start = if bounds.lower.iter().all(|l| l.is_finite()) {
         interior_start(&bounds)
     } else {
         current.clone()
     };
-    // λ scales the expected returns to the size of the covariance's pull on the weights.
-    let pull = (&q * &start).amax() / (mu.amax() + costs.amax());
-    let first = if pull.is_finite() && pull > 0.0 {
-        pull
-    } else {
-        1.0
-    };
-    let weights = qp::search_multiplier(solve, (-target, slack), first, start)?;
+    // The search doubles λ from 1 until it nets the target, then narrows it down, so it finds
+    // λ from any start.
+    let weights = qp::search_multiplier(solve, (-target, slack), 1.0, start)?;
     Ok(data.weights(normalized(weights)))
 }
 
@@ -380,14 +372,26 @@ fn highest_net_return(
     });
     match trades.solve(&cost)? {
         lp::Outcome::Optimal(solution) => {
-            let w = solution.x.rows(0, n);
-            let charged = costs.dot(&(w - current).abs());
-            let scale = mu.component_mul(&w).abs().sum() + charged;
-            Ok((-solution.objective, 1e-12 * scale))
+            let w = solution.x.rows(0, n).into_owned();
+            Ok((
+                -solution.objective,
+                1e-12 * net_terms(mu, costs, current, &w),
+            ))
         }
         lp::Outcome::Unbounded => Ok((f64::INFINITY, 0.0)),
         lp::Outcome::Infeasible => Err(CutupError::NotConverged),
     }
+}
+
+/// The terms of `w`'s net return from `current`, `Σᵢ|μᵢwᵢ| + Σᵢ cᵢ|wᵢ − w₀ᵢ|`, which its
+/// rounding scales with.
+fn net_terms(
+    mu: &DVector<f64>,
+    costs: &DVector<f64>,
+    current: &DVector<f64>,
+    w: &DVector<f64>,
+) -> f64 {
+    mu.component_mul(w).abs().sum() + costs.dot(&(w - current).abs())
 }
 
 /// The linear program over the weights `w` and the trades to them from `current`,
@@ -475,7 +479,7 @@ fn unbounded(n: usize) -> qp::Bounds {
 /// it's above `cap` by more than summing it rounds by.
 fn check_cap(current: &DVector<f64>, bounds: &qp::Bounds, cap: f64) -> Result<f64, CutupError> {
     let minimum = minimum_turnover(current, bounds);
-    if minimum > cap + 4.0 * current.len() as f64 * f64::EPSILON {
+    if minimum > cap + qp::sum_rounding(current.len(), 1.0) {
         return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
     Ok(minimum)
@@ -932,5 +936,62 @@ mod tests {
         )
         .unwrap();
         assert!((least - 0.4).abs() < 1e-15, "{least}");
+    }
+
+    #[test]
+    fn net_terms_are_the_returns_and_costs_in_magnitude() {
+        // |1·1| + |−2·0| and 0.5·|1 − 0.5| + 0.25·|0 − 0.5|.
+        let terms = net_terms(
+            &DVector::from_vec(vec![1.0, -2.0]),
+            &DVector::from_vec(vec![0.5, 0.25]),
+            &DVector::from_vec(vec![0.5, 0.5]),
+            &DVector::from_vec(vec![1.0, 0.0]),
+        );
+        assert_eq!(terms, 1.375);
+    }
+
+    #[test]
+    fn a_cap_at_the_least_turnover_into_the_bounds_counts_up_to_rounding() {
+        // From all in the first asset to at most half in each: sell 0.5, buy 0.5.
+        let current = DVector::from_vec(vec![1.0, 0.0, 0.0]);
+        let bounds = qp::Bounds {
+            lower: DVector::zeros(3),
+            upper: DVector::from_element(3, 0.5),
+        };
+        let rounding = qp::sum_rounding(3, 1.0);
+        assert_eq!(check_cap(&current, &bounds, 1.0 - rounding), Ok(1.0));
+        assert_eq!(
+            check_cap(&current, &bounds, 1.0 - 2.0 * rounding),
+            Err(CutupError::InfeasibleTurnover {
+                minimum: 1.0,
+                cap: 1.0 - 2.0 * rounding
+            })
+        );
+    }
+
+    #[test]
+    fn a_net_target_up_to_rounding_past_the_highest_is_at_it() {
+        // All in the first asset nets the most, 0.00176, with terms 0.0024 + 0.0004·1.6.
+        let current = DVector::from_vec(vec![0.2, 0.3, 0.5]);
+        let mu = DVector::from_vec(vec![0.0024, 0.0006, 0.0012]);
+        let costs = DVector::from_element(3, 0.0004);
+        let bounds = qp::Bounds {
+            lower: DVector::zeros(3),
+            upper: DVector::from_element(3, 1.0),
+        };
+        let (highest, rounding) =
+            highest_net_return(&current, (&mu, &costs), &bounds, f64::INFINITY).unwrap();
+        assert!((highest - 0.00176).abs() < 1e-15, "{highest}");
+        assert!((rounding - 1e-12 * 0.00304).abs() < 1e-24, "{rounding}");
+        let method = |target| {
+            MeanVariance::target_return(target)
+                .current_weights([0.2, 0.3, 0.5])
+                .transaction_costs(0.0004)
+        };
+        assert!(method(highest + rounding).allocate(&allocator()).is_ok());
+        assert!(matches!(
+            method(highest + 2.0 * rounding).allocate(&allocator()),
+            Err(CutupError::TargetReturnOutOfRange { .. })
+        ));
     }
 }
