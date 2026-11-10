@@ -1,6 +1,6 @@
 //! [`MeanVariance`]: Markowitz mean-variance optimization.
 
-use super::long_only_weights;
+use super::{correlation, in_null_space, long_only_weights, normalized};
 use crate::bounds::{ReturnRange, interior_start};
 use crate::turnover::{Costs, Trading};
 use crate::{
@@ -18,6 +18,7 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// * [`MeanVariance::risk_aversion`] `γ`: maximize `μᵀw − (γ/2) wᵀΣw`.
 /// * [`MeanVariance::target_return`] `ρ`: minimize `wᵀΣw` subject to `μᵀw = ρ`.
+/// * [`MeanVariance::target_volatility`] `σ`: maximize `μᵀw` subject to `wᵀΣw ≤ σ²`.
 ///
 /// The expected returns `μ` are the sample mean of the returns unless you set
 /// [`MeanVariance::expected_returns`], for example from [`BlackLitterman`](crate::BlackLitterman).
@@ -63,7 +64,8 @@ use nalgebra::{DMatrix, DVector};
 /// # Errors
 ///
 /// * [`CutupError::InvalidConfig`] if the risk aversion is not finite and positive, the
-///   target return is not finite, or the covariance settings are invalid.
+///   target return is not finite, the target volatility is not finite and nonnegative, or the
+///   covariance settings are invalid.
 /// * [`CutupError::InvalidAssetValue`] if an expected return is not finite, or an asset's
 ///   lower bound is negative or not finite, or its upper bound is below its lower bound or NaN.
 ///   For [uniform](WeightBounds::uniform) bounds, it's [`CutupError::InvalidConfig`].
@@ -78,8 +80,11 @@ use nalgebra::{DMatrix, DVector};
 ///   magnitude.
 /// * [`CutupError::DegenerateExpectedReturns`], long-short, for a target return when every
 ///   asset has the same expected return and the target differs from it.
-/// * [`CutupError::Unbounded`], long-short, for a risk aversion when Σ is singular and some
-///   fully invested portfolio gains expected return without adding variance.
+/// * [`CutupError::TargetVolatilityOutOfRange`] for a target volatility below the minimum
+///   variance portfolio's, by more than `1e-12` of it.
+/// * [`CutupError::Unbounded`], long-short, for a risk aversion or a target volatility when Σ
+///   is singular and some fully invested portfolio gains expected return without adding
+///   variance.
 /// * [`CutupError::ZeroVariance`] if any asset's returns have zero variance and neither
 ///   shrinkage nor regularization is applied.
 /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance, or the covariance times
@@ -100,7 +105,8 @@ use nalgebra::{DMatrix, DVector};
 ///   per asset.
 /// * [`CutupError::InfeasibleTurnover`] if the cap is below the turnover needed to move the
 ///   current weights into the bounds, and to the target return if there is one.
-/// * [`CutupError::NotSupported`] for a penalty or costs with a target return.
+/// * [`CutupError::NotSupported`] for a penalty or costs with a target return, or any of
+///   them with a target volatility.
 ///
 /// # Example
 ///
@@ -131,6 +137,11 @@ use nalgebra::{DMatrix, DVector};
 /// let weights = data.allocate(&target.bounds(WeightBounds::uniform(0.1, 0.6)))?;
 /// let portfolio_return: f64 = weights.iter().zip(expected).map(|(w, m)| w * m).sum();
 /// assert!((portfolio_return - 0.005).abs() < 1e-12);
+///
+/// // The highest expected return at a volatility of 1% a period.
+/// let risk = MeanVariance::target_volatility(0.01).expected_returns(expected);
+/// let weights = data.allocate(&risk)?;
+/// assert!(data.stats(&weights)?.volatility() <= 0.01 + 1e-12);
 ///
 /// // Rebalance net of 10 basis points a trade, turning over at most 20%.
 /// let rebalance = MeanVariance::risk_aversion(100.0)
@@ -166,6 +177,32 @@ impl MeanVariance {
     /// Minimizes variance subject to an expected portfolio return of `target`.
     pub fn target_return(target: f64) -> Self {
         Self::new(Objective::TargetReturn(target))
+    }
+
+    /// Maximizes the expected return subject to a volatility of at most `sigma`: the
+    /// portfolio on the efficient frontier at that volatility, as PyPortfolioOpt's
+    /// `efficient_risk`. `sigma` is a standard deviation, in the units and period of the
+    /// returns.
+    ///
+    /// A `sigma` below the minimum variance portfolio's volatility, by more than `1e-12` of it,
+    /// is [`CutupError::TargetVolatilityOutOfRange`]. Long-only, a `sigma` at or above the
+    /// volatility of the highest-return portfolio within the bounds gives that portfolio: the
+    /// limit doesn't bind. Long-short, the expected return grows without limit with the
+    /// volatility, so it always binds, unless every asset has the same expected return, when
+    /// the minimum variance portfolio is as good as any.
+    ///
+    /// Long-short, the solution is exact: every frontier portfolio is the minimum variance
+    /// portfolio `w₀` plus a multiple of the direction `z` that adds expected return with the
+    /// least variance, and `z` is uncorrelated with `w₀`, so the variance at `w₀ + tz` is
+    /// `σ₀² + t²zᵀΣz`. Long-only, the variance on the frontier rises with the target return
+    /// from the minimum variance portfolio's to the highest, so the target return is found by
+    /// bisection until the two ends hold the same assets at their bounds. Between them the
+    /// weights move in a straight line and the variance is a quadratic, solved exactly.
+    ///
+    /// Rebalancing settings aren't supported with a target volatility yet, and return
+    /// [`CutupError::NotSupported`].
+    pub fn target_volatility(sigma: f64) -> Self {
+        Self::new(Objective::TargetVolatility(sigma))
     }
 
     fn new(objective: Objective) -> Self {
@@ -228,6 +265,14 @@ impl MeanVariance {
 impl Allocation for MeanVariance {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let expected_returns = data.resolve("expected_returns", self.expected_returns.as_ref())?;
+        if let (Objective::TargetVolatility(_), Some(setting)) =
+            (self.objective, self.trading.first_setting())
+        {
+            return Err(CutupError::NotSupported {
+                setting,
+                with: "a target volatility",
+            });
+        }
         if self.trading.first_setting().is_some() {
             check_objective(self.objective)?;
             let covariance = || data.adjusted_covariance(&self.covariance);
@@ -241,6 +286,9 @@ impl Allocation for MeanVariance {
                     setting,
                     with: "a target return",
                 }),
+                (Objective::TargetVolatility(_), _) => {
+                    unreachable!("a target volatility with trading settings is rejected above")
+                }
                 // Neither a penalty nor costs, so the setting is the cap.
                 (Objective::TargetReturn(target), None) => {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
@@ -304,6 +352,7 @@ impl Returns {
                 .ok_or(CutupError::DegenerateExpectedReturns)?
                 .0
             }
+            Objective::TargetVolatility(sigma) => target_volatility(&cov, &mu, sigma)?,
         };
         Ok(self.weights(weights.iter().copied().collect()))
     }
@@ -340,6 +389,11 @@ impl Returns {
                 .map(|w| self.weights(w));
             }
             Objective::TargetReturn(target) => target,
+            Objective::TargetVolatility(sigma) => {
+                let cov = self.adjusted_covariance(covariance)?;
+                return bounded_target_volatility(&cov, &mu, &bounds, sigma)
+                    .map(|w| self.weights(w));
+            }
         };
         // An unreachable target is rejected before the covariance is built.
         let problem = ReturnRange::target_problem(&mu, bounds, target)?;
@@ -363,6 +417,8 @@ enum Objective {
     RiskAversion(f64),
     /// Minimize `wᵀΣw` subject to an expected portfolio return `μᵀw` equal to this value.
     TargetReturn(f64),
+    /// Maximize `μᵀw` subject to a volatility `sqrt(wᵀΣw)` of at most this value.
+    TargetVolatility(f64),
 }
 
 /// Checks a mean-variance objective's parameter.
@@ -378,7 +434,210 @@ fn check_objective(objective: Objective) -> Result<(), CutupError> {
             field: "target_return",
             value: target,
         }),
+        Objective::TargetVolatility(sigma) if !(sigma.is_finite() && sigma >= 0.0) => {
+            Err(CutupError::InvalidConfig {
+                field: "target_volatility",
+                value: sigma,
+            })
+        }
         _ => Ok(()),
+    }
+}
+
+/// Portfolio volatilities under a covariance, measured in correlation units scaled by the
+/// largest volatility, so that neither the volatilities nor their squares overflow or
+/// underflow on the way.
+struct Risk {
+    correlation: DMatrix<f64>,
+    volatilities: DVector<f64>,
+    /// The largest volatility, which [`Risk::volatilities`] are divided by.
+    scale: f64,
+}
+
+impl Risk {
+    fn new(cov: &DMatrix<f64>) -> Result<Self, CutupError> {
+        let (correlation, volatilities) = correlation(cov)?;
+        let scale = volatilities.max();
+        Ok(Risk {
+            correlation,
+            volatilities: volatilities / scale,
+            scale,
+        })
+    }
+
+    /// `w` in scaled correlation units, `diag(σ)w / scale`.
+    fn units(&self, w: &DVector<f64>) -> DVector<f64> {
+        w.component_mul(&self.volatilities)
+    }
+
+    /// `xᵀCy` for `x` and `y` in scaled correlation units.
+    fn product(&self, x: &DVector<f64>, y: &DVector<f64>) -> f64 {
+        x.dot(&(&self.correlation * y))
+    }
+
+    /// The volatility of `w`, divided by [`Risk::scale`].
+    fn volatility(&self, w: &DVector<f64>) -> f64 {
+        let u = self.units(w);
+        self.product(&u, &u).max(0.0).sqrt()
+    }
+}
+
+/// The minimum variance portfolio's volatility, divided by `risk`'s scale, checked against the
+/// target `sigma`, also divided by it: a target below it by more than `1e-12` of it is out of
+/// range, and one just below it is moved onto it.
+fn volatility_floor(risk: &Risk, w: &DVector<f64>, sigma: f64) -> Result<f64, CutupError> {
+    let floor = risk.volatility(w);
+    let target = sigma / risk.scale;
+    if target < floor * (1.0 - 1e-12) {
+        return Err(CutupError::TargetVolatilityOutOfRange {
+            target_volatility: sigma,
+            minimum: floor * risk.scale,
+        });
+    }
+    Ok(target.max(floor))
+}
+
+/// The long-short portfolio with the highest expected return at a volatility of at most
+/// `sigma`, for [`MeanVariance::target_volatility`].
+fn target_volatility(
+    cov: &DMatrix<f64>,
+    mu: &DVector<f64>,
+    sigma: f64,
+) -> Result<DVector<f64>, CutupError> {
+    let n = mu.len();
+    let ones = DVector::from_element(n, 1.0);
+    let zeros = DVector::zeros(n);
+    // The minimum variance portfolio w₀ always exists: wᵀΣw ≥ 0 on the budget's plane.
+    let (minimum, _) = qp::solve_kkt(
+        cov,
+        &zeros,
+        &DMatrix::from_column_slice(n, 1, ones.as_slice()),
+        &DVector::from_element(1, 1.0),
+    )?
+    .ok_or(CutupError::SingularCovariance)?;
+    let risk = Risk::new(cov)?;
+    let target = volatility_floor(&risk, &minimum, sigma)?;
+    // The direction z adding one unit of expected return with the least variance. Σw₀ is a
+    // multiple of 1 and 1ᵀz = 0, so z is uncorrelated with w₀. There's none when every
+    // expected return is the same: then w₀ is as good as any portfolio.
+    let Some((direction, _)) = qp::solve_kkt(
+        cov,
+        &zeros,
+        &DMatrix::from_columns(&[ones, mu.clone()]),
+        &DVector::from_vec(vec![0.0, 1.0]),
+    )?
+    else {
+        return Ok(minimum);
+    };
+    // A direction with no variance gains expected return for free, without limit.
+    let units = direction.component_mul(&risk.volatilities);
+    if in_null_space(&risk.correlation, &units)? {
+        return Err(CutupError::Unbounded);
+    }
+    let floor = risk.volatility(&minimum);
+    // Two roots, so that a target far above the floor can't overflow the product.
+    let step = (target - floor).sqrt() * (target + floor).sqrt() / risk.volatility(&direction);
+    Ok(minimum + direction * step)
+}
+
+/// Which bound each weight is held at, if any: the active set of a long-only solution.
+fn held(w: &DVector<f64>, bounds: &qp::Bounds) -> Vec<Option<bool>> {
+    (0..w.len())
+        .map(|i| {
+            if w[i] <= bounds.lower[i] {
+                Some(false)
+            } else if w[i] >= bounds.upper[i] {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The long-only portfolio within `bounds` with the highest expected return at a volatility of
+/// at most `sigma`, for [`MeanVariance::target_volatility`].
+fn bounded_target_volatility(
+    cov: &DMatrix<f64>,
+    mu: &DVector<f64>,
+    bounds: &qp::Bounds,
+    sigma: f64,
+) -> Result<Vec<f64>, CutupError> {
+    let n = mu.len();
+    let zeros = DVector::zeros(n);
+    let minimum = DVector::from_vec(long_only_weights(
+        cov,
+        &zeros,
+        &DMatrix::from_element(n, 1, 1.0),
+        &DVector::from_element(1, 1.0),
+        bounds,
+        interior_start(bounds),
+    )?);
+    let risk = Risk::new(cov)?;
+    let target = volatility_floor(&risk, &minimum, sigma)?;
+    let at = |rho: f64| -> Result<DVector<f64>, CutupError> {
+        let problem = ReturnRange::target_problem(mu, bounds.clone(), rho)?;
+        let w = long_only_weights(
+            cov,
+            &zeros,
+            &problem.e,
+            &problem.b,
+            &problem.bounds,
+            problem.start,
+        )?;
+        Ok(DVector::from_vec(w))
+    };
+    // The variance on the frontier is convex in the target return, and no higher at the
+    // minimum variance portfolio's return than the target's, so it's within the target from
+    // there up to some return and above it after.
+    let highest = ReturnRange::new(mu, bounds).highest();
+    let top = at(highest)?;
+    if risk.volatility(&top) <= target {
+        return Ok(normalized(top));
+    }
+    let (mut low, mut high) = ((mu.dot(&minimum), minimum), (highest, top));
+    for _ in 0..200 {
+        let width = high.0 - low.0;
+        if held(&low.1, bounds) == held(&high.1, bounds)
+            || width <= 4.0 * f64::EPSILON * low.0.abs().max(high.0.abs())
+        {
+            break;
+        }
+        let middle = low.0 + width / 2.0;
+        let w = at(middle)?;
+        if risk.volatility(&w) <= target {
+            low = (middle, w);
+        } else {
+            high = (middle, w);
+        }
+    }
+    // With the same assets held, the weights move in a straight line from low to high, and the
+    // variance along it, at low + t·d, is at² + 2bt + c. The target's is at the larger root.
+    let d = &high.1 - &low.1;
+    let (u, v) = (risk.units(&low.1), risk.units(&d));
+    let (a, b, c) = (
+        risk.product(&v, &v),
+        risk.product(&u, &v),
+        risk.product(&u, &u),
+    );
+    // Low is within the target, but for rounding.
+    let gap = (target * target - c).max(0.0);
+    #[allow(
+        clippy::manual_clamp,
+        reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
+    )]
+    let t = larger_root(a, b, gap).max(0.0).min(1.0);
+    Ok(normalized(low.1 + d * t))
+}
+
+/// The larger root `t` of `at² + 2bt = gap`, for `a ≥ 0` and `gap ≥ 0`, in whichever form
+/// doesn't subtract nearly equal numbers.
+fn larger_root(a: f64, b: f64, gap: f64) -> f64 {
+    let root = (b * b + a * gap).sqrt();
+    if b >= 0.0 {
+        gap / (b + root)
+    } else {
+        (root - b) / a
     }
 }
 
@@ -387,7 +646,8 @@ mod tests {
     use super::*;
     use crate::MinVariance;
     use crate::test_support::{
-        assert_weights_close, full_rank_prices, portfolio_variance, rank_one_returns, sample_mean,
+        assert_weights_close, factor_returns, full_rank_prices, portfolio_variance,
+        rank_one_returns, sample_mean,
     };
     use nalgebra::{dmatrix, dvector};
     #[cfg(target_arch = "wasm32")]
@@ -888,5 +1148,287 @@ mod tests {
                 .unwrap(),
             1e-9,
         );
+    }
+
+    fn volatility(data: &Returns, weights: &Weights) -> f64 {
+        portfolio_variance(data, weights).sqrt()
+    }
+
+    fn return_of(data: &Returns, weights: &Weights) -> f64 {
+        sample_mean(data).dot(&DVector::from_column_slice(weights.as_slice()))
+    }
+
+    #[test]
+    fn test_target_volatility_long_short_is_mertons_frontier() {
+        // With S = Σ⁻¹, A = 1ᵀS1, B = 1ᵀSμ, C = μᵀSμ and D = AC − B², the frontier's variance
+        // at return ρ is (Aρ² − 2Bρ + C) / D, so volatility σ is at ρ = B/A + sqrt(D(Aσ² − 1))/A.
+        let data = Returns::returns_matrix(factor_returns(5, 40, 7)).unwrap();
+        let mu = sample_mean(&data);
+        let s = data.cov_matrix.clone().try_inverse().unwrap();
+        let ones = DVector::from_element(5, 1.0);
+        let (a, b, c) = (
+            ones.dot(&(&s * &ones)),
+            ones.dot(&(&s * &mu)),
+            mu.dot(&(&s * &mu)),
+        );
+        let d = a * c - b * b;
+        let floor = (1.0 / a).sqrt();
+        for sigma in [floor, 1.5 * floor, 3.0 * floor] {
+            let rho = b / a + (d * (a * sigma * sigma - 1.0)).max(0.0).sqrt() / a;
+            let merton = ((c - b * rho) * &s * &ones + (a * rho - b) * &s * &mu) / d;
+            let weights = data
+                .allocate(&MeanVariance::target_volatility(sigma).allow_short())
+                .unwrap();
+            assert_weights_close(&weights, &Weights::from(merton.as_slice().to_vec()), 1e-9);
+            let got = volatility(&data, &weights);
+            assert!((got - sigma).abs() <= 1e-12 * sigma, "{got} vs {sigma}");
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_long_only_is_on_the_frontier() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        let mu = sample_mean(&data);
+        let minimum = data.allocate(&MinVariance::default()).unwrap();
+        let floor = volatility(&data, &minimum);
+        let top = data
+            .allocate(&MeanVariance::target_return(mu.max()))
+            .unwrap();
+        let ceiling = volatility(&data, &top);
+        assert_weights_close(
+            &data
+                .allocate(&MeanVariance::target_volatility(floor))
+                .unwrap(),
+            &minimum,
+            1e-9,
+        );
+        for fraction in [0.05, 0.3, 0.6, 0.95] {
+            let sigma = floor + fraction * (ceiling - floor);
+            let weights = data
+                .allocate(&MeanVariance::target_volatility(sigma))
+                .unwrap();
+            assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
+            let got = volatility(&data, &weights);
+            assert!((got - sigma).abs() <= 1e-12 * sigma, "{got} vs {sigma}");
+            // The least variance at its return, and a slightly higher return needs more.
+            let rho = return_of(&data, &weights);
+            let frontier = data.allocate(&MeanVariance::target_return(rho)).unwrap();
+            assert_weights_close(&weights, &frontier, 1e-9);
+            let above = data
+                .allocate(&MeanVariance::target_return(rho + 1e-6 * (mu.max() - rho)))
+                .unwrap();
+            assert!(volatility(&data, &above) > sigma);
+        }
+        // From the top portfolio's volatility up, the limit doesn't bind.
+        for sigma in [ceiling, 2.0 * ceiling] {
+            let weights = data
+                .allocate(&MeanVariance::target_volatility(sigma))
+                .unwrap();
+            assert_weights_close(&weights, &top, 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_within_bounds() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        let bounds = WeightBounds::uniform(0.05, 0.3);
+        let floor = volatility(
+            &data,
+            &data
+                .allocate(&MinVariance::default().bounds(bounds.clone()))
+                .unwrap(),
+        );
+        let highest =
+            ReturnRange::new(&sample_mean(&data), &bounds.resolve(data.labels()).unwrap())
+                .highest();
+        let top = data
+            .allocate(&MeanVariance::target_return(highest).bounds(bounds.clone()))
+            .unwrap();
+        let sigma = (floor + volatility(&data, &top)) / 2.0;
+        let weights = data
+            .allocate(&MeanVariance::target_volatility(sigma).bounds(bounds.clone()))
+            .unwrap();
+        // To the rounding of rescaling them to sum to 1.
+        let within = |w: f64| (0.05 - 1e-15..=0.3 + 1e-15).contains(&w);
+        assert!(weights.iter().all(|&w| within(w)), "{weights:?}");
+        let got = volatility(&data, &weights);
+        assert!((got - sigma).abs() <= 1e-12 * sigma, "{got} vs {sigma}");
+        let rho = return_of(&data, &weights);
+        let frontier = data
+            .allocate(&MeanVariance::target_return(rho).bounds(bounds))
+            .unwrap();
+        assert_weights_close(&weights, &frontier, 1e-9);
+    }
+
+    #[test]
+    fn test_target_volatility_below_the_minimum_is_out_of_range() {
+        let data = Returns::returns_matrix(factor_returns(4, 30, 3)).unwrap();
+        for method in [
+            MeanVariance::target_volatility(0.0),
+            MeanVariance::target_volatility(0.0).allow_short(),
+        ] {
+            let minimum = match method.bounds {
+                Some(_) => MinVariance::default(),
+                None => MinVariance::default().allow_short(),
+            };
+            let floor = volatility(&data, &data.allocate(&minimum).unwrap());
+            let at = |sigma: f64| {
+                let mut method = method.clone();
+                method.objective = Objective::TargetVolatility(sigma);
+                data.allocate(&method)
+            };
+            for sigma in [0.0, 0.99 * floor, floor * (1.0 - 2e-12)] {
+                match at(sigma) {
+                    Err(CutupError::TargetVolatilityOutOfRange {
+                        target_volatility,
+                        minimum,
+                    }) => {
+                        assert_eq!(target_volatility, sigma);
+                        assert!(
+                            (minimum - floor).abs() <= 1e-12 * floor,
+                            "{minimum} vs {floor}"
+                        );
+                    }
+                    other => panic!("{sigma}: {other:?}"),
+                }
+            }
+            // Within rounding of the minimum, the minimum variance portfolio.
+            let weights = at(floor * (1.0 - 5e-13)).unwrap();
+            assert_weights_close(&weights, &data.allocate(&minimum).unwrap(), 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_rejects_bad_settings() {
+        let data = Returns::returns_matrix(factor_returns(3, 20, 5)).unwrap();
+        for sigma in [-0.01, f64::NAN, f64::INFINITY] {
+            for method in [
+                MeanVariance::target_volatility(sigma),
+                MeanVariance::target_volatility(sigma).allow_short(),
+            ] {
+                assert!(matches!(
+                    data.allocate(&method),
+                    Err(CutupError::InvalidConfig {
+                        field: "target_volatility",
+                        ..
+                    })
+                ));
+            }
+        }
+        let method = || MeanVariance::target_volatility(0.02).current_weights([0.4, 0.3, 0.3]);
+        for (method, setting) in [
+            (method().max_turnover(0.2), "max_turnover"),
+            (method().turnover_penalty(0.1), "turnover_penalty"),
+            (method().transaction_costs(0.001), "transaction_costs"),
+        ] {
+            assert_eq!(
+                data.allocate(&method),
+                Err(CutupError::NotSupported {
+                    setting,
+                    with: "a target volatility"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_with_equal_or_free_returns() {
+        // Every portfolio earns the common return, so the minimum variance one is as good as
+        // any, at any volatility above its own.
+        let data = Returns::prices_matrix(full_rank_prices()).unwrap();
+        let flat = MeanVariance::target_volatility(1.0).expected_returns([0.01; 3]);
+        assert_weights_close(
+            &data.allocate(&flat.clone().allow_short()).unwrap(),
+            &data
+                .allocate(&MinVariance::default().allow_short())
+                .unwrap(),
+            1e-9,
+        );
+        assert_weights_close(
+            &data.allocate(&flat).unwrap(),
+            &data.allocate(&MinVariance::default()).unwrap(),
+            1e-9,
+        );
+        // With Σ of rank 1, some change to the weights adds expected return with no variance.
+        let rank_one = Returns::returns_matrix(rank_one_returns()).unwrap();
+        assert_eq!(
+            rank_one.allocate(&MeanVariance::target_volatility(1.0).allow_short()),
+            Err(CutupError::Unbounded)
+        );
+    }
+
+    #[test]
+    fn test_target_volatility_far_above_the_returns() {
+        let data = Returns::returns_matrix(factor_returns(4, 30, 17)).unwrap();
+        let mu = sample_mean(&data);
+        // Long-only, the limit doesn't bind, however large.
+        let top = data
+            .allocate(&MeanVariance::target_return(mu.max()))
+            .unwrap();
+        assert_weights_close(
+            &data
+                .allocate(&MeanVariance::target_volatility(f64::MAX))
+                .unwrap(),
+            &top,
+            1e-12,
+        );
+        // Long-short, the weights grow with it, and the volatility is still σ.
+        for sigma in [1e100, 1e150] {
+            let weights = data
+                .allocate(&MeanVariance::target_volatility(sigma).allow_short())
+                .unwrap();
+            let got = volatility(&data, &weights);
+            assert!((got - sigma).abs() <= 1e-9 * sigma, "{got} vs {sigma}");
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_helpers() {
+        // A floor of exactly 1, so a target exactly 1e-12 below it is the last one allowed.
+        let risk = Risk::new(&DMatrix::identity(2, 2)).unwrap();
+        let w = DVector::from_vec(vec![1.0, 0.0]);
+        let edge = 1.0 * (1.0 - 1e-12);
+        assert_eq!(volatility_floor(&risk, &w, edge), Ok(1.0));
+        assert!(matches!(
+            volatility_floor(&risk, &w, edge - 1e-16),
+            Err(CutupError::TargetVolatilityOutOfRange { .. })
+        ));
+
+        let bounds = qp::Bounds {
+            lower: DVector::from_vec(vec![0.1, 0.1, 0.1]),
+            upper: DVector::from_vec(vec![0.5, 0.5, 0.5]),
+        };
+        let w = DVector::from_vec(vec![0.1, 0.4, 0.5]);
+        assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
+
+        // at² + 2bt = gap: t = 7 for a = 1, b = −3, gap = 7. With b far larger than the rest,
+        // (root − b) / a would cancel to 0, but t is about gap / 2b.
+        assert_eq!(larger_root(1.0, -3.0, 7.0), 7.0);
+        assert_eq!(larger_root(1.0, 1.0, 3.0), 1.0);
+        let t = larger_root(1.0, 1e8, 1.0);
+        assert!((t - 5e-9).abs() <= 1e-12 * 5e-9, "{t}");
+    }
+
+    #[test]
+    fn test_target_volatility_scales_with_the_returns() {
+        let returns = factor_returns(5, 40, 13);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let floor = volatility(&data, &data.allocate(&MinVariance::default()).unwrap());
+        for exponent in [-500, 500] {
+            let scale = 2f64.powi(exponent);
+            let scaled = Returns::returns_matrix(&returns * scale).unwrap();
+            for method in [
+                MeanVariance::target_volatility(1.3 * floor),
+                MeanVariance::target_volatility(1.3 * floor).allow_short(),
+            ] {
+                let mut at_scale = method.clone();
+                at_scale.objective = Objective::TargetVolatility(1.3 * floor * scale);
+                assert_weights_close(
+                    &scaled.allocate(&at_scale).unwrap(),
+                    &data.allocate(&method).unwrap(),
+                    1e-12,
+                );
+            }
+        }
     }
 }

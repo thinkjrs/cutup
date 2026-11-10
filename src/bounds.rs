@@ -219,6 +219,11 @@ impl ReturnRange {
         }
     }
 
+    /// The highest expected return of any portfolio within the bounds.
+    pub(crate) fn highest(&self) -> f64 {
+        self.highest
+    }
+
     /// Returns `target` if some portfolio within the bounds reaches it: one within rounding
     /// of the lowest or highest is moved onto it.
     pub(crate) fn reachable(&self, target: f64) -> Result<f64, CutupError> {

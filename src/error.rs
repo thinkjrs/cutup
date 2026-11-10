@@ -208,6 +208,15 @@ pub enum CutupError {
         /// Column (asset) of the offending return.
         col: usize,
     },
+    /// The target volatility given to
+    /// [`MeanVariance::target_volatility`](crate::MeanVariance::target_volatility) is below the
+    /// minimum variance portfolio's, so no portfolio within the bounds is that safe.
+    TargetVolatilityOutOfRange {
+        /// The target volatility supplied.
+        target_volatility: f64,
+        /// The minimum variance portfolio's volatility, the lowest of any portfolio.
+        minimum: f64,
+    },
 }
 
 impl fmt::Display for CutupError {
@@ -253,6 +262,14 @@ impl fmt::Display for CutupError {
             CutupError::TotalLoss { row, col } => write!(
                 f,
                 "return at row {row}, column {col} is -100% or worse, so it has no log return"
+            ),
+            CutupError::TargetVolatilityOutOfRange {
+                target_volatility,
+                minimum,
+            } => write!(
+                f,
+                "target volatility {target_volatility} is below the minimum variance \
+                 portfolio's, {minimum}, so no portfolio reaches it"
             ),
             CutupError::InvalidConfig { field, value } => {
                 write!(f, "config value `{field}` is out of range: {value}")
@@ -441,6 +458,15 @@ mod tests {
         assert_eq!(
             CutupError::TotalLoss { row: 3, col: 1 }.to_string(),
             "return at row 3, column 1 is -100% or worse, so it has no log return"
+        );
+        assert_eq!(
+            CutupError::TargetVolatilityOutOfRange {
+                target_volatility: 0.01,
+                minimum: 0.02
+            }
+            .to_string(),
+            "target volatility 0.01 is below the minimum variance portfolio's, 0.02, so no \
+             portfolio reaches it"
         );
         assert_eq!(
             CutupError::InvalidAssetValue {
