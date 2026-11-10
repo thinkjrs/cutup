@@ -122,13 +122,7 @@ pub(crate) fn rebalance(
     let (n, labels) = (q.ncols(), data.labels());
     let checked = trading.check(labels)?;
     let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
-    let bounds = match bounds {
-        Some(bounds) => bounds.resolve(labels)?,
-        None => qp::Bounds {
-            lower: DVector::from_element(n, f64::NEG_INFINITY),
-            upper: DVector::from_element(n, f64::INFINITY),
-        },
-    };
+    let bounds = resolve_bounds(bounds, labels)?;
     let penalty = curvature * trading.penalty.unwrap_or(0.0);
     let q = q + DMatrix::identity(n, n) * penalty;
     let c = c + &current * penalty;
@@ -156,10 +150,7 @@ pub(crate) fn rebalance(
     };
     let weights = match trading.max_turnover {
         Some(cap) => {
-            let minimum = minimum_turnover(&current, &bounds);
-            if minimum > cap + 4.0 * n as f64 * f64::EPSILON {
-                return Err(CutupError::InfeasibleTurnover { minimum, cap });
-            }
+            check_cap(&current, &bounds, cap)?;
             qp::solve_turnover_capped(&q, &c, &e, &b, &bounds, (&kinks, cap), start)?
         }
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
@@ -207,10 +198,7 @@ pub(crate) fn rebalance_to_target(
             let start = qp::solve_kkt(&cov, &DVector::zeros(n), &e, &b)?
                 .ok_or(CutupError::DegenerateExpectedReturns)?
                 .0;
-            let bounds = qp::Bounds {
-                lower: DVector::from_element(n, f64::NEG_INFINITY),
-                upper: DVector::from_element(n, f64::INFINITY),
-            };
+            let bounds = unbounded(n);
             (
                 cov,
                 TargetProblem {
@@ -258,7 +246,8 @@ pub(crate) fn rebalance_to_target(
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with a net return
 /// `μᵀw − Σᵢ cᵢ|wᵢ − w₀ᵢ|` of at least `target`, within `bounds` or, without them, long-short,
-/// with the turnover capped at `cap`, `κ` and `c` being `trading`'s penalty and costs.
+/// with the turnover capped at `cap`, `κ` and `c` being `trading`'s penalty and costs. With
+/// every cost 0, it's [`rebalance_to_target`].
 ///
 /// The net return is concave, so this is convex. A multiplier `λ ≥ 0` on the target turns it
 /// into the kinked problem `½wᵀ(Σ + κI)w − (κw₀ + λμ)ᵀw + λΣᵢ cᵢ|wᵢ − w₀ᵢ|`, whose optimum's
@@ -268,6 +257,9 @@ pub(crate) fn rebalance_to_target(
 ///
 /// # Errors
 ///
+/// [`CutupError::Unbounded`], long-short, if `Σ + κI` is singular and some fully invested
+/// portfolio adds net return without adding variance: the least variance is then reached
+/// along a whole line of portfolios, and every `λ > 0` runs off along it.
 /// [`CutupError::TargetReturnOutOfRange`] if no portfolio within the bounds and the cap nets
 /// `target`, with `lowest` −∞, since every target up to `highest` is reachable, and
 /// [`CutupError::InfeasibleTurnover`] if no portfolio within the bounds is within the cap,
@@ -283,20 +275,15 @@ pub(crate) fn rebalance_to_net_target(
 ) -> Result<Weights, CutupError> {
     let (n, labels) = (mu.len(), data.labels());
     let checked = trading.check(labels)?;
+    // Costs of 0 charge nothing, so they change nothing: the target is the expected return,
+    // exactly, as without them.
+    if checked.costs.iter().all(|&cost| cost == 0.0) {
+        return rebalance_to_target(data, cov, mu, target, bounds, trading, cap);
+    }
     let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
     let costs = checked.costs;
-    let bounds = match bounds {
-        Some(bounds) => bounds.resolve(labels)?,
-        None => qp::Bounds {
-            lower: DVector::from_element(n, f64::NEG_INFINITY),
-            upper: DVector::from_element(n, f64::INFINITY),
-        },
-    };
-    let minimum = minimum_turnover(&current, &bounds);
-    if minimum > cap + 4.0 * n as f64 * f64::EPSILON {
-        return Err(CutupError::InfeasibleTurnover { minimum, cap });
-    }
-    let cap = cap.max(minimum);
+    let bounds = resolve_bounds(bounds, labels)?;
+    let cap = cap.max(check_cap(&current, &bounds, cap)?);
     let (highest, rounding) = highest_net_return(&current, (&mu, &costs), &bounds, cap)?;
     if target > highest + rounding {
         return Err(CutupError::TargetReturnOutOfRange {
@@ -465,6 +452,35 @@ impl Trades {
     }
 }
 
+/// `bounds` resolved for the assets `labels` or, without them, none: long-short.
+fn resolve_bounds(
+    bounds: Option<&WeightBounds>,
+    labels: &[String],
+) -> Result<qp::Bounds, CutupError> {
+    match bounds {
+        Some(bounds) => bounds.resolve(labels),
+        None => Ok(unbounded(labels.len())),
+    }
+}
+
+/// No bounds on `n` weights.
+fn unbounded(n: usize) -> qp::Bounds {
+    qp::Bounds {
+        lower: DVector::from_element(n, f64::NEG_INFINITY),
+        upper: DVector::from_element(n, f64::INFINITY),
+    }
+}
+
+/// The least turnover from `current` into `bounds`, or [`CutupError::InfeasibleTurnover`] if
+/// it's above `cap` by more than summing it rounds by.
+fn check_cap(current: &DVector<f64>, bounds: &qp::Bounds, cap: f64) -> Result<f64, CutupError> {
+    let minimum = minimum_turnover(current, bounds);
+    if minimum > cap + 4.0 * current.len() as f64 * f64::EPSILON {
+        return Err(CutupError::InfeasibleTurnover { minimum, cap });
+    }
+    Ok(minimum)
+}
+
 /// The least turnover from `current` to a portfolio summing to 1 within `bounds`: move each
 /// weight into its bounds, then make up what that left over or short of 1 on assets with room.
 /// Every unit of that last step is turned over once, wherever it goes.
@@ -624,6 +640,12 @@ mod tests {
         };
         assert_eq!((target_return, lowest), (0.0018, f64::NEG_INFINITY));
         assert!((highest - 0.00176).abs() < 1e-15, "{highest}");
+        // Costs of 0 change nothing: the target is exact, as without them, even below the
+        // least variance portfolio's return, where a floor wouldn't bind.
+        let free = MeanVariance::target_return(0.0007).current_weights(current);
+        let zero = free.clone().transaction_costs(0.0).allocate(&allocator);
+        assert_eq!(zero, free.turnover_penalty(0.0).allocate(&allocator));
+        assert!((net_return(&zero.unwrap(), current, 0.0) - 0.0007).abs() < 1e-15);
         // Below the least variance portfolio's net return, the target doesn't bind.
         assert_eq!(
             method(-1.0).allocate(&allocator),
