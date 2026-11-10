@@ -51,10 +51,15 @@ enum Status {
 /// `x` doesn't accumulate.
 ///
 /// The entering variable is the one whose reduced cost improves the objective fastest
-/// (Dantzig's rule). On a degenerate vertex that rule can cycle, so after a few pivots in a
-/// row that don't move `x`, the lowest-indexed improving variable enters instead, with ties
-/// in the ratio test going to the lowest index: Bland's rule, which can't cycle. It holds
-/// until `x` moves again.
+/// (Dantzig's rule). On a degenerate vertex, where basic variables sit at their bounds, pivots
+/// can leave `x` where it was, and that rule can cycle. So after a few such pivots in a row,
+/// the bounds of the basic variables are widened, each by a tiny amount of its own, so they no
+/// longer sit at them, and the solve carries on within the widened bounds. At the optimum
+/// they're restored. That moves the basic variables, and any
+/// left beyond a bound are brought back by dual simplex pivots, which keep the basis optimal.
+/// If pivots still stall once every basic variable's bounds are widened, or after they're
+/// restored, the lowest-indexed improving variable enters instead, with ties in the ratio test
+/// going to the lowest index: Bland's rule, which can't cycle. It holds until `x` moves again.
 ///
 /// Nonbasic variables start at their lower bound if it's finite, or else their upper bound,
 /// or zero. [`solve_from`] can start some at their upper bound instead.
@@ -62,8 +67,8 @@ enum Status {
 /// # Errors
 ///
 /// [`CutupError::NotConverged`] if a basis can't be factored or the iteration cap is reached,
-/// which only rounding trouble or a degenerate start, as [`solve_from`] describes, should
-/// cause.
+/// or if restoring the bounds leaves a basic variable beyond one that no pivot can bring back.
+/// Only rounding trouble should cause either.
 pub(crate) fn solve(
     c: &DVector<f64>,
     a: &DMatrix<f64>,
@@ -78,9 +83,9 @@ pub(crate) fn solve(
 /// finite.
 ///
 /// The start matters on rows where `b` is zero. If it leaves such rows with no residual,
-/// their artificial variables start in the basis at zero, a degenerate vertex. Every pivot
-/// there can leave `x` where it was, so Bland's rule takes over, and it may not leave that
-/// vertex before the iteration cap. A start that leaves every row a residual avoids that.
+/// their artificial variables start in the basis at zero, a degenerate vertex. Widening the
+/// bounds gets the solve off it, but a start that leaves every row a residual avoids it, and
+/// can be faster.
 ///
 /// # Errors
 ///
@@ -92,6 +97,20 @@ pub(crate) fn solve_from(
     lower: &DVector<f64>,
     upper: &DVector<f64>,
     at_upper: &[usize],
+) -> Result<Outcome, CutupError> {
+    solve_perturbing(c, a, b, lower, upper, at_upper, PERTURBATION)
+}
+
+/// [`solve_from`], widening bounds on a degenerate vertex by `perturbation` rather than
+/// [`PERTURBATION`], so that a test can widen them enough that restoring them breaks some.
+fn solve_perturbing(
+    c: &DVector<f64>,
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    lower: &DVector<f64>,
+    upper: &DVector<f64>,
+    at_upper: &[usize],
+    perturbation: f64,
 ) -> Result<Outcome, CutupError> {
     let (m, n) = a.shape();
     if m == 0 {
@@ -139,6 +158,7 @@ pub(crate) fn solve_from(
             .into_iter()
             .chain(std::iter::repeat_n(Status::Basic, m))
             .collect(),
+        perturbation,
     };
     for i in 0..m {
         problem.x[n + i] = residual[i].abs();
@@ -196,8 +216,30 @@ fn unconstrained(c: &DVector<f64>, lower: &DVector<f64>, upper: &DVector<f64>) -
     })
 }
 
-/// How many pivots in a row may leave `x` where it was before Bland's rule takes over.
+/// How many pivots in a row may leave `x` where it was before the bounds are perturbed, or,
+/// once they can't be, Bland's rule takes over.
 const STALL: usize = 10;
+
+/// How far [`Problem::perturb`] widens a bound `l`, relative to `max(1, |l|)`: between this and
+/// twice it, different for each bound. Far above rounding, so that the steps it allows count
+/// as moving `x`, and small enough that restoring the bounds seldom leaves a basic variable
+/// beyond one.
+const PERTURBATION: f64 = 1e-7;
+
+/// Where [`Problem::minimize`] is with perturbing the bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Perturbation {
+    /// The bounds are the problem's own.
+    Off,
+    /// Some bounds are widened.
+    On,
+    /// The bounds were widened and are restored, and dual pivots repair any basic variable
+    /// left beyond its own.
+    Repairing,
+    /// The bounds are restored, every basic variable is within them or within rounding of
+    /// them, and they stay as they are.
+    Done,
+}
 
 /// How many pivots [`Problem::minimize`] takes at most, for `m` rows and `total` variables.
 fn iteration_cap(m: usize, total: usize) -> usize {
@@ -290,6 +332,8 @@ struct Problem {
     /// The basic variable of each row.
     basis: Vec<usize>,
     status: Vec<Status>,
+    /// How far [`Problem::perturb`] widens a bound, as [`PERTURBATION`] describes.
+    perturbation: f64,
 }
 
 impl Problem {
@@ -297,10 +341,16 @@ impl Problem {
     /// optimum, or `None` if the objective decreases without limit.
     fn minimize(&mut self, cost: &DVector<f64>) -> Result<Option<DVector<f64>>, CutupError> {
         let (m, total) = self.a.shape();
-        // Pivots in a row that didn't move x. Past a few, Bland's rule takes over until one
-        // does: only a run of such pivots can cycle, and Bland's can't.
+        // Pivots in a row that didn't move x. Past a few, the bounds are widened, or if they
+        // can't be, Bland's rule takes over until one does: only a run of such pivots can
+        // cycle, and Bland's can't.
         let mut stalled = 0;
         let mut factors = Factors::new(&self.a, &self.basis);
+        // The problem's own bounds, to restore after perturbing them, and which variables'
+        // bounds are widened.
+        let (lower, upper) = (self.lower.clone(), self.upper.clone());
+        let mut perturbed = vec![false; total];
+        let mut perturbation = Perturbation::Off;
         for _ in 0..iteration_cap(m, total) {
             // The basic variables from the nonbasic ones, which sit exactly at their bounds.
             let nonbasic = DVector::from_fn(total, |j, _| {
@@ -318,6 +368,28 @@ impl Problem {
             let cost_basis = DVector::from_fn(m, |i, _| cost[self.basis[i]]);
             let y = factors.solve_transpose(cost_basis)?;
             let reduced = cost - self.a.tr_mul(&y);
+
+            // Restoring the bounds moves the basic variables, and can leave some beyond theirs.
+            // The basis is still optimal for the costs, which haven't changed, so dual simplex
+            // pivots repair it, each keeping it optimal. One beyond its bound only by rounding
+            // may have no variable to enter, and is left there.
+            if perturbation == Perturbation::Repairing {
+                if self.repair(&reduced, &mut factors)? {
+                    stalled = 0;
+                    continue;
+                }
+                perturbation = Perturbation::Done;
+            }
+            // A run of pivots that don't move x is on a degenerate vertex, where basic variables
+            // sit at their bounds. Widening those bounds, each by a different amount, moves the
+            // vertex apart, so later steps move x.
+            if stalled >= STALL
+                && matches!(perturbation, Perturbation::Off | Perturbation::On)
+                && self.perturb(&mut perturbed)
+            {
+                perturbation = Perturbation::On;
+                stalled = 0;
+            }
 
             // The variable that improves the objective fastest, and the direction it moves in
             // (Dantzig's rule), or while stalled the lowest-indexed one (Bland's). Each reduced
@@ -347,6 +419,11 @@ impl Problem {
             // The optimum is confirmed, and `x` and `y` returned, only from fresh factors, so
             // the eta matrices' rounding never reaches the solution.
             let Some((j, sign)) = entering else {
+                if perturbation == Perturbation::On {
+                    self.restore(&lower, &upper);
+                    perturbation = Perturbation::Repairing;
+                    continue;
+                }
                 if factors.etas.is_empty() {
                     return Ok(Some(y));
                 }
@@ -459,6 +536,148 @@ impl Problem {
             }
         }
         Err(CutupError::NotConverged)
+    }
+
+    /// Widens the finite bounds of each basic variable not yet perturbed, returning whether
+    /// there were any. Each bound `l` moves out by `self.perturbation` times `max(1, |l|)` times a
+    /// factor from 1 to 2 that differs from bound to bound, so that no two variables reach
+    /// their bounds on the same step. Widening keeps `x` within them.
+    fn perturb(&mut self, perturbed: &mut [bool]) -> bool {
+        // The fractional parts of the multiples of an irrational number spread evenly over
+        // [0, 1).
+        let spread = |k: usize| 1.0 + (k as f64 * std::f64::consts::SQRT_2).fract();
+        let mut any = false;
+        for &j in &self.basis {
+            if perturbed[j] {
+                continue;
+            }
+            perturbed[j] = true;
+            any = true;
+            if self.lower[j].is_finite() {
+                self.lower[j] -= self.perturbation * spread(2 * j) * self.lower[j].abs().max(1.0);
+            }
+            if self.upper[j].is_finite() {
+                self.upper[j] +=
+                    self.perturbation * spread(2 * j + 1) * self.upper[j].abs().max(1.0);
+            }
+        }
+        any
+    }
+
+    /// Restores the problem's own bounds, moving each nonbasic variable back onto its bound.
+    fn restore(&mut self, lower: &DVector<f64>, upper: &DVector<f64>) {
+        self.lower.copy_from(lower);
+        self.upper.copy_from(upper);
+        for j in 0..self.x.len() {
+            match self.status[j] {
+                Status::Lower => self.x[j] = lower[j],
+                Status::Upper => self.x[j] = upper[j],
+                Status::Basic | Status::Free => {}
+            }
+        }
+    }
+
+    /// The row of the basic variable furthest beyond one of its bounds, relative to
+    /// `max(1, |x|)`, and how far, if any is beyond it by more than `1e-12` of that.
+    fn most_infeasible(&self) -> Option<(usize, f64)> {
+        let beyond = |i: usize| {
+            let k = self.basis[i];
+            (self.lower[k] - self.x[k]).max(self.x[k] - self.upper[k]) / self.x[k].abs().max(1.0)
+        };
+        (0..self.basis.len())
+            .map(|i| (i, beyond(i)))
+            .filter(|&(_, excess)| excess > 1e-12)
+            .max_by(|p, q| p.1.total_cmp(&q.1))
+    }
+
+    /// After the bounds are restored, a dual pivot on the basic variable furthest beyond its
+    /// bounds, if any is beyond rounding of them, returning whether it took one. If none can
+    /// enter, one within `1e-9` of `max(1, |x|)` is left there.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::NotConverged`] if a basis can't be factored, or if nothing can bring back
+    /// a basic variable further beyond its bound than that.
+    fn repair(
+        &mut self,
+        reduced: &DVector<f64>,
+        factors: &mut Factors,
+    ) -> Result<bool, CutupError> {
+        let Some((row, excess)) = self.most_infeasible() else {
+            return Ok(false);
+        };
+        if self.dual_pivot(row, reduced, factors)? {
+            return Ok(true);
+        }
+        if excess > 1e-9 {
+            return Err(CutupError::NotConverged);
+        }
+        Ok(false)
+    }
+
+    /// One pivot of the dual simplex method: the basic variable at `row`, beyond a bound, leaves
+    /// the basis at that bound, and the nonbasic variable that enters is the one that keeps
+    /// every reduced cost's sign, so the basis stays optimal for the costs.
+    ///
+    /// Row `row` of `B⁻¹A` is `α = Aᵀρ`, with `ρ = B⁻ᵀeᵣ`. Moving a nonbasic `xⱼ` by `t` moves
+    /// the leaving variable by `−αⱼt`, so `xⱼ` can bring it back only if it's free to move the
+    /// way that takes. The reduced costs then change by `−(dⱼ/αⱼ)α`, so the one with the
+    /// smallest `|dⱼ/αⱼ|` enters: any other would push it past zero.
+    ///
+    /// Returns whether it pivoted. No variable can bring the leaving one back only if the
+    /// problem is infeasible, which after phase 1 only rounding can make it.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::NotConverged`] if a basis can't be factored.
+    fn dual_pivot(
+        &mut self,
+        row: usize,
+        reduced: &DVector<f64>,
+        factors: &mut Factors,
+    ) -> Result<bool, CutupError> {
+        let k = self.basis[row];
+        // The bound the leaving variable is brought back to, and whether that's up.
+        let bound = self.x[k].max(self.lower[k]).min(self.upper[k]);
+        let rises = (bound - self.x[k]).is_sign_positive();
+        let alpha = self.a.tr_mul(&factors.solve_transpose(DVector::from_fn(
+            self.basis.len(),
+            |i, _| {
+                if i == row { 1.0 } else { 0.0 }
+            },
+        ))?);
+        let pivot = 1e-9 * alpha.amax();
+        let Some(entering) = (0..self.x.len())
+            .filter(|&j| alpha[j].abs() > pivot)
+            .filter(|&j| {
+                // The direction xⱼ must move in: against αⱼ to raise the leaving variable.
+                let up = alpha[j].is_sign_negative() == rises;
+                let movable = self.upper[j] > self.lower[j];
+                match self.status[j] {
+                    Status::Lower => movable && up,
+                    Status::Upper => movable && !up,
+                    Status::Free => true,
+                    Status::Basic => false,
+                }
+            })
+            .min_by(|&p, &q| {
+                (reduced[p] / alpha[p])
+                    .abs()
+                    .total_cmp(&(reduced[q] / alpha[q]).abs())
+                    .then(alpha[q].abs().total_cmp(&alpha[p].abs()))
+                    .then(p.cmp(&q))
+            })
+        else {
+            return Ok(false);
+        };
+
+        let d = factors.solve(&self.a.column(entering).into_owned())?;
+        self.status[k] = if rises { Status::Lower } else { Status::Upper };
+        self.x[k] = bound;
+        self.status[entering] = Status::Basic;
+        self.basis[row] = entering;
+        factors.update(&self.a, &self.basis, row, d);
+        Ok(true)
     }
 }
 
@@ -684,23 +903,332 @@ mod tests {
 
     #[test]
     fn beales_cycling_example_terminates() {
-        // Beale (1955): the textbook rule cycles on this degenerate vertex; Bland's can't.
+        // Beale (1955): the textbook rule cycles on this degenerate vertex. Widening the bounds
+        // gets the solve off it.
         let a = dmatrix![
             0.25, -60.0, -0.04, 9.0, 1.0, 0.0, 0.0;
             0.5, -90.0, -0.02, 3.0, 0.0, 1.0, 0.0;
             0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0
         ];
-        let solution = optimal(
-            solve(
-                &dvector![-0.75, 150.0, -0.02, 6.0, 0.0, 0.0, 0.0],
-                &a,
-                &dvector![0.0, 0.0, 1.0],
-                &DVector::zeros(7),
-                &DVector::from_element(7, INF),
-            )
-            .unwrap(),
+        let (c, b) = (
+            dvector![-0.75, 150.0, -0.02, 6.0, 0.0, 0.0, 0.0],
+            dvector![0.0, 0.0, 1.0],
         );
+        let (lower, upper) = (DVector::zeros(7), DVector::from_element(7, INF));
+        let solution = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
         assert!((solution.objective + 0.05).abs() < 1e-14);
+        // So does Bland's rule, which takes over when widening the bounds by nothing doesn't.
+        let solution = optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0).unwrap());
+        assert!((solution.objective + 0.05).abs() < 1e-14);
+    }
+
+    /// A problem with one row per basic variable, at `x` with the given bounds and statuses,
+    /// for testing the steps of [`Problem::minimize`] on their own.
+    fn problem(
+        (lower, upper): (DVector<f64>, DVector<f64>),
+        x: DVector<f64>,
+        basis: Vec<usize>,
+        status: Vec<Status>,
+        perturbation: f64,
+    ) -> Problem {
+        let a = DMatrix::zeros(basis.len(), x.len());
+        Problem {
+            a_abs: a.clone(),
+            a,
+            b: DVector::zeros(basis.len()),
+            lower,
+            upper,
+            x,
+            basis,
+            status,
+            perturbation,
+        }
+    }
+
+    #[test]
+    fn perturbing_widens_each_basic_variables_bounds_once() {
+        use Status::{Basic, Lower, Upper};
+        let mut problem = problem(
+            (dvector![0.0, -3.0, 0.0, -INF], dvector![2.0, INF, 1.0, INF]),
+            dvector![0.5, 2.0, 1.0, 0.0],
+            vec![0, 1],
+            vec![Basic, Basic, Upper, Lower],
+            0.1,
+        );
+        let mut perturbed = vec![false; 4];
+        assert!(problem.perturb(&mut perturbed));
+        // Each bound moves out by 0.1 times max(1, |bound|) times 1 plus the fractional part of
+        // a multiple of √2: the 0th for x₀'s floor, the 1st for its cap, the 2nd for x₁'s
+        // floor. Infinite bounds stay infinite, and nonbasic variables keep theirs.
+        let spread = |k: f64| 1.0 + (k * std::f64::consts::SQRT_2).fract();
+        assert_eq!(problem.lower[0], -0.1);
+        assert!((problem.upper[0] - (2.0 + 0.1 * spread(1.0) * 2.0)).abs() < 1e-15);
+        assert!((problem.lower[1] - (-3.0 - 0.1 * spread(2.0) * 3.0)).abs() < 1e-15);
+        assert_eq!(problem.upper[1], INF);
+        assert_eq!(problem.lower.rows(2, 2), dvector![0.0, -INF]);
+        assert_eq!(problem.upper.rows(2, 2), dvector![1.0, INF]);
+        assert_eq!(perturbed, [true, true, false, false]);
+        // x stays where it was, now strictly within the bounds.
+        assert_eq!(problem.x, dvector![0.5, 2.0, 1.0, 0.0]);
+
+        // Variables already perturbed aren't again, so with nothing new in the basis there's
+        // nothing to do.
+        let (lower, upper) = (problem.lower.clone(), problem.upper.clone());
+        assert!(!problem.perturb(&mut perturbed));
+        assert_eq!((&problem.lower, &problem.upper), (&lower, &upper));
+        // A variable that has entered the basis since is.
+        problem.basis[1] = 2;
+        problem.status[2] = Basic;
+        assert!(problem.perturb(&mut perturbed));
+        assert!(problem.lower[2] < 0.0 && problem.upper[2] > 1.0);
+        assert_eq!(problem.lower[1], lower[1]);
+    }
+
+    #[test]
+    fn restoring_puts_nonbasic_variables_back_on_their_bounds() {
+        use Status::{Basic, Free, Lower, Upper};
+        let mut problem = problem(
+            (
+                dvector![-0.1, -0.2, -0.3, -INF],
+                dvector![1.1, 1.2, 1.3, INF],
+            ),
+            dvector![0.5, -0.2, 1.3, 7.0],
+            vec![0],
+            vec![Basic, Lower, Upper, Free],
+            0.1,
+        );
+        let (lower, upper) = (DVector::zeros(4), dvector![1.0, 1.0, 1.0, INF]);
+        problem.restore(&lower, &upper);
+        assert_eq!((&problem.lower, &problem.upper), (&lower, &upper));
+        // The basic variable is left for the next pivot to recompute, and the free one where
+        // it was.
+        assert_eq!(problem.x, dvector![0.5, 0.0, 1.0, 7.0]);
+    }
+
+    #[test]
+    fn the_most_infeasible_basic_variable_is_found_beyond_rounding() {
+        use Status::Basic;
+        let mut problem = problem(
+            (DVector::zeros(3), DVector::from_element(3, 1.0)),
+            dvector![-2e-12, 1.0 + 5e-12, 0.5],
+            vec![0, 1, 2],
+            vec![Basic; 3],
+            0.1,
+        );
+        let (row, excess) = problem.most_infeasible().unwrap();
+        assert_eq!(row, 1);
+        assert!((excess - 5e-12).abs() < 1e-16, "{excess}");
+        // Relative to max(1, |x|): 5e-10 beyond a cap of 1000 is within rounding of it, and so
+        // is 1e-12 beyond a floor of 0.
+        problem.upper[1] = 1000.0;
+        problem.x[1] = 1000.0 + 5e-10;
+        problem.x[0] = -1e-12;
+        assert_eq!(problem.most_infeasible(), None);
+    }
+
+    /// One row, `x₀ + Σαⱼxⱼ = 0`, with `x₀` basic and beyond its bounds of `[0, 1]` at `x0`,
+    /// so `B = [1]` and row 0 of `B⁻¹A` is the row itself. Its reduced costs are optimal for
+    /// each variable's status.
+    fn one_row(x0: f64) -> (Problem, DVector<f64>) {
+        use Status::{Basic, Free, Lower, Upper};
+        // x₄ is fixed, and α₇ is exactly 1e-9 of the largest |α|, at the pivot tolerance.
+        let alpha = [1.0, -0.5, 1.0, 1.0, -4.0, -0.2, -1.0, -1e-9 * 4.0];
+        let mut problem = problem(
+            (
+                dvector![0.0, 0.0, 0.0, 0.0, 0.5, -INF, 0.0, 0.0],
+                dvector![1.0, 1.0, 1.0, 1.0, 0.5, INF, 1.0, 1.0],
+            ),
+            dvector![x0, 0.0, 1.0, 0.0, 0.5, 0.0, 1.0, 0.0],
+            vec![0],
+            vec![Basic, Lower, Upper, Lower, Lower, Free, Upper, Lower],
+            0.1,
+        );
+        problem.a = DMatrix::from_row_slice(1, 8, &alpha);
+        let reduced = dvector![0.0, 1.0, -1.0, 0.1, 0.2, 0.3, -0.05, 1e-12];
+        (problem, reduced)
+    }
+
+    #[test]
+    fn a_dual_pivot_keeps_every_reduced_cost_on_its_side() {
+        // x₀ = −1 must rise. x₀ moves by −αⱼ per unit of xⱼ, so x₁ (α = −0.5) can raise it from
+        // its floor and x₂ (α = 1) from its cap, at |dⱼ/αⱼ| of 2 and 1, and the free x₅ at
+        // 1.5. x₃ and x₆ would move x₀ the wrong way, x₄ is fixed, and α₇ is within rounding,
+        // so none of them can enter however small their ratio. x₂ enters, and x₀ leaves at
+        // its floor.
+        let (mut problem, reduced) = one_row(-1.0);
+        let mut factors = Factors::new(&problem.a, &problem.basis);
+        assert!(problem.dual_pivot(0, &reduced, &mut factors).unwrap());
+        assert_eq!(problem.basis, [2]);
+        assert_eq!((problem.status[0], problem.x[0]), (Status::Lower, 0.0));
+        assert_eq!(problem.status[2], Status::Basic);
+        assert_eq!(factors.etas.len(), 1);
+
+        // x₀ = 2 must fall: now x₃ from its floor and x₆ from its cap can lower it, at 0.1 and
+        // 0.05, and x₆ enters.
+        let (mut problem, reduced) = one_row(2.0);
+        let mut factors = Factors::new(&problem.a, &problem.basis);
+        assert!(problem.dual_pivot(0, &reduced, &mut factors).unwrap());
+        assert_eq!(problem.basis, [6]);
+        assert_eq!((problem.status[0], problem.x[0]), (Status::Upper, 1.0));
+    }
+
+    #[test]
+    fn a_basic_variable_nothing_can_bring_back_is_left_only_within_rounding() {
+        use Status::{Basic, Lower};
+        // x₀ + x₁ = 0 with x₁ at its floor: raising x₁ only lowers x₀, so nothing can bring
+        // x₀ back up to 0.
+        let at = |x0: f64| {
+            let mut problem = problem(
+                (DVector::zeros(2), DVector::from_element(2, 1.0)),
+                dvector![x0, 0.0],
+                vec![0],
+                vec![Basic, Lower],
+                0.1,
+            );
+            problem.a = dmatrix![1.0, 1.0];
+            let mut factors = Factors::new(&problem.a, &problem.basis);
+            problem.repair(&dvector![0.0, 1.0], &mut factors)
+        };
+        // 1e-9 below is within rounding, so the repair is done; just beyond that, it fails. At
+        // 0 there's nothing to repair.
+        assert_eq!(at(-1e-9), Ok(false));
+        assert_eq!(at(-1.1e-9), Err(CutupError::NotConverged));
+        assert_eq!(at(0.0), Ok(false));
+    }
+
+    #[test]
+    fn restoring_wide_bounds_is_repaired_by_dual_pivots() {
+        // A degenerate problem whose optimum is x₀, mostly at its bounds. Widened by 1e-2, the
+        // solve ends with a basic variable beyond its restored bound, which a dual pivot
+        // brings back. Widened by the usual 1e-7, it doesn't.
+        let third = 1.0 / 3.0;
+        let a = DMatrix::from_column_slice(
+            6,
+            10,
+            &[
+                -3.0,
+                -1.0,
+                0.0,
+                0.0,
+                3.0,
+                -1.0, //
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                4.0,
+                0.5, //
+                0.0,
+                -4.0,
+                -4.0,
+                -1.0,
+                -third,
+                0.0, //
+                -2.0 * third,
+                0.0,
+                0.0,
+                -third,
+                0.0,
+                -2.0, //
+                third,
+                2.0,
+                2.0 * third,
+                0.5,
+                1.0,
+                -3.0, //
+                0.0,
+                0.0,
+                0.0,
+                2.0,
+                -3.0,
+                0.0, //
+                -0.5,
+                -third,
+                0.0,
+                -1.5,
+                0.0,
+                1.0, //
+                -1.0,
+                0.0,
+                3.0,
+                0.0,
+                0.0,
+                0.0, //
+                third,
+                0.0,
+                0.0,
+                2.0 * third,
+                0.0,
+                0.0, //
+                3.0,
+                third,
+                0.0,
+                -4.0,
+                -4.0,
+                0.0,
+            ],
+        );
+        let x0 = dvector![-0.25, 2.5, -0.25, -0.5, 0.5, -0.5, 0.25, -0.25, 0.0, 0.5];
+        let b = &a * &x0;
+        let c = dvector![0.0, -1.0, 1.0, 2.0, 1.0, -1.0, 1.0, 2.0, 0.0, -3.0];
+        let lower = dvector![-0.25, 0.5, -0.25, -0.5, 0.5, -0.5, 0.25, -0.25, 0.0, 0.5];
+        let upper = dvector![1.75, 2.5, 2.75, 2.5, 1.5, 0.5, 1.25, INF, INF, 2.5];
+        for perturbation in [PERTURBATION, 1e-2] {
+            let solution =
+                optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], perturbation).unwrap());
+            assert_optimal(&solution, (&c, &a, &b), (&lower, &upper));
+            assert!((solution.objective - c.dot(&x0)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_degenerate_start_reaches_the_same_optimum_as_a_better_one() {
+        // Min CVaR's dual (see `MinCvar`), long-only, for 30 assets over 60 scenarios: a row
+        // −Rᵀz − ν − λ⁺ᵢ + λ⁻ᵢ = 0 per asset, and Σz = 1, maximizing ν − Σλ⁻. With every zₜ at
+        // 0, the asset rows start without a residual, a degenerate vertex. Starting the worst
+        // three scenarios at their cap of 1/3, as `MinCvar` does, avoids it.
+        let (n, t) = (30, 60);
+        let mut state = 7u64;
+        let mut draw = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let returns = DMatrix::from_fn(t, n, |_, _| 0.04 * draw());
+        let columns = t + 1 + 2 * n;
+        let mut a = DMatrix::zeros(n + 1, columns);
+        for i in 0..n {
+            for s in 0..t {
+                a[(i, s)] = -returns[(s, i)];
+            }
+            a[(i, t)] = -1.0;
+            a[(i, t + 1 + i)] = -1.0;
+            a[(i, t + 1 + n + i)] = 1.0;
+        }
+        a.row_mut(n).columns_mut(0, t).fill(1.0);
+        let mut b = DVector::zeros(n + 1);
+        b[n] = 1.0;
+        let c = DVector::from_fn(columns, |j, _| match j {
+            _ if j == t => -1.0,
+            _ if j > t + n => 1.0,
+            _ => 0.0,
+        });
+        let lower = DVector::from_fn(columns, |j, _| if j == t { -INF } else { 0.0 });
+        let upper = DVector::from_fn(columns, |j, _| if j < t { 1.0 / 3.0 } else { INF });
+        let mut losses: Vec<usize> = (0..t).collect();
+        losses.sort_by(|&p, &q| returns.row(p).sum().total_cmp(&returns.row(q).sum()));
+
+        let plain = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
+        let tail = optimal(solve_from(&c, &a, &b, &lower, &upper, &losses[..3]).unwrap());
+        assert_optimal(&plain, (&c, &a, &b), (&lower, &upper));
+        assert_optimal(&tail, (&c, &a, &b), (&lower, &upper));
+        assert!(
+            (plain.objective - tail.objective).abs() < 1e-14,
+            "{} vs {}",
+            plain.objective,
+            tail.objective
+        );
     }
 
     #[test]
