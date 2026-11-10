@@ -964,7 +964,9 @@ proptest! {
         prop_assert_eq!(frontier[0].weights(), &minimum);
         let lowest = earned(&minimum);
         let highest = mu.max().max(lowest);
-        let scale = mu.amax();
+        // As `frontier` measures the range: long-short, the minimum variance portfolio's
+        // return can be larger in magnitude than any asset's.
+        let scale = mu.amax().max(lowest.abs());
         // One point only when there's no range of returns to cover.
         if frontier.len() == 1 {
             prop_assert!(highest - lowest <= 1e-12 * scale, "{lowest} to {highest}");
