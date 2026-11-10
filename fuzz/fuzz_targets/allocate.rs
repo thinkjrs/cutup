@@ -478,7 +478,8 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             }
             let m = covariance!(trading!(m, trading), covariance);
             if let Some(points) = frontier {
-                check_frontier(data, &m, points.into());
+                // Up to 15 points: each is a solve, and more only repeat the same work.
+                check_frontier(data, &m, usize::from(points % 16));
             }
             Box::new(m)
         }
