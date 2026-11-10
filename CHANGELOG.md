@@ -17,6 +17,16 @@ All notable changes to this project are documented here. The format follows
   below the minimum variance portfolio's volatility is the new
   `CutupError::TargetVolatilityOutOfRange`, with that minimum. Rebalancing settings return
   `NotSupported` with it for now.
+- `Returns::frontier(&method, n)`, the efficient frontier: `n` portfolios with the least
+  variance at expected returns evenly spaced from the minimum variance portfolio's to the
+  highest reachable, as PyPortfolioOpt's `efficient_return` at each. It takes any
+  `MeanVariance` and uses its expected returns, covariance settings and bounds, ignoring its
+  objective. Each `FrontierPoint` has its `expected_return()`, `volatility()` and `weights()`,
+  under the method's expected returns and adjusted covariance. Long-only it ends at the
+  highest-return portfolio within the bounds, and long-short at the highest expected return
+  of any one asset. With no range of returns to cover, it's the minimum variance portfolio
+  alone. Fewer than 2 points is `InvalidConfig`, and rebalancing settings return
+  `NotSupported`.
 
 ## [0.3.5] - 2026-11-09
 

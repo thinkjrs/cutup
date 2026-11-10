@@ -32,7 +32,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
 - **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
-- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion, target return or target volatility, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
+- **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion, target return or target volatility, and the efficient frontier, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
 - **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
@@ -230,6 +230,37 @@ fn main() -> Result<(), CutupError> {
     let weights = data.allocate(&method)?;
     let stats = data.stats(&weights)?;
     println!("{:.4} at a volatility of {:.4}", stats.expected_return(), stats.volatility());
+    Ok(())
+}
+```
+
+### Efficient frontier
+
+`data.frontier(&method, n)` traces the efficient frontier: `n` portfolios with the least variance for their expected return, at returns evenly spaced from the minimum variance portfolio's to the highest reachable, each with its expected return, volatility and weights. It uses the method's expected returns, covariance settings and bounds, and ignores its objective. Long-only, it ends at the highest-return portfolio within the bounds; long-short, where the return has no limit, at the highest expected return of any one asset. When there's no range of returns to cover, as when every expected return is the same, it's the minimum variance portfolio alone.
+
+```rust
+use cutup::{CutupError, MeanVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+    let method = MeanVariance::risk_aversion(1.0)
+        .expected_returns([0.004, 0.006, 0.002])
+        .bounds(WeightBounds::uniform(0.0, 0.6));
+    for point in data.frontier(&method, 5)? {
+        println!(
+            "{:.4} at a volatility of {:.4}: {:?}",
+            point.expected_return(),
+            point.volatility(),
+            point.weights().as_slice()
+        );
+    }
     Ok(())
 }
 ```

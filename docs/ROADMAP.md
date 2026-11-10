@@ -428,9 +428,11 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 
 ## 0.3.6: efficient frontier and target volatility
 
-- **`MeanVariance::frontier(n)`:** `n` portfolios along the efficient
-  frontier, from the minimum variance portfolio to the highest reachable
-  return, within the bounds.
+- **`data.frontier(&method, n)`:** `n` portfolios along the efficient
+  frontier of any `MeanVariance`'s expected returns, covariance and bounds, at
+  returns evenly spaced from the minimum variance portfolio's to the highest
+  reachable: within the bounds long-only, the highest asset mean long-short.
+  Each `FrontierPoint` carries its expected return, volatility and weights.
 - **`MeanVariance::target_volatility(σ)`:** the highest expected return at a
   volatility of at most `σ`, PyPortfolioOpt's `efficient_risk`. Long-short in
   closed form; long-only by searching over the target return, whose range is
