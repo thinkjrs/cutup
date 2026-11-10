@@ -2069,7 +2069,7 @@ proptest! {
         }
         // A lower target never has more variance, and one the least variance portfolio
         // already nets gives that portfolio.
-        let lower = allocator.allocate(&method(target - lower * (target - mu.min()) - 1.0)).unwrap();
+        let lower = allocator.allocate(&method(target - lower * (target - mu.min()))).unwrap();
         let v = |w: &Weights| variance(&cov, w);
         prop_assert!(v(&lower) <= v(&weights) * (1.0 + 1e-9) + 1e-18, "{} > {}", v(&lower), v(&weights));
         if net(&weights) > target + 1e-9 * (mu.amax() + cost) {
