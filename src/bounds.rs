@@ -182,6 +182,8 @@ pub(crate) struct ReturnRange {
     /// The expected return of the last asset raised above its lower bound, for the lowest
     /// and the highest, or `None` if the lower bounds already sum to 1.
     margins: (Option<f64>, Option<f64>),
+    /// How far from the lowest and the highest a target is within rounding of them.
+    tolerances: (f64, f64),
 }
 
 impl ReturnRange {
@@ -210,9 +212,11 @@ impl ReturnRange {
         };
         let (lowest, lowest_weights, low_margin) = fill(&ascending);
         let (highest, highest_weights, high_margin) = fill(&descending);
+        let rounding = |w: &DVector<f64>| 1e-12 * mu.component_mul(w).abs().sum();
         ReturnRange {
             lowest,
             highest,
+            tolerances: (rounding(&lowest_weights), rounding(&highest_weights)),
             lowest_weights,
             highest_weights,
             margins: (low_margin, high_margin),
@@ -226,10 +230,14 @@ impl ReturnRange {
 
     /// Returns `target` if some portfolio within the bounds reaches it: one within rounding
     /// of the lowest or highest is moved onto it.
+    ///
+    /// Rounding is measured at each end on its own, as `1e-12` of `Σ|μᵢwᵢ|` for that end's
+    /// portfolio: the size of the terms its expected return sums. A mean far from the rest
+    /// widens only the tolerance of an end that holds its asset.
     pub(crate) fn reachable(&self, target: f64) -> Result<f64, CutupError> {
         let (lowest, highest) = (self.lowest, self.highest);
-        let tolerance = 1e-12 * lowest.abs().max(highest.abs());
-        if target < lowest - tolerance || target > highest + tolerance {
+        let (low, high) = self.tolerances;
+        if target < lowest - low || target > highest + high {
             return Err(CutupError::TargetReturnOutOfRange {
                 target_return: target,
                 lowest,
@@ -240,12 +248,12 @@ impl ReturnRange {
         // reach the target, and the solvers resolve that to rounding no better than the face.
         // In a range narrower than that, to the nearer end.
         let (below, above) = (target - lowest, highest - target);
-        Ok(if below.min(above) > tolerance {
-            target
-        } else if below < above {
-            lowest
-        } else {
-            highest
+        Ok(match (below <= low, above <= high) {
+            (false, false) => target,
+            (true, false) => lowest,
+            (false, true) => highest,
+            (true, true) if below < above => lowest,
+            (true, true) => highest,
         })
     }
 
@@ -274,20 +282,66 @@ impl ReturnRange {
         Ok(TargetProblem {
             e: DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
             b: DVector::from_vec(vec![1.0, target]),
-            start: range.mix(target),
+            start: range.start(mu, &bounds, target),
             bounds,
         })
     }
 
-    /// The mix of the lowest and highest return portfolios that reaches `target`, strictly
-    /// between them.
-    fn mix(&self, target: f64) -> DVector<f64> {
-        // Dividing by the larger in magnitude first keeps the differences from overflowing.
-        let scale = self.lowest.abs().max(self.highest.abs());
-        let t = ((target / scale - self.lowest / scale)
-            / (self.highest / scale - self.lowest / scale))
-            .clamp(0.0, 1.0);
-        &self.lowest_weights * (1.0 - t) + &self.highest_weights * t
+    /// A portfolio within the bounds reaching `target`. With every asset at its lower bound,
+    /// the budget left over is a window laid along the assets sorted by expected return, each
+    /// taking up to its room above its lower bound. At one end the window holds the highest
+    /// return portfolio and at the other the lowest, and between them its return falls
+    /// linearly from one breakpoint, where it meets an asset's edge, to the next. So the target
+    /// is reached exactly by holding only assets next to each other in expected return. An
+    /// asset whose expected return is far from the rest is held only if the target needs it:
+    /// a start holding a little of every asset would leave it free in the solver's first step,
+    /// where its expected return swamps the target's constraint.
+    fn start(&self, mu: &DVector<f64>, bounds: &qp::Bounds, target: f64) -> DVector<f64> {
+        // Divided by the largest in magnitude, so that no sum below can overflow. The target
+        // is strictly inside the range, so some expected return isn't 0.
+        let scale = mu.amax();
+        let (mu, target) = (mu / scale, target / scale);
+        let budget = 1.0 - bounds.lower.sum();
+        // Highest first, ties in column order, as the highest return portfolio fills them.
+        let mut order: Vec<usize> = (0..mu.len()).collect();
+        order.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        // Each asset's stretch of the line, no longer than the budget.
+        let mut edges = vec![0.0];
+        for &i in &order {
+            let room = (bounds.upper[i] - bounds.lower[i]).min(budget);
+            edges.push(edges[edges.len() - 1] + room);
+        }
+        // The window starting `s` along the line. l + (u − l) can round past u.
+        let at = |s: f64| {
+            let mut w = bounds.lower.clone();
+            for (k, &i) in order.iter().enumerate() {
+                let held = edges[k + 1].min(s + budget) - edges[k].max(s);
+                w[i] = (w[i] + held.max(0.0)).min(bounds.upper[i]);
+            }
+            w
+        };
+        // Where either end of the window meets an edge, from the start of the line. The window
+        // reaches the lowest return portfolio, at or below the target, at the last edge less
+        // the budget, so the search stops by then.
+        let mut breaks: Vec<f64> = edges
+            .iter()
+            .flat_map(|&edge| [edge, edge - budget])
+            .filter(|&s| s >= 0.0)
+            .collect();
+        breaks.sort_by(f64::total_cmp);
+        for pair in breaks.windows(2) {
+            let (high, low) = (mu.dot(&at(pair[0])), mu.dot(&at(pair[1])));
+            if low <= target {
+                #[allow(
+                    clippy::manual_clamp,
+                    reason = "f64::max drops the NaN of a segment that doesn't move the return, \
+                              which clamp keeps"
+                )]
+                let t = ((high - target) / (high - low)).max(0.0).min(1.0);
+                return at(pair[0] + t * (pair[1] - pair[0]));
+            }
+        }
+        self.lowest_weights.clone()
     }
 
     /// The bounds of the portfolios with the highest expected return, or the lowest. Assets
@@ -313,8 +367,8 @@ impl ReturnRange {
 mod tests {
     use super::*;
     use crate::test_support::{assert_weights_close, full_rank_prices, uncorrelated_returns};
-    use crate::{CovarianceConfig, MeanVariance, MinVariance, Returns, Weights};
-    use nalgebra::dvector;
+    use crate::{CovarianceConfig, MeanVariance, MinVariance, Returns, WeightBounds, Weights};
+    use nalgebra::{DMatrix, dvector};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -536,16 +590,246 @@ mod tests {
             lower: dvector![0.0, 0.0],
             upper: dvector![1.0, 1.0],
         };
-        // From 0 to 1, rounding is 1e-12: a target exactly that far inside snaps to the end.
+        // From 0 to 1. The top's portfolio earns 1, so its rounding is 1e-12: a target exactly
+        // that far inside snaps to it. The bottom's earns exactly 0, with no rounding at all.
         let range = ReturnRange::new(&dvector![0.0, 1.0], &unit);
-        assert_eq!(range.reachable(1e-12), Ok(0.0));
-        assert_eq!(range.reachable(2e-12), Ok(2e-12));
-        // A target exactly halfway across a range within rounding goes to the top.
+        assert_eq!(range.reachable(1.0 - 1e-12), Ok(1.0));
+        assert_eq!(range.reachable(1.0 - 2e-12), Ok(1.0 - 2e-12));
+        assert_eq!(range.reachable(1.0 + 1e-12), Ok(1.0));
+        assert!(range.reachable(1.0 + 2e-12).is_err());
+        assert_eq!(range.reachable(1e-300), Ok(1e-300));
+        assert_eq!(range.reachable(0.0), Ok(0.0));
+        assert!(range.reachable(-1e-300).is_err());
+        // In a range within rounding, a target goes to the nearer end, and halfway to the top.
         let narrow = ReturnRange::new(&dvector![1.0, 1.0 + 4.0 * f64::EPSILON], &unit);
+        assert_eq!(narrow.reachable(1.0 + f64::EPSILON), Ok(1.0));
+        assert_eq!(
+            narrow.reachable(1.0 + 3.0 * f64::EPSILON),
+            Ok(1.0 + 4.0 * f64::EPSILON)
+        );
         assert_eq!(
             narrow.reachable(1.0 + 2.0 * f64::EPSILON),
             Ok(1.0 + 4.0 * f64::EPSILON)
         );
+    }
+
+    #[test]
+    fn test_each_end_rounds_by_its_own_portfolio() {
+        let unit = qp::Bounds {
+            lower: dvector![0.0, 0.0, 0.0],
+            upper: dvector![1.0, 1.0, 1.0],
+        };
+        // The top holds only the second asset, so the first's −1e6 doesn't widen its rounding,
+        // 2e-14. The bottom holds the first, so its rounding is 1e-6.
+        let mu = dvector![-1e6, 0.02, 0.02 - 5e-7];
+        let range = ReturnRange::new(&mu, &unit);
+        assert_eq!(range.reachable(0.02 - 1e-7), Ok(0.02 - 1e-7));
+        assert_eq!(range.reachable(0.02 - 1e-14), Ok(0.02));
+        assert_eq!(range.reachable(-1e6 + 5e-7), Ok(-1e6));
+        assert_eq!(range.reachable(-1e6 + 2e-6), Ok(-1e6 + 2e-6));
+        assert!(range.reachable(0.02 + 1e-13).is_err());
+        assert!(range.reachable(-1e6 - 2e-6).is_err());
+    }
+
+    /// The start [`ReturnRange::target_problem`] gives for `target`, checked to be within the
+    /// bounds, sum to 1 and reach the target.
+    fn start(mu: &DVector<f64>, bounds: &qp::Bounds, target: f64) -> DVector<f64> {
+        let problem = ReturnRange::target_problem(mu, bounds.clone(), target).unwrap();
+        let w = problem.start;
+        assert!((w.sum() - 1.0).abs() <= 1e-15, "{w:?}");
+        assert!((0..w.len()).all(|i| bounds.lower[i] <= w[i] && w[i] <= bounds.upper[i]));
+        let scale = mu.amax();
+        assert!(
+            (mu.dot(&w) - target).abs() <= 1e-15 * scale,
+            "{} vs {target}",
+            mu.dot(&w)
+        );
+        w
+    }
+
+    #[test]
+    fn test_the_start_holds_only_assets_near_the_target() {
+        let unit = qp::Bounds {
+            lower: dvector![0.0, 0.0, 0.0, 0.0],
+            upper: dvector![1.0, 1.0, 1.0, 1.0],
+        };
+        let mu = dvector![-1e6, 0.02, 0.0199995, 0.01];
+        // Near the top, only the second and third assets; lower, the third and fourth; far
+        // lower, the fourth and first. The first is held only where the target needs it.
+        let w = start(&mu, &unit, 0.02 - 1e-7);
+        assert_eq!((w[0], w[3]), (0.0, 0.0));
+        let w = start(&mu, &unit, 0.0199995 - 1e-4);
+        assert_eq!((w[0], w[1]), (0.0, 0.0));
+        let w = start(&mu, &unit, -5e5);
+        assert_eq!((w[1], w[2]), (0.0, 0.0));
+        assert!((w[0] - 0.5).abs() < 1e-6);
+        // With floors and caps, and still reaching the target.
+        let bounds = qp::Bounds {
+            lower: dvector![0.0, 0.1, 0.0, 0.2],
+            upper: dvector![0.5, 0.6, 0.15, 1.0],
+        };
+        assert_eq!(start(&mu, &bounds, 0.016)[0], 0.0);
+        start(&mu, &bounds, -1e5);
+        // Means near f64::MAX don't overflow it.
+        let huge = dvector![-f64::MAX, f64::MAX / 2.0, f64::MAX];
+        let w = start(
+            &huge,
+            &qp::Bounds {
+                lower: dvector![0.0, 0.0, 0.0],
+                upper: dvector![1.0, 1.0, 1.0],
+            },
+            f64::MAX * 0.75,
+        );
+        assert_eq!(w[0], 0.0);
+    }
+
+    #[test]
+    fn test_the_start_slides_the_budget_along_the_returns() {
+        let cap = qp::Bounds {
+            lower: DVector::zeros(4),
+            upper: DVector::from_element(4, 0.5),
+        };
+        let start = |mu: &DVector<f64>, bounds: &qp::Bounds, target: f64| {
+            start(mu, bounds, target)
+                .iter()
+                .map(|w| (w * 1e12).round() / 1e12)
+                .collect::<Vec<_>>()
+        };
+        // From 1500 to 3500: the window of 1 slides from [0, 0, 0.5, 0.5] to [0.5, 0.5, 0, 0],
+        // through [0, 0.5, 0.5, 0] at 2500.
+        let mu = dvector![1000.0, 2000.0, 3000.0, 4000.0];
+        assert_eq!(start(&mu, &cap, 3400.0), [0.0, 0.05, 0.5, 0.45]);
+        assert_eq!(start(&mu, &cap, 2500.0), [0.0, 0.5, 0.5, 0.0]);
+        assert_eq!(start(&mu, &cap, 1600.0), [0.45, 0.5, 0.05, 0.0]);
+        // Tied expected returns are laid in column order.
+        let tied = dvector![0.0, 1.0, 1.0, 2.0];
+        let unit = qp::Bounds {
+            lower: DVector::zeros(4),
+            upper: DVector::from_element(4, 1.0),
+        };
+        assert_eq!(start(&tied, &unit, 1.2), [0.0, 0.8, 0.0, 0.2]);
+        assert_eq!(start(&tied, &unit, 0.5), [0.5, 0.0, 0.5, 0.0]);
+        assert_eq!(start(&tied, &cap, 1.2), [0.0, 0.5, 0.3, 0.2]);
+        // Uncapped, each asset's stretch is the budget left after the floors, here 0.6.
+        let floors = qp::Bounds {
+            lower: dvector![0.1, 0.1, 0.1, 0.1],
+            upper: DVector::from_element(4, f64::INFINITY),
+        };
+        assert_eq!(start(&mu, &floors, 2500.0), [0.1, 0.4, 0.4, 0.1]);
+    }
+
+    #[test]
+    fn test_a_target_across_several_bounded_assets_is_reached() {
+        // Close to a case from the property tests, where a start that moved weight between the
+        // closest pair one bound at a time fell short of the target, and the solve failed.
+        let returns = DMatrix::from_vec(
+            14,
+            4,
+            vec![
+                0.0,
+                0.043021496,
+                0.0,
+                0.039817187,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -0.031959524,
+                0.0,
+                -0.003818411,
+                -0.020443345,
+                -0.017913865,
+                -0.034875112,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.037736578,
+                0.043941819,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -0.021989019,
+                -0.028166691,
+                0.0,
+                -0.030074956,
+                -0.005915370,
+                -0.008912545,
+                -0.014654237,
+                0.0,
+                0.0,
+                0.041957695,
+                0.047556898,
+                -0.018680320,
+                0.0,
+                0.025386184,
+                0.020801107,
+                -0.038463244,
+                -0.049684629,
+                0.006717366,
+                0.036041461,
+                -0.033560917,
+                -0.017856673,
+                -0.048719500,
+                0.043808973,
+                0.019405156,
+                0.045918587,
+                -0.045944856,
+                0.027652960,
+                0.009290532,
+            ],
+        );
+        let mu = returns.row_mean().transpose();
+        let data = Returns::returns_matrix(returns).unwrap();
+        let bounds = WeightBounds::per_asset(
+            vec![0.0, 0.068065541, 0.0, 0.185450640],
+            vec![0.688408852, f64::INFINITY, 0.730141329, 0.276657586],
+        );
+        let target = 0.0011;
+        let weights = data
+            .allocate(&MeanVariance::target_return(target).bounds(bounds))
+            .unwrap();
+        let earned = mu.dot(&DVector::from_column_slice(weights.as_slice()));
+        assert!((earned - target).abs() <= 1e-12 * mu.amax(), "{earned}");
+    }
+
+    #[test]
+    fn test_targets_near_the_top_beside_a_far_mean_are_reached() {
+        // The first asset is a hundred times as volatile, so the minimum variance portfolio
+        // holds none of it either.
+        let mut returns = crate::test_support::factor_returns(3, 40, 7);
+        returns.column_mut(0).scale_mut(100.0);
+        let data = Returns::returns_matrix(returns).unwrap();
+        let mu = [-1e6, 0.02, 0.02 - 5e-7];
+        // Between the two highest means, which the first asset isn't needed to reach.
+        for target in [0.02 - 4e-7, 0.02 - 1e-7, 0.02 - 1e-9, 0.02 - 1e-11] {
+            let method = MeanVariance::target_return(target).expected_returns(mu);
+            let weights = data.allocate(&method).unwrap();
+            let earned: f64 = weights.iter().zip(mu).map(|(w, m)| w * m).sum();
+            assert!(
+                (earned - target).abs() <= 1e-12 * target,
+                "{earned} vs {target}"
+            );
+        }
+        // So the frontier stays evenly spaced on them.
+        let frontier = data
+            .frontier(&MeanVariance::risk_aversion(1.0).expected_returns(mu), 5)
+            .unwrap();
+        assert_eq!(frontier.len(), 5);
+        let (lowest, highest) = (frontier[0].expected_return(), frontier[4].expected_return());
+        for (k, point) in frontier.iter().enumerate() {
+            let want = lowest + (highest - lowest) * k as f64 / 4.0;
+            assert!(
+                (point.expected_return() - want).abs() <= 1e-12 * want.abs(),
+                "{k}: {}",
+                point.expected_return()
+            );
+        }
     }
 
     #[test]

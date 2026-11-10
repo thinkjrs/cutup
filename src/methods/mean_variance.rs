@@ -77,8 +77,8 @@ use nalgebra::{DMatrix, DVector};
 /// * [`CutupError::InfeasibleBounds`] if the lower bounds sum to more than 1 or the upper
 ///   bounds to less, by more than `1e-12`.
 /// * [`CutupError::TargetReturnOutOfRange`], long-only, for a target return below the lowest
-///   or above the highest reachable within the bounds, by more than `1e-12` of the larger in
-///   magnitude.
+///   or above the highest reachable within the bounds, by more than `1e-12` of `Σ|μᵢwᵢ|` for
+///   the portfolio that reaches that end.
 /// * [`CutupError::DegenerateExpectedReturns`], long-short, for a target return when every
 ///   asset has the same expected return and the target differs from it.
 /// * [`CutupError::TargetVolatilityOutOfRange`] for a target volatility below the minimum
@@ -1624,10 +1624,14 @@ mod tests {
             let sigma = w.dot(&(&cov * &w)).sqrt();
             assert!((point.volatility() - sigma).abs() <= 1e-12 * sigma);
         }
+        // The target pins the weights only to about ε·max|μ| over the range of returns, which
+        // is far coarser than 1e-9 when the expected returns are nearly equal.
+        let range = frontier[frontier.len() - 1].expected_return() - frontier[0].expected_return();
+        let tolerance = 1e-9 + 1e3 * f64::EPSILON * mu.amax() / range;
         for point in &frontier[1..] {
             let mut target = method.clone();
             target.objective = Objective::TargetReturn(point.expected_return());
-            assert_weights_close(point.weights(), &data.allocate(&target).unwrap(), 1e-9);
+            assert_weights_close(point.weights(), &data.allocate(&target).unwrap(), tolerance);
         }
     }
 
