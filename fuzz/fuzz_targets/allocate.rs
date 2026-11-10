@@ -204,6 +204,7 @@ struct Trading {
 enum Objective {
     RiskAversion(f64),
     TargetReturn(f64),
+    TargetVolatility(f64),
 }
 
 #[derive(Arbitrary, Debug)]
@@ -437,6 +438,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             let mut m = match objective {
                 Objective::RiskAversion(gamma) => MeanVariance::risk_aversion(gamma),
                 Objective::TargetReturn(target) => MeanVariance::target_return(target),
+                Objective::TargetVolatility(sigma) => MeanVariance::target_volatility(sigma),
             };
             if let Some(mu) = expected_returns {
                 m = m.expected_returns(mu);
