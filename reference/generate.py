@@ -26,7 +26,8 @@ cutup's implementation:
   checks neither the multipliers' signs nor uses an iterative solver, unlike cutup's
   active-set method. Only covariances that aren't singular are used, where the optimum is
   unique. A target return outside the assets' expected returns, by more than 1e-12 of
-  Σ|μᵢwᵢ| for the portfolio at the end it's past, is an error.
+  Σ|μᵢwᵢ| + |μₖ|, over the portfolio at the end it's past and the next asset k a target
+  inside it moves into, is an error.
 
   With weight bounds, each asset is held at its lower bound, at its upper bound, or left
   free. The range of reachable target returns comes from scipy.optimize.linprog, not the
@@ -244,8 +245,8 @@ def long_only(
         b_s = b - e[held].T @ candidate[held]
         if not support:
             # No feasible point with every variable at a bound here, such as a single
-            # asset away from the target.
-            if np.abs(b_s).max() > 1e-12 * (np.abs(e).max() * np.abs(candidate).max() + np.abs(b).max()):
+            # asset away from the target. Each row against its own terms, as below.
+            if np.any(np.abs(b_s) > 1e-12 * (np.abs(e).T @ np.abs(candidate) + np.abs(b))):
                 continue
         else:
             k_s, e_s = k[np.ix_(support, support)], e[support]
@@ -308,25 +309,44 @@ def return_range(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray]) -> tuple
     return range_ends(mu, bounds)[:2]
 
 
+def end_rounding(mu: np.ndarray, lower: np.ndarray, upper: np.ndarray, highest: bool) -> float:
+    """How far past an end of the range a target is within rounding of it: 1e-12 of Σ|μᵢwᵢ|
+    for the end's portfolio, filled greedily in order of expected return, plus |μₖ| for the
+    next asset in that order with room left and not tied with the last one raised, which a
+    target just inside the end moves weight into."""
+    order = np.argsort(-mu if highest else mu, kind="stable")
+    w, left, margin = lower.astype(float).copy(), 1.0 - lower.sum(), None
+    for i in order:
+        if left <= 0.0:
+            break
+        raise_by = min(upper[i] - lower[i], left)
+        if raise_by > 0.0:
+            w[i] += raise_by
+            left -= raise_by
+            margin = mu[i]
+    nxt = next((abs(mu[i]) for i in order if w[i] < upper[i] and mu[i] != margin), 0.0)
+    return 1e-12 * (float(np.abs(mu * w).sum()) + nxt)
+
+
 def range_ends(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray] | None):
     """The lowest and highest expected return within the bounds, or long-only without them,
-    and how far past each a target is still within rounding of it: 1e-12 of Σ|μᵢwᵢ| for the
-    portfolio at that end, the size of the terms its return sums."""
-    if bounds is None:
-        low, high = mu.min(), mu.max()
-        return float(low), float(high), 1e-12 * abs(low), 1e-12 * abs(high)
-    lower, upper = bounds
+    and each end's rounding, from end_rounding. The bounds are resolved as cutup resolves
+    them: each cap lowered to what the other floors leave."""
+    n = len(mu)
+    lower, upper = bounds if bounds is not None else (np.zeros(n), np.ones(n))
+    upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
     box = list(zip(lower, upper))
-    budget = {"A_eq": np.ones((1, len(mu))), "b_eq": [1.0], "bounds": box}
+    budget = {"A_eq": np.ones((1, n)), "b_eq": [1.0], "bounds": box}
     lowest, highest = linprog(mu, **budget), linprog(-mu, **budget)
     if lowest.status != 0 or highest.status != 0:
         raise ValueError(f"linprog failed: {lowest.message} / {highest.message}")
-    rounding = lambda x: 1e-12 * float(np.abs(mu * x).sum())
-    return float(lowest.fun), float(-highest.fun), rounding(lowest.x), rounding(highest.x)
+    low, high = end_rounding(mu, lower, upper, False), end_rounding(mu, lower, upper, True)
+    return float(lowest.fun), float(-highest.fun), low, high
 
 
-def out_of_range(mu: np.ndarray, bounds, target: float) -> bool:
-    lowest, highest, low, high = range_ends(mu, bounds)
+def out_of_range(ends: tuple[float, float, float, float], target: float) -> bool:
+    """Whether `target` is past either of range_ends' ends by more than its rounding."""
+    lowest, highest, low, high = ends
     return not lowest - low <= target <= highest + high
 
 
@@ -355,9 +375,10 @@ def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np
             cross_check(cov, mu, bounds, weights, lambda frontier: frontier.max_quadratic_utility(gamma))
         return weights
     target = params["target_return"]
-    lowest, highest = (mu.min(), mu.max()) if bounds is None else return_range(mu, bounds)
-    if out_of_range(mu, bounds, target):
+    ends = range_ends(mu, bounds)
+    if out_of_range(ends, target):
         return "TargetReturnOutOfRange"
+    lowest, highest = ends[:2]
     target = min(max(target, lowest), highest)
     weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]), *bounds_or_none)
     # PyPortfolioOpt only accepts targets strictly inside the range.
@@ -823,7 +844,7 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
     if mean_variance and "target_return" in params:
         rho = params["target_return"]
         if np.all(np.isfinite(lower)):
-            if out_of_range(mu, (lower, upper), rho):
+            if out_of_range(range_ends(mu, (lower, upper)), rho):
                 return "TargetReturnOutOfRange"
         target = (mu, rho)
         k, c = 2 * cov, np.zeros(n)
@@ -917,10 +938,11 @@ def min_cvar(returns: np.ndarray, params: dict) -> tuple[np.ndarray, float] | st
     mu = returns.mean(axis=0)
     a_eq, b_eq = [np.concatenate([np.ones(n), [0.0], np.zeros(t)])], [1.0]
     if "target_return" in params:
-        lowest, highest = return_range(mu, (lower, upper))
+        ends = range_ends(mu, (lower, upper))
         target = params["target_return"]
-        if out_of_range(mu, (lower, upper), target):
+        if out_of_range(ends, target):
             return "TargetReturnOutOfRange"
+        lowest, highest = ends[:2]
         a_eq.append(np.concatenate([mu, [0.0], np.zeros(t)]))
         b_eq.append(min(max(target, lowest), highest))
     # −rₜᵀw − α − uₜ ≤ 0.
