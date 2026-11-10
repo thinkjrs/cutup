@@ -837,7 +837,7 @@ pub(crate) fn search_multiplier(
     let (mut high_value, mut best) = loop {
         // The problem itself solved at λ = 0, so a failure only at a larger λ is its arithmetic
         // breaking down short of the limit: no λ the solver can handle reaches it. Unless the
-        // objective has no minimum, which no λ changes.
+        // objective has no minimum, which no larger λ changes.
         let solved = solve(high, warm.clone()).map_err(|error| match error {
             CutupError::Unbounded => error,
             _ => CutupError::NotConverged,
