@@ -743,17 +743,11 @@ fn solve_piecewise_in_units(
             solved.len(),
             free.iter().map(|(s, j)| s.slopes[*j]).take(solved.len()),
         );
-        // A free slack and its row's constraint are left out of the solve: the slack only
-        // measures its row, so it moves to keep the constraint once the step is known, and
-        // the constraint's multiplier is 0. Without them Q's block on the variables solved for
-        // has no zero rows, and can be factored.
         let slack_columns: Vec<(usize, usize)> = slacks
             .iter()
             .map(|&i| (i, first_slack_column + i - originals))
             .collect();
-        let kept: Vec<usize> = (0..e.ncols())
-            .filter(|&j| !slack_columns.iter().any(|&(_, column)| column == j))
-            .collect();
+        let kept = kept_columns(e, solved, &slack_columns, first_slack_column);
         let q_free = q.select_rows(solved).select_columns(solved);
         let c_free = c.select_rows(solved) - slope;
         let e_free = e.select_rows(solved).select_columns(&kept);
@@ -917,6 +911,30 @@ fn solve_piecewise_in_units(
         }
     }
     Err(CutupError::NotConverged)
+}
+
+/// The columns of `E` that a solve on the variables `solved` keeps: every one before
+/// `first_slack`, `E`'s own, and each slack's row but those of the free `slacks`, given as
+/// `(slack, column)`, and those with no entry on `solved`.
+///
+/// A free slack only measures its row, so it moves to keep its row once the step is known,
+/// and the row's multiplier is 0. Without them, `Q`'s block on `solved` has no zero rows and
+/// can be factored. A held slack's row on held variables alone has no entry on `solved`, so its
+/// multiplier is 0 too, as for any dependent constraint, and keeping it would leave a zero
+/// column in `E` that no factored solve takes.
+fn kept_columns(
+    e: &DMatrix<f64>,
+    solved: &[usize],
+    slacks: &[(usize, usize)],
+    first_slack: usize,
+) -> Vec<usize> {
+    (0..e.ncols())
+        .filter(|&j| {
+            j < first_slack
+                || (!slacks.iter().any(|&(_, column)| column == j)
+                    && solved.iter().any(|&i| e[(i, j)] != 0.0))
+        })
+        .collect()
 }
 
 /// A step `δ` on the variables `solved`, extended to the free slacks: each `(i, j)` of
@@ -2060,6 +2078,23 @@ mod tests {
         assert_close(&x, &dvector![0.35, 0.35, 0.3], 1e-15);
     }
 
+    #[test]
+    fn a_held_row_on_held_variables_changes_nothing() {
+        // x₂ and x₃ start at 0, holding their row at its floor too. Alone on x₀ and x₁,
+        // ½‖x‖² − x₀ − 0.5x₁ splits the budget as x = c − ν1 with ν = 0.25.
+        let q = DMatrix::identity(4, 4);
+        let c = dvector![1.0, 0.5, -1.0, -1.0];
+        let (e, b) = budget(4);
+        let bounds = with_rows(
+            Bounds::nonnegative(4),
+            dmatrix![0.0; 0.0; 1.0; 1.0],
+            dvector![0.0],
+            dvector![0.5],
+        );
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.5, 0.5, 0.0, 0.0]).unwrap();
+        assert_close(&x, &dvector![0.75, 0.25, 0.0, 0.0], 1e-15);
+    }
+
     /// The problem with each row's sum as a variable of its own, built here rather than by
     /// [`with_slacks`], solved without rows: Q is singular there, so it goes through the
     /// eigendecomposition rather than the factor.
@@ -2205,6 +2240,19 @@ mod tests {
         assert_eq!(slack_scale(&scales, [0.0, 0.0, 0.0]), 1.0);
         // A scale that underflows to 0 can't be divided by.
         assert_eq!(slack_scale(&[1e-300], [1e300]), 1.0);
+    }
+
+    #[test]
+    fn a_solve_keeps_held_rows_on_the_variables_it_solves_for() {
+        // Columns 0 and 1 are E's own, 2 to 4 slacks' rows: 2's slack is free, and 4 has no
+        // entry on variables 0 and 1. Column 0 has none either, but E's own are kept.
+        let e = dmatrix![
+            0.0, 1.0, 1.0, 1.0, 0.0;
+            0.0, 1.0, 0.0, 1.0, 0.0;
+            1.0, 1.0, 1.0, 0.0, 1.0
+        ];
+        assert_eq!(kept_columns(&e, &[0, 1], &[(5, 2)], 2), vec![0, 1, 3]);
+        assert_eq!(kept_columns(&e, &[0, 1, 2], &[], 2), vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
