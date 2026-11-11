@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-11-10 · Current release: 0.3.6
+Status: draft · Last updated: 2026-11-11 · Current release: 0.3.7
 
 This plans the releases from 0.3.0 to 1.0.0.
 
