@@ -3,7 +3,7 @@
 
 use crate::CutupError;
 use crate::eigen::SymmetricEigen;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{Cholesky, DMatrix, DVector, Dyn};
 
 /// A solution `x` and its constraint multipliers `λ`.
 type Solution = (DVector<f64>, DVector<f64>);
@@ -591,6 +591,7 @@ fn solve_piecewise_in_units(
     // Where every variable was last freed at once, so that returning there without x moving
     // stops instead of looping.
     let mut freed_at: Option<DVector<f64>> = None;
+    let mut factoring = Factoring::new();
 
     for _ in 0..100 + 20 * n {
         let indices: Vec<usize> = (0..n)
@@ -642,9 +643,18 @@ fn solve_piecewise_in_units(
         let gradient_free = &c_free - &q_rows * &x;
         let residual = b - e.transpose() * &x;
         let noise = q_rows.amax() * x.amax() + c_free.amax();
-        let Some((delta, multipliers)) =
-            solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
-        else {
+        // With Q positive definite on the free variables, from the factor kept across
+        // iterations. Otherwise, or if that misses, from the eigendecomposition, which handles
+        // a singular Q.
+        let problem = (&q_free, &gradient_free, &e_free, &residual);
+        let factored = factoring
+            .update(q, &indices)
+            .and_then(|cholesky| solve_factored(cholesky, problem, noise));
+        let solved = match factored {
+            Some(solution) => Some(solution),
+            None => solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?,
+        };
+        let Some((delta, multipliers)) = solved else {
             // Without a linear term on the free variables the free problem is bounded below:
             // the held variables only add Q_fh·x_h, which for a positive semidefinite Q lies in
             // the range of Q_ff. So it has a minimum, and the solve failed numerically.
@@ -905,6 +915,135 @@ pub(crate) fn search_multiplier(
         }
     }
     unreachable!("the loop returns once the bracket can't be split")
+}
+
+/// The pivot `Lᵢᵢ²` of a Cholesky factor below which [`Factoring`] counts `Q`'s block on the
+/// free variables as singular. In [`Units`], `Q` has a unit diagonal, so this is relative.
+/// Blocks this close to singular are left to [`solve_noisy_kkt`], whose eigenvalue cutoff
+/// decides what counts as zero. It's `2⁻²⁶`, about `1.5e-8`.
+const PIVOT_FLOOR: f64 = 1.0 / 67_108_864.0;
+
+/// Whether every pivot of `cholesky` is at least [`PIVOT_FLOOR`]. A NaN pivot isn't.
+fn positive_definite(cholesky: &Cholesky<f64, Dyn>) -> bool {
+    cholesky
+        .l_dirty()
+        .diagonal()
+        .iter()
+        .all(|&p| p * p >= PIVOT_FLOOR)
+}
+
+/// A Cholesky factor `LLᵀ` of `Q`'s block on [`solve_piecewise_in_units`]' free variables,
+/// kept from one iteration to the next. The free set usually gains or loses one variable an
+/// iteration, and updating `L` for that costs `O(k²)` for `k` free variables, where a fresh
+/// factor, or [`solve_noisy_kkt`]'s eigendecomposition, costs `O(k³)`.
+struct Factoring {
+    /// The free variables in increasing order, and the factor of their block.
+    factor: Option<(Vec<usize>, Cholesky<f64, Dyn>)>,
+    /// The last free set whose block was singular, or nearly so. Every set containing it is
+    /// too, since every principal block of a positive definite matrix is positive definite.
+    singular: Option<Vec<usize>>,
+}
+
+impl Factoring {
+    fn new() -> Self {
+        Factoring {
+            factor: None,
+            singular: None,
+        }
+    }
+
+    /// The factor of `q`'s block on `indices`, which are in increasing order, or `None` if
+    /// that block is singular or nearly so. It's updated from the last one if there is one,
+    /// and otherwise computed afresh unless the block contains the last singular one.
+    fn update(&mut self, q: &DMatrix<f64>, indices: &[usize]) -> Option<&Cholesky<f64, Dyn>> {
+        let factor = match self.factor.take() {
+            Some((held, cholesky)) => updated(q, held, cholesky, indices),
+            None if self
+                .singular
+                .as_ref()
+                .is_some_and(|s| s.iter().all(|i| indices.binary_search(i).is_ok())) =>
+            {
+                return None;
+            }
+            None => Cholesky::new(q.select_rows(indices).select_columns(indices))
+                .filter(positive_definite),
+        };
+        match factor {
+            Some(cholesky) => Some(&self.factor.insert((indices.to_vec(), cholesky)).1),
+            None => {
+                self.singular = Some(indices.to_vec());
+                None
+            }
+        }
+    }
+}
+
+/// `cholesky`, the factor of `q`'s block on `held`, updated to the block on `indices`, both in
+/// increasing order: each variable that left is removed, then each that joined is inserted,
+/// each in `O(k²)`. `None` if an insertion makes the block singular, or nearly so; stopping
+/// there also keeps the next insertion from solving with a zero pivot, which panics.
+fn updated(
+    q: &DMatrix<f64>,
+    mut held: Vec<usize>,
+    mut cholesky: Cholesky<f64, Dyn>,
+    indices: &[usize],
+) -> Option<Cholesky<f64, Dyn>> {
+    for position in (0..held.len()).rev() {
+        if indices.binary_search(&held[position]).is_err() {
+            cholesky = cholesky.remove_column(position);
+            held.remove(position);
+        }
+    }
+    // What is left is in `indices` in order, so each joining variable goes in at its position
+    // there.
+    for (position, &i) in indices.iter().enumerate() {
+        if held.get(position) != Some(&i) {
+            held.insert(position, i);
+            let column = DVector::from_iterator(held.len(), held.iter().map(|&j| q[(j, i)]));
+            cholesky = cholesky.insert_column(position, column);
+            if !positive_definite(&cholesky) {
+                return None;
+            }
+        }
+    }
+    Some(cholesky)
+}
+
+/// [`solve_noisy_kkt`]'s problem for a positive definite `K` with Cholesky factor `LLᵀ`, by the
+/// range-space method (Nocedal and Wright, 2006, §16.2): with `W = L⁻¹E` and `h = L⁻¹c`, the
+/// multipliers solve `WᵀWλ = Wᵀh − b`, and `x = L⁻ᵀ(h − Wλ)`. `None` if `E`'s columns are
+/// dependent, or nearly so, since the multipliers aren't unique then, or if the solution fails
+/// [`within_rounding`]: the caller solves the problem with [`solve_noisy_kkt`] instead.
+fn solve_factored(
+    cholesky: &Cholesky<f64, Dyn>,
+    (k, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
+    noise: f64,
+) -> Option<Solution> {
+    let l = cholesky.l_dirty();
+    let mut w = l.solve_lower_triangular(e)?;
+    // Each column of W at unit length, so that `WᵀW` has a unit diagonal and PIVOT_FLOOR is
+    // relative to it, as it is for Q; the multipliers scale back by the lengths. A zero
+    // column becomes NaN, which no factor accepts.
+    let lengths = DVector::from_iterator(w.ncols(), w.column_iter().map(|column| column.norm()));
+    for (mut column, length) in w.column_iter_mut().zip(lengths.iter()) {
+        column /= *length;
+    }
+    let gram = Cholesky::new(w.transpose() * &w).filter(positive_definite)?;
+    let solve = |c: &DVector<f64>, b: &DVector<f64>| -> Option<Solution> {
+        let h = l.solve_lower_triangular(c)?;
+        let scaled = gram.solve(&(w.transpose() * &h - b.component_div(&lengths)));
+        let x = l.tr_solve_lower_triangular(&(h - &w * &scaled))?;
+        Some((x, scaled.component_div(&lengths)))
+    };
+    let (x, multipliers) = solve(c, b)?;
+    // `WᵀW` squares the conditioning of `W`, so where `E`'s columns are close to parallel, as
+    // a budget and a target return on similar means are, `Eᵀx = b` holds only to that
+    // conditioning. One step of iterative refinement, solving for the residuals, brings it to
+    // rounding.
+    let (dx, dm) = solve(&(c - k * &x - e * &multipliers), &(b - e.transpose() * &x))?;
+    let (x, multipliers) = (x + dx, multipliers + dm);
+    within_rounding(kkt_residual((k, c, e, b), &x, &multipliers, noise))?
+        .then_some((x, multipliers))
 }
 
 /// Moves free variable `i` into the active set at the `side` end of its segment after a step
