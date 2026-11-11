@@ -939,7 +939,7 @@ fn with_slack_steps(
         (residual - others) / e[(i, j)]
     });
     let len = step.len() + slacks.len();
-    DVector::from_iterator(len, step.iter().copied().chain(moves.collect::<Vec<_>>()))
+    DVector::from_iterator(len, step.iter().copied().chain(moves))
 }
 
 /// Solves [`solve_piecewise`]'s problem with the turnover `Σᵢ|xᵢ − aᵢ|` capped at `cap`, `a`
