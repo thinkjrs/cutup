@@ -942,6 +942,9 @@ struct Factoring {
     /// The last free set whose block was singular, or nearly so. Every set containing it is
     /// too, since every principal block of a positive definite matrix is positive definite.
     singular: Option<Vec<usize>>,
+    /// How many factors were computed afresh rather than updated.
+    #[cfg(test)]
+    factorizations: usize,
 }
 
 impl Factoring {
@@ -949,6 +952,8 @@ impl Factoring {
         Factoring {
             factor: None,
             singular: None,
+            #[cfg(test)]
+            factorizations: 0,
         }
     }
 
@@ -965,8 +970,14 @@ impl Factoring {
             {
                 return None;
             }
-            None => Cholesky::new(q.select_rows(indices).select_columns(indices))
-                .filter(positive_definite),
+            None => {
+                #[cfg(test)]
+                {
+                    self.factorizations += 1;
+                }
+                Cholesky::new(q.select_rows(indices).select_columns(indices))
+                    .filter(positive_definite)
+            }
         };
         match factor {
             Some(cholesky) => Some(&self.factor.insert((indices.to_vec(), cholesky)).1),
@@ -1621,5 +1632,109 @@ mod tests {
     #[test]
     fn a_sum_rounds_by_a_few_ulps_of_its_terms() {
         assert_eq!(sum_rounding(3, 2.0), 24.0 * f64::EPSILON);
+    }
+
+    /// `AAᵀ + I` for a fixed `A` with entries from −2 to 2.
+    fn positive_definite_matrix(n: usize) -> DMatrix<f64> {
+        let a = DMatrix::from_fn(n, n, |i, j| ((7 * i + 3 * j) % 5) as f64 - 2.0);
+        &a * a.transpose() + DMatrix::identity(n, n)
+    }
+
+    /// The first two variables are the same, so their block is singular, with a second pivot
+    /// of exactly 0.
+    fn repeated_variable() -> DMatrix<f64> {
+        dmatrix![1.0, 1.0, 0.0; 1.0, 1.0, 0.0; 0.0, 0.0, 1.0]
+    }
+
+    #[test]
+    fn a_factor_updated_a_variable_at_a_time_matches_a_fresh_one() {
+        let q = positive_definite_matrix(6);
+        let mut factoring = Factoring::new();
+        // Variables leaving, joining, both at once, and several joining.
+        for indices in [
+            vec![0, 1, 2, 3, 4, 5],
+            vec![0, 2, 3, 5],
+            vec![0, 1, 2, 3, 5],
+            vec![1, 3, 4],
+            vec![0, 1, 2, 3, 4, 5],
+        ] {
+            let block = q.select_rows(&indices).select_columns(&indices);
+            let l = factoring.update(&q, &indices).unwrap().l();
+            assert!((&l * l.transpose() - block).amax() < 1e-12, "{indices:?}");
+        }
+        assert_eq!(factoring.factorizations, 1);
+    }
+
+    #[test]
+    fn a_block_is_factored_down_to_the_pivot_floor() {
+        // The floor is a power of 2, so its square root squares back to it exactly.
+        for (pivot, factored) in [(PIVOT_FLOOR, true), (PIVOT_FLOOR / 2.0, false)] {
+            let q = dmatrix![1.0, 0.0; 0.0, pivot];
+            assert_eq!(Factoring::new().update(&q, &[0, 1]).is_some(), factored);
+            let mut factoring = Factoring::new();
+            factoring.update(&q, &[0]).unwrap();
+            assert_eq!(factoring.update(&q, &[0, 1]).is_some(), factored);
+        }
+    }
+
+    #[test]
+    fn an_insertion_that_makes_the_block_singular_stops_there() {
+        // Inserting the third variable would solve with the second's zero pivot, which panics.
+        let q = repeated_variable();
+        let mut factoring = Factoring::new();
+        factoring.update(&q, &[0]).unwrap();
+        assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+    }
+
+    #[test]
+    fn a_block_containing_a_singular_one_is_not_factored_again() {
+        let q = repeated_variable();
+        let mut factoring = Factoring::new();
+        assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        assert_eq!(factoring.factorizations, 1);
+        // Without the second variable it's positive definite, and factored afresh.
+        assert!(factoring.update(&q, &[0, 2]).is_some());
+        assert_eq!(factoring.factorizations, 2);
+        // Updating to the second variable finds it singular again, but a block without the
+        // first variable doesn't contain that one.
+        assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        assert!(factoring.update(&q, &[1, 2]).is_some());
+        assert_eq!(factoring.factorizations, 3);
+    }
+
+    #[test]
+    fn the_range_space_solve_matches_the_null_space_one() {
+        // A budget and a target return on means 5e-7 apart: close to parallel, so WᵀW loses
+        // digits that the refinement brings back.
+        let q = positive_definite_matrix(3);
+        let c = dvector![0.3, -0.2, 0.1];
+        let mu = dvector![0.02, 0.02 - 5e-7, 0.019];
+        let e = DMatrix::from_columns(&[DVector::from_element(3, 1.0), mu]);
+        let b = dvector![1.0, 0.0199];
+        let cholesky = Cholesky::new(q.clone()).unwrap();
+        let (x, multipliers) = solve_factored(&cholesky, (&q, &c, &e, &b), 0.0).unwrap();
+        let (expected, expected_multipliers) =
+            solve_noisy_kkt(&q, &c, &e, &b, 0.0).unwrap().unwrap();
+        assert_close(&x, &expected, 1e-12);
+        let size = expected_multipliers.amax();
+        assert_close(&multipliers, &expected_multipliers, 1e-12 * size);
+        // A few ulps of the budget, not under one: below 1 the spacing is 1.1e-16, so a
+        // bound of 1e-16 only passes on a sum that rounds to exactly 1.
+        assert_close(&(e.transpose() * &x), &b, 4.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn nearly_dependent_constraints_are_left_to_the_null_space_solve() {
+        // At unit length the columns' WᵀW has a second pivot of about 2⁻³⁰: positive, so it
+        // factors, but below the floor.
+        let q = DMatrix::identity(2, 2);
+        let e = DMatrix::from_columns(&[dvector![1.0, 1.0], dvector![1.0, 1.0 + 1.0 / 16384.0]]);
+        let b = e.transpose() * dvector![1.0, 0.0];
+        let cholesky = Cholesky::new(q.clone()).unwrap();
+        assert_eq!(
+            solve_factored(&cholesky, (&q, &dvector![0.0, 0.0], &e, &b), 0.0),
+            None
+        );
     }
 }
