@@ -1977,4 +1977,256 @@ mod tests {
             None
         );
     }
+
+    /// `bounds` with the rows `lower ≤ aᵀx ≤ upper`.
+    fn with_rows(
+        bounds: Bounds,
+        a: DMatrix<f64>,
+        lower: DVector<f64>,
+        upper: DVector<f64>,
+    ) -> Bounds {
+        Bounds {
+            rows: Rows { a, lower, upper },
+            ..bounds
+        }
+    }
+
+    #[test]
+    fn a_row_caps_a_group_of_variables() {
+        // Alone, ½‖x‖² − x₀ − x₁ with x ≥ 0 splits the budget between x₀ and x₁. Capping their
+        // sum at 0.5 leaves the rest to x₂: x = c − ν1 − μ(1, 1, 0) with ν = −0.5 and μ = 1.25.
+        let q = DMatrix::identity(3, 3);
+        let c = dvector![1.0, 1.0, 0.0];
+        let (e, b) = budget(3);
+        let alone = solve_nonnegative(&q, &c, &e, &b, DVector::from_element(3, 1.0 / 3.0)).unwrap();
+        assert_close(&alone, &dvector![0.5, 0.5, 0.0], 1e-15);
+        let bounds = with_rows(
+            Bounds::nonnegative(3),
+            dmatrix![1.0; 1.0; 0.0],
+            dvector![0.0],
+            dvector![0.5],
+        );
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.2, 0.2, 0.6]).unwrap();
+        assert_close(&x, &dvector![0.25, 0.25, 0.5], 1e-15);
+    }
+
+    #[test]
+    fn a_row_puts_a_floor_under_a_group_of_variables() {
+        // Alone, ½‖x‖² − x₀ puts everything in x₀. A floor of 0.8 on x₁ + x₂ leaves it 0.2:
+        // x = c − ν1 + μ(0, 1, 1) with ν = 0.8 and μ = 1.2.
+        let q = DMatrix::identity(3, 3);
+        let c = dvector![1.0, 0.0, 0.0];
+        let (e, b) = budget(3);
+        let bounds = with_rows(
+            Bounds::nonnegative(3),
+            dmatrix![0.0; 1.0; 1.0],
+            dvector![0.8],
+            dvector![f64::INFINITY],
+        );
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.0, 0.5, 0.5]).unwrap();
+        assert_close(&x, &dvector![0.2, 0.4, 0.4], 1e-15);
+    }
+
+    #[test]
+    fn a_row_that_doesnt_bind_changes_nothing() {
+        let q = positive_definite_matrix(5);
+        let c = dvector![0.3, -0.2, 0.1, 0.4, 0.0];
+        let (e, b) = budget(5);
+        let start = DVector::from_element(5, 0.2);
+        let alone = solve_nonnegative(&q, &c, &e, &b, start.clone()).unwrap();
+        let bounds = with_rows(
+            Bounds::nonnegative(5),
+            dmatrix![1.0; 1.0; 0.0; 0.0; 1.0],
+            dvector![0.0],
+            dvector![1.0],
+        );
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, start).unwrap();
+        assert_close(&x, &alone, 1e-15);
+    }
+
+    #[test]
+    fn a_row_with_equal_limits_holds_its_sum() {
+        // x₀ + x₁ = 0.7 exactly, as a second budget would.
+        let q = DMatrix::identity(3, 3);
+        let c = dvector![0.0, 0.0, 1.0];
+        let (e, b) = budget(3);
+        let bounds = with_rows(
+            Bounds::nonnegative(3),
+            dmatrix![1.0; 1.0; 0.0],
+            dvector![0.7],
+            dvector![0.7],
+        );
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.35, 0.35, 0.3]).unwrap();
+        assert_close(&x, &dvector![0.35, 0.35, 0.3], 1e-15);
+    }
+
+    /// The problem with each row's sum as a variable of its own, built here rather than by
+    /// [`with_slacks`], solved without rows: Q is singular there, so it goes through the
+    /// eigendecomposition rather than the factor.
+    fn solve_with_explicit_slacks(
+        (q, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
+        bounds: &Bounds,
+        start: &DVector<f64>,
+    ) -> Result<DVector<f64>, CutupError> {
+        let (n, r) = bounds.rows.a.shape();
+        let m = e.ncols();
+        let q_all = DMatrix::from_fn(
+            n + r,
+            n + r,
+            |i, j| if i < n && j < n { q[(i, j)] } else { 0.0 },
+        );
+        let c_all = DVector::from_fn(n + r, |i, _| if i < n { c[i] } else { 0.0 });
+        let e_all = DMatrix::from_fn(n + r, m + r, |i, j| match (i < n, j < m) {
+            (true, true) => e[(i, j)],
+            (true, false) => bounds.rows.a[(i, j - m)],
+            (false, true) => 0.0,
+            (false, false) => {
+                if i - n == j - m {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+        });
+        let b_all = DVector::from_fn(m + r, |j, _| if j < m { b[j] } else { 0.0 });
+        let sums = bounds.rows.a.tr_mul(start);
+        let all = |x: &DVector<f64>, rows: &DVector<f64>| {
+            DVector::from_iterator(n + r, x.iter().chain(rows.iter()).copied())
+        };
+        let explicit = Bounds::new(
+            all(&bounds.lower, &bounds.rows.lower),
+            all(&bounds.upper, &bounds.rows.upper),
+        );
+        let x = solve_bounded(&q_all, &c_all, &e_all, &b_all, &explicit, all(start, &sums))?;
+        Ok(x.rows(0, n).into_owned())
+    }
+
+    /// A point within `bounds` and their rows with `Eᵀx = b`, from the simplex method's first
+    /// phase, or `None` if there's none.
+    fn feasible_point(e: &DMatrix<f64>, b: &DVector<f64>, bounds: &Bounds) -> Option<DVector<f64>> {
+        let (n, r) = bounds.rows.a.shape();
+        let m = e.ncols();
+        let a = DMatrix::from_fn(m + r, n + r, |i, j| match (i < m, j < n) {
+            (true, true) => e[(j, i)],
+            (true, false) => 0.0,
+            (false, true) => bounds.rows.a[(j, i - m)],
+            (false, false) => {
+                if i - m == j - n {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+        });
+        let rhs = DVector::from_fn(m + r, |i, _| if i < m { b[i] } else { 0.0 });
+        let all = |x: &DVector<f64>, rows: &DVector<f64>| {
+            DVector::from_iterator(n + r, x.iter().chain(rows.iter()).copied())
+        };
+        let lower = all(&bounds.lower, &bounds.rows.lower);
+        let upper = all(&bounds.upper, &bounds.rows.upper);
+        match crate::lp::solve(&DVector::zeros(n + r), &a, &rhs, &lower, &upper).unwrap() {
+            crate::lp::Outcome::Optimal(solution) => Some(solution.x.rows(0, n).into_owned()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn rows_match_their_sums_as_variables_on_random_problems() {
+        // SplitMix64, so the problems are fixed.
+        let mut state = 0x5eed_u64;
+        let mut uniform = || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (n, r) = (6, 3);
+        let (e, b) = budget(n);
+        let mut solved = 0;
+        for case in 0..200 {
+            let factors = DMatrix::from_fn(n, n, |_, _| 2.0 * uniform() - 1.0);
+            // Every tenth case singular, with rank 3.
+            let rank = if case % 10 == 0 { 3 } else { n };
+            let factors = factors.columns(0, rank).into_owned();
+            let q = &factors * factors.transpose();
+            let c = DVector::from_fn(n, |_, _| 2.0 * uniform() - 1.0);
+            let a = DMatrix::from_fn(n, r, |_, _| if uniform() < 0.5 { 1.0 } else { 0.0 });
+            let lower = DVector::from_fn(r, |_, _| 0.3 * uniform());
+            let upper = DVector::from_fn(r, |j, _| lower[j] + 0.1 + 0.6 * uniform());
+            let bounds = with_rows(
+                Bounds::new(DVector::zeros(n), DVector::from_element(n, 0.6)),
+                a,
+                lower,
+                upper,
+            );
+            let Some(start) = feasible_point(&e, &b, &bounds) else {
+                continue;
+            };
+            let problem = (&q, &c, &e, &b);
+            let x = solve_bounded(&q, &c, &e, &b, &bounds, start.clone());
+            let expected = solve_with_explicit_slacks(problem, &bounds, &start);
+            let (x, expected) = match (x, expected) {
+                (Ok(x), Ok(expected)) => (x, expected),
+                (x, expected) => panic!("case {case}: {x:?} vs {expected:?}"),
+            };
+            let objective = |x: &DVector<f64>| 0.5 * x.dot(&(&q * x)) - c.dot(x);
+            // A singular Q can have many optima, so the objectives are compared.
+            assert!(
+                (objective(&x) - objective(&expected)).abs() < 1e-12,
+                "case {case}: {x:?} vs {expected:?}"
+            );
+            if rank == n {
+                assert_close(&x, &expected, 1e-9);
+            }
+            let sums = bounds.rows.a.tr_mul(&x);
+            for j in 0..r {
+                assert!(
+                    sums[j] >= bounds.rows.lower[j] - 1e-12,
+                    "case {case}: {sums:?}"
+                );
+                assert!(
+                    sums[j] <= bounds.rows.upper[j] + 1e-12,
+                    "case {case}: {sums:?}"
+                );
+            }
+            assert!((x.sum() - 1.0).abs() < 1e-12);
+            solved += 1;
+        }
+        assert!(solved > 100, "only {solved} feasible problems");
+    }
+
+    #[test]
+    fn a_slack_is_scaled_by_its_smallest_member_per_unit() {
+        let scales = [0.1, 0.2, 0.3];
+        // min(0.1 / 1, 0.3 / 2).
+        assert_eq!(slack_scale(&scales, [1.0, 0.0, 2.0]), 0.1);
+        assert_eq!(slack_scale(&scales, [0.0, -4.0, 0.0]), 0.05);
+        assert_eq!(slack_scale(&scales, [0.0, 0.0, 0.0]), 1.0);
+        // A scale that underflows to 0 can't be divided by.
+        assert_eq!(slack_scale(&[1e-300], [1e300]), 1.0);
+    }
+
+    #[test]
+    fn a_free_slack_moves_to_keep_its_row() {
+        // Variables 0 and 1 are solved for, and slack 2 measures x₀ + 2x₁ in column 1.
+        let e = dmatrix![1.0, 1.0; 1.0, 2.0; 0.0, -1.0];
+        let step = dvector![0.1, -0.3];
+        let slacks = [(2, 1)];
+        // −Δs = 0.5 − (0.1 − 0.6).
+        let residuals = dvector![0.0, 0.5];
+        assert_eq!(
+            with_slack_steps(step.clone(), (&[0, 1], &slacks), &e, Some(&residuals)),
+            dvector![0.1, -0.3, -1.0]
+        );
+        // A direction: −Δs = 0 − (0.1 − 0.6).
+        assert_eq!(
+            with_slack_steps(step.clone(), (&[0, 1], &slacks), &e, None),
+            dvector![0.1, -0.3, -0.5]
+        );
+        assert_eq!(
+            with_slack_steps(step.clone(), (&[0, 1], &[]), &e, None),
+            step
+        );
+    }
 }
