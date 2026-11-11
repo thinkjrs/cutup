@@ -738,12 +738,20 @@ fn target_volatility(
 }
 
 /// Which bound each weight is held at, if any: the active set of a long-only solution.
+///
+/// A weight held at a bound comes back within rounding of it, not on it: the solver clamps it
+/// in scaled units, and the weights are then divided by their sum, which is 1 within `n` ulps.
+/// So a weight within `4nε` of a bound's size counts as at it. Compared exactly, rounding hid
+/// every lower bound of a solution on wasm, the bisection below stopped between two that held
+/// different assets, and the step along the line between them was off by 1e-3.
 fn held(w: &DVector<f64>, bounds: &qp::Bounds) -> Vec<Option<bool>> {
-    (0..w.len())
+    let n = w.len();
+    (0..n)
         .map(|i| {
-            if w[i] <= bounds.lower[i] {
+            let (lower, upper) = (bounds.lower[i], bounds.upper[i]);
+            if w[i] <= lower + qp::sum_rounding(n, lower.abs()) {
                 Some(false)
-            } else if w[i] >= bounds.upper[i] {
+            } else if w[i] >= upper - qp::sum_rounding(n, upper.abs()) {
                 Some(true)
             } else {
                 None
@@ -1615,6 +1623,17 @@ mod tests {
         };
         let w = DVector::from_vec(vec![0.1, 0.4, 0.5]);
         assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
+        // Within 4nε of a bound's size, and an ulp past that.
+        let (lower, upper) = (
+            0.1 + qp::sum_rounding(3, 0.1),
+            0.5 - qp::sum_rounding(3, 0.5),
+        );
+        let w = DVector::from_vec(vec![lower, 0.4, upper]);
+        assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
+        let past =
+            |x: f64, up: bool| f64::from_bits(if up { x.to_bits() + 1 } else { x.to_bits() - 1 });
+        let w = DVector::from_vec(vec![past(lower, true), 0.4, past(upper, false)]);
+        assert_eq!(held(&w, &bounds), vec![None, None, None]);
 
         // at² + 2bt = gap: t = 7 for a = 1, b = −3, gap = 7. With b far larger than the rest,
         // (root − b) / a would cancel to 0, but t is about gap / 2b.
