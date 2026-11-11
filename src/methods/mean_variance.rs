@@ -763,6 +763,12 @@ fn bounded_target_volatility(
     let minimum = bounded_min_variance(cov, bounds)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
+    // At the floor, the minimum variance portfolio is the only one within it. The steps below
+    // would take the floor squared for its variance, which misses it by the rounding of the
+    // square root, and move the weights by the square root of that.
+    if target <= risk.volatility(&minimum) {
+        return Ok(normalized(minimum));
+    }
     let at = |rho: f64| bounded_target_return(cov, mu, bounds, rho);
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
@@ -1372,13 +1378,18 @@ mod tests {
             .allocate(&MeanVariance::target_return(mu.max()))
             .unwrap();
         let ceiling = volatility(&data, &top);
-        assert_weights_close(
-            &data
-                .allocate(&MeanVariance::target_volatility(floor))
-                .unwrap(),
-            &minimum,
-            1e-9,
-        );
+        // At the floor, or within rounding below it, the minimum itself. Squaring the floor
+        // back misses its variance by an ulp, and stepping by the square root of that moved
+        // the weights by 2e-8.
+        for sigma in [floor, floor * (1.0 - 1e-13)] {
+            assert_weights_close(
+                &data
+                    .allocate(&MeanVariance::target_volatility(sigma))
+                    .unwrap(),
+                &minimum,
+                1e-12,
+            );
+        }
         for fraction in [0.05, 0.3, 0.6, 0.95] {
             let sigma = floor + fraction * (ceiling - floor);
             let weights = data
