@@ -653,6 +653,14 @@ impl Risk {
     }
 }
 
+/// How far [`Risk::product`] of `u` with itself can round. The correlations are at most 1, so
+/// each of `Cu`'s sums of `n` terms is at most `Σ|uᵢ|`, and so are the dot product's terms
+/// divided by `|uᵢ|`: `2n` sums of terms up to `(Σ|uᵢ|)²`.
+fn variance_rounding(u: &DVector<f64>) -> f64 {
+    let size = u.abs().sum();
+    qp::sum_rounding(2 * u.len(), size * size)
+}
+
 /// The minimum variance portfolio's volatility, divided by `risk`'s scale, checked against the
 /// target `sigma`, also divided by it: a target below it by more than `1e-12` of it is out of
 /// range, and one just below it is moved onto it.
@@ -771,15 +779,16 @@ fn bounded_target_volatility(
     let minimum = bounded_min_variance(cov, bounds)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
-    // At the floor, the target's variance is the minimum's own. The floor squared misses it by
-    // the rounding of the square root, and the step from the minimum, the square root of that,
-    // moved the weights by 2e-8.
-    let units = risk.units(&minimum);
-    let target_variance = if target > risk.volatility(&minimum) {
-        target * target
-    } else {
-        risk.product(&units, &units)
-    };
+    // Variances within rounding of each other can't be told apart, so one within it of the
+    // target's counts as at it. The floor squared misses the minimum's own variance by an ulp,
+    // and a step from the minimum by the square root of that moved the weights by 2e-8. On a
+    // singular covariance, the least variance is reached all along a face of portfolios whose
+    // variances differ only by rounding, and at the floor the answer is the one with the
+    // highest return.
+    let target_variance = target * target;
+    let rounding = variance_rounding(&risk.units(&minimum));
+    // From here, the target with that rounding.
+    let target = (target_variance + rounding).sqrt();
     let at = |rho: f64| bounded_target_return(cov, mu, bounds, rho);
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
@@ -814,8 +823,8 @@ fn bounded_target_volatility(
         risk.product(&u, &v),
         risk.product(&u, &u),
     );
-    // Low is within the target, but for rounding.
-    let gap = (target_variance - c).max(0.0);
+    // Low is within the target, but for rounding, and a gap within rounding is none.
+    let gap = (target_variance - c - rounding).max(0.0);
     #[allow(
         clippy::manual_clamp,
         reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
@@ -1383,8 +1392,9 @@ mod tests {
     fn test_target_volatility_at_a_singular_floor_has_its_highest_return() {
         // The first two assets are the same, so every split of their weight has the least
         // variance. At the floor, or within rounding below it, the one with the most return
-        // holds all of it in the one with the higher mean, whichever that is. Its bisection runs
-        // along that flat face, so it's found to about √ε.
+        // holds all of it in the one with the higher mean, whichever that is. Variances within
+        // rounding of the floor's count as at it, which lets the weights move off the face by
+        // the square root of that rounding: here 3e-8.
         let mut returns = factor_returns(3, 40, 5);
         let first = returns.column(0).into_owned();
         returns.set_column(1, &first);
@@ -1397,8 +1407,38 @@ mod tests {
                 let weights = data
                     .allocate(&MeanVariance::target_volatility(sigma).expected_returns(mu))
                     .unwrap();
+                assert_eq!(weights[1 - higher], 0.0, "{weights:?}");
                 assert!((weights[higher] - pair).abs() < 1e-7, "{weights:?}");
                 assert!((volatility(&data, &weights) - floor).abs() <= 1e-12 * floor);
+            }
+        }
+    }
+
+    #[test]
+    fn test_variance_rounding_is_a_few_ulps_of_its_terms() {
+        // Σ|uᵢ| = 6, so 2·3 sums of terms up to 36, each rounding by 4ε of them.
+        assert_eq!(
+            variance_rounding(&dvector![1.0, -2.0, 3.0]),
+            864.0 * f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn test_target_volatility_at_its_floor_is_the_minimum() {
+        for seed in 1..=8 {
+            let data = Returns::returns_matrix(factor_returns(6, 40, seed)).unwrap();
+            let minimum = data.allocate(&MinVariance::default()).unwrap();
+            let floor = volatility(&data, &minimum);
+            // At the floor computed here, which can be an ulp off the solver's by rounding
+            // that differs between platforms, and within rounding below it, which is held at
+            // the solver's. Squaring the floor back misses the minimum's variance by an ulp
+            // about half the time, and stepping by the square root of that moved the weights by
+            // 2e-8.
+            for sigma in [floor, floor * (1.0 - 1e-13)] {
+                let weights = data
+                    .allocate(&MeanVariance::target_volatility(sigma))
+                    .unwrap();
+                assert_weights_close(&weights, &minimum, 1e-12);
             }
         }
     }
@@ -1413,18 +1453,6 @@ mod tests {
             .allocate(&MeanVariance::target_return(mu.max()))
             .unwrap();
         let ceiling = volatility(&data, &top);
-        // At the floor, or within rounding below it, the minimum itself. Squaring the floor
-        // back misses its variance by an ulp, and stepping by the square root of that moved
-        // the weights by 2e-8.
-        for sigma in [floor, floor * (1.0 - 1e-13)] {
-            assert_weights_close(
-                &data
-                    .allocate(&MeanVariance::target_volatility(sigma))
-                    .unwrap(),
-                &minimum,
-                1e-12,
-            );
-        }
         for fraction in [0.05, 0.3, 0.6, 0.95] {
             let sigma = floor + fraction * (ceiling - floor);
             let weights = data
