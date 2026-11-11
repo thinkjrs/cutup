@@ -971,9 +971,10 @@ mod tests {
 
     #[test]
     fn a_net_target_up_to_rounding_past_the_highest_is_at_it() {
-        // All in the first asset nets the most, 0.00176, with terms 0.0024 + 0.0004·1.6.
+        // All in the first asset nets the most, 0.00176, with terms 0.0024 + 0.0004·1.6. The
+        // sample means, as the method computes them, so the boundary is exactly its own.
         let current = DVector::from_vec(vec![0.2, 0.3, 0.5]);
-        let mu = DVector::from_vec(vec![0.0024, 0.0006, 0.0012]);
+        let mu = allocator().expected_returns(None).unwrap();
         let costs = DVector::from_element(3, 0.0004);
         let bounds = qp::Bounds {
             lower: DVector::zeros(3),
