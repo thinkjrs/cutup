@@ -71,6 +71,9 @@ All notable changes to this project are documented here. The format follows
   square root of that, moved the weights by up to 2e-8. With a singular covariance, it gives
   the highest-return portfolio among those with the least variance, where rounding could
   stop the search partway.
+- A long-short `MeanVariance::target_volatility(σ)` counts a variance within rounding of the
+  minimum variance portfolio's as at it too. A target an ulp above that portfolio's volatility
+  stepped from it by the square root of the ulp, which moved the weights by 7e-9.
 - A long-only `MeanVariance::target_volatility(σ)` counts a weight within `4nε` of a bound's
   size as at that bound. The solver returns a held weight within rounding of its bound, and
   compared exactly, that could hide every lower bound of a solution, as it did on wasm. The
