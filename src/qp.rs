@@ -642,7 +642,7 @@ fn solve_piecewise_in_units(
         // nonzero point.
         let gradient_free = &c_free - &q_rows * &x;
         let residual = b - e.transpose() * &x;
-        let noise = q_rows.amax() * x.amax() + c_free.amax();
+        let noise = step_noise(&q_rows, &x, &c_free);
         // With Q positive definite on the free variables, from the factor kept across
         // iterations. Otherwise, or if that misses, from the eigendecomposition, which handles
         // a singular Q.
@@ -918,6 +918,12 @@ pub(crate) fn search_multiplier(
         }
     }
     unreachable!("the loop returns once the bracket can't be split")
+}
+
+/// The size of the terms the free problem's linear term `c_f − Q_f·x` is a difference of,
+/// `|Q_f|·|x| + |c_f|` in their largest entries, for [`solve_noisy_kkt`]'s `noise`.
+fn step_noise(q_rows: &DMatrix<f64>, x: &DVector<f64>, c_free: &DVector<f64>) -> f64 {
+    q_rows.amax() * x.amax() + c_free.amax()
 }
 
 /// The pivot `Lᵢᵢ²` of a Cholesky factor below which [`Factoring`] counts `Q`'s block on the
@@ -1239,6 +1245,17 @@ mod tests {
         let b = dvector![1.0, 1.0 + 6.5e-8];
         assert_eq!(solve_noisy_kkt(&k, &c, &e, &b, 2.0), Ok(None));
         assert!(solve_noisy_kkt(&k, &c, &e, &b, 8.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_step_noise_is_the_size_of_its_terms() {
+        // 3 · 2 + 4.
+        let noise = step_noise(
+            &dmatrix![1.0, -3.0],
+            &dvector![2.0, -1.0],
+            &dvector![0.5, -4.0],
+        );
+        assert_eq!(noise, 10.0);
     }
 
     #[test]
