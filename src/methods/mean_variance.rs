@@ -1665,10 +1665,10 @@ mod tests {
             Err(CutupError::TargetVolatilityOutOfRange { .. })
         ));
 
-        let bounds = qp::Bounds {
-            lower: DVector::from_vec(vec![0.1, 0.1, 0.1]),
-            upper: DVector::from_vec(vec![0.5, 0.5, 0.5]),
-        };
+        let bounds = qp::Bounds::new(
+            DVector::from_vec(vec![0.1, 0.1, 0.1]),
+            DVector::from_vec(vec![0.5, 0.5, 0.5]),
+        );
         let w = DVector::from_vec(vec![0.1, 0.4, 0.5]);
         assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
         // Within 4nε of a bound's size, and an ulp past that.

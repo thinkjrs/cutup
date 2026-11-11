@@ -469,10 +469,10 @@ fn resolve_bounds(
 
 /// No bounds on `n` weights.
 fn unbounded(n: usize) -> qp::Bounds {
-    qp::Bounds {
-        lower: DVector::from_element(n, f64::NEG_INFINITY),
-        upper: DVector::from_element(n, f64::INFINITY),
-    }
+    qp::Bounds::new(
+        DVector::from_element(n, f64::NEG_INFINITY),
+        DVector::from_element(n, f64::INFINITY),
+    )
 }
 
 /// The least turnover from `current` into `bounds`, or [`CutupError::InfeasibleTurnover`] if
@@ -920,10 +920,7 @@ mod tests {
 
     #[test]
     fn minimum_turnover_counts_both_sides_of_a_trade() {
-        let bounds = qp::Bounds {
-            lower: DVector::from_element(3, 0.1),
-            upper: DVector::from_element(3, 0.5),
-        };
+        let bounds = qp::Bounds::new(DVector::from_element(3, 0.1), DVector::from_element(3, 0.5));
         // Moving into the bounds sells 0.2 of the first asset and buys 0.1 of the third, 0.3 in
         // all, and leaves the weights summing to 0.9, so 0.1 more is bought.
         let current = DVector::from_vec(vec![0.7, 0.3, 0.0]);
@@ -954,10 +951,7 @@ mod tests {
     fn a_cap_at_the_least_turnover_into_the_bounds_counts_up_to_rounding() {
         // From all in the first asset to at most half in each: sell 0.5, buy 0.5.
         let current = DVector::from_vec(vec![1.0, 0.0, 0.0]);
-        let bounds = qp::Bounds {
-            lower: DVector::zeros(3),
-            upper: DVector::from_element(3, 0.5),
-        };
+        let bounds = qp::Bounds::new(DVector::zeros(3), DVector::from_element(3, 0.5));
         let rounding = qp::sum_rounding(3, 1.0);
         assert_eq!(check_cap(&current, &bounds, 1.0 - rounding), Ok(1.0));
         assert_eq!(
@@ -976,10 +970,7 @@ mod tests {
         let current = DVector::from_vec(vec![0.2, 0.3, 0.5]);
         let mu = allocator().expected_returns(None).unwrap();
         let costs = DVector::from_element(3, 0.0004);
-        let bounds = qp::Bounds {
-            lower: DVector::zeros(3),
-            upper: DVector::from_element(3, 1.0),
-        };
+        let bounds = qp::Bounds::new(DVector::zeros(3), DVector::from_element(3, 1.0));
         let (highest, rounding) =
             highest_net_return(&current, (&mu, &costs), &bounds, f64::INFINITY).unwrap();
         assert!((highest - 0.00176).abs() < 1e-15, "{highest}");

@@ -148,7 +148,7 @@ impl WeightBounds {
         let upper = DVector::from_fn(n, |i, _| {
             upper[i].min(1.0 - (lower_sum - lower[i])).max(lower[i])
         });
-        Ok(qp::Bounds { lower, upper })
+        Ok(qp::Bounds::new(lower, upper))
     }
 }
 
@@ -587,10 +587,7 @@ mod tests {
 
     #[test]
     fn test_interior_start_spreads_the_room_above_the_floors() {
-        let bounds = qp::Bounds {
-            lower: dvector![0.1, 0.0, 0.0],
-            upper: dvector![0.5, 1.0, 1.0],
-        };
+        let bounds = qp::Bounds::new(dvector![0.1, 0.0, 0.0], dvector![0.5, 1.0, 1.0]);
         // Room 2.4 for the 0.9 left above the floors: 0.375 of each asset's room.
         assert_weights_close(
             &Weights::from(interior_start(&bounds).as_slice().to_vec()),
@@ -598,19 +595,13 @@ mod tests {
             1e-15,
         );
         // With no room, the floors.
-        let fixed = qp::Bounds {
-            lower: dvector![0.5, 0.5],
-            upper: dvector![0.5, 0.5],
-        };
+        let fixed = qp::Bounds::new(dvector![0.5, 0.5], dvector![0.5, 0.5]);
         assert_eq!(interior_start(&fixed), dvector![0.5, 0.5]);
     }
 
     #[test]
     fn test_reachable_snaps_targets_within_rounding_of_an_end() {
-        let unit = qp::Bounds {
-            lower: dvector![0.0, 0.0],
-            upper: dvector![1.0, 1.0],
-        };
+        let unit = qp::Bounds::new(dvector![0.0, 0.0], dvector![1.0, 1.0]);
         // From 0 to 1. The top's portfolio earns 1, and the next asset 0, so its rounding is
         // 1e-12: a target exactly that far inside snaps to it. The bottom's earns exactly 0,
         // but a target just above it moves weight into the asset earning 1, so it's 1e-12 too.
@@ -625,10 +616,7 @@ mod tests {
         assert!(range.reachable(-2e-12).is_err());
         // With no asset left to move into, as when the bounds hold every asset at its cap,
         // only the end's own terms count.
-        let full = qp::Bounds {
-            lower: dvector![0.0, 0.0],
-            upper: dvector![0.5, 0.5],
-        };
+        let full = qp::Bounds::new(dvector![0.0, 0.0], dvector![0.5, 0.5]);
         let range = ReturnRange::new(&dvector![1.0, 3.0], &full);
         assert_eq!(range.tolerances, (2e-12, 2e-12));
         // In a range within rounding, a target goes to the nearer end, and halfway to the top.
@@ -646,10 +634,7 @@ mod tests {
 
     #[test]
     fn test_each_end_rounds_by_its_own_portfolio() {
-        let unit = qp::Bounds {
-            lower: dvector![0.0, 0.0, 0.0],
-            upper: dvector![1.0, 1.0, 1.0],
-        };
+        let unit = qp::Bounds::new(dvector![0.0, 0.0, 0.0], dvector![1.0, 1.0, 1.0]);
         // The top holds only the second asset, so the first's −1e6 doesn't widen its rounding,
         // 2e-14. The bottom holds the first, so its rounding is 1e-6.
         let mu = dvector![-1e6, 0.02, 0.02 - 5e-7];
@@ -680,10 +665,7 @@ mod tests {
 
     #[test]
     fn test_the_start_holds_only_assets_near_the_target() {
-        let unit = qp::Bounds {
-            lower: dvector![0.0, 0.0, 0.0, 0.0],
-            upper: dvector![1.0, 1.0, 1.0, 1.0],
-        };
+        let unit = qp::Bounds::new(dvector![0.0, 0.0, 0.0, 0.0], dvector![1.0, 1.0, 1.0, 1.0]);
         let mu = dvector![-1e6, 0.02, 0.0199995, 0.01];
         // Near the top, only the second and third assets; lower, the third and fourth; far
         // lower, the fourth and first. The first is held only where the target needs it.
@@ -695,20 +677,14 @@ mod tests {
         assert_eq!((w[1], w[2]), (0.0, 0.0));
         assert!((w[0] - 0.5).abs() < 1e-6);
         // With floors and caps, and still reaching the target.
-        let bounds = qp::Bounds {
-            lower: dvector![0.0, 0.1, 0.0, 0.2],
-            upper: dvector![0.5, 0.6, 0.15, 1.0],
-        };
+        let bounds = qp::Bounds::new(dvector![0.0, 0.1, 0.0, 0.2], dvector![0.5, 0.6, 0.15, 1.0]);
         assert_eq!(start(&mu, &bounds, 0.016)[0], 0.0);
         start(&mu, &bounds, -1e5);
         // Means near f64::MAX don't overflow it.
         let huge = dvector![-f64::MAX, f64::MAX / 2.0, f64::MAX];
         let w = start(
             &huge,
-            &qp::Bounds {
-                lower: dvector![0.0, 0.0, 0.0],
-                upper: dvector![1.0, 1.0, 1.0],
-            },
+            &qp::Bounds::new(dvector![0.0, 0.0, 0.0], dvector![1.0, 1.0, 1.0]),
             f64::MAX * 0.75,
         );
         assert_eq!(w[0], 0.0);
@@ -716,10 +692,7 @@ mod tests {
 
     #[test]
     fn test_the_start_slides_the_budget_along_the_returns() {
-        let cap = qp::Bounds {
-            lower: DVector::zeros(4),
-            upper: DVector::from_element(4, 0.5),
-        };
+        let cap = qp::Bounds::new(DVector::zeros(4), DVector::from_element(4, 0.5));
         let start = |mu: &DVector<f64>, bounds: &qp::Bounds, target: f64| {
             start(mu, bounds, target)
                 .iter()
@@ -734,18 +707,15 @@ mod tests {
         assert_eq!(start(&mu, &cap, 1600.0), [0.45, 0.5, 0.05, 0.0]);
         // Tied expected returns are laid in column order.
         let tied = dvector![0.0, 1.0, 1.0, 2.0];
-        let unit = qp::Bounds {
-            lower: DVector::zeros(4),
-            upper: DVector::from_element(4, 1.0),
-        };
+        let unit = qp::Bounds::new(DVector::zeros(4), DVector::from_element(4, 1.0));
         assert_eq!(start(&tied, &unit, 1.2), [0.0, 0.8, 0.0, 0.2]);
         assert_eq!(start(&tied, &unit, 0.5), [0.5, 0.0, 0.5, 0.0]);
         assert_eq!(start(&tied, &cap, 1.2), [0.0, 0.5, 0.3, 0.2]);
         // Uncapped, each asset's stretch is the budget left after the floors, here 0.6.
-        let floors = qp::Bounds {
-            lower: dvector![0.1, 0.1, 0.1, 0.1],
-            upper: DVector::from_element(4, f64::INFINITY),
-        };
+        let floors = qp::Bounds::new(
+            dvector![0.1, 0.1, 0.1, 0.1],
+            DVector::from_element(4, f64::INFINITY),
+        );
         assert_eq!(start(&mu, &floors, 2500.0), [0.1, 0.4, 0.4, 0.1]);
     }
 
@@ -882,10 +852,7 @@ mod tests {
 
     #[test]
     fn test_a_target_at_an_end_needs_only_the_budget() {
-        let unit = qp::Bounds {
-            lower: dvector![0.0, 0.0, 0.0],
-            upper: dvector![1.0, 1.0, 1.0],
-        };
+        let unit = qp::Bounds::new(dvector![0.0, 0.0, 0.0], dvector![1.0, 1.0, 1.0]);
         let mu = dvector![0.1, 0.2, 0.3];
         for (target, columns) in [(0.1, 1), (0.3, 1), (0.2, 2)] {
             let problem = ReturnRange::target_problem(&mu, unit.clone(), target).unwrap();

@@ -400,12 +400,14 @@ pub(crate) struct Bounds {
 }
 
 impl Bounds {
+    /// `lower ≤ x ≤ upper`.
+    pub(crate) fn new(lower: DVector<f64>, upper: DVector<f64>) -> Self {
+        Bounds { lower, upper }
+    }
+
     /// `x ≥ 0`, with no upper bound.
     pub(crate) fn nonnegative(n: usize) -> Self {
-        Bounds {
-            lower: DVector::zeros(n),
-            upper: DVector::from_element(n, f64::INFINITY),
-        }
+        Bounds::new(DVector::zeros(n), DVector::from_element(n, f64::INFINITY))
     }
 }
 
@@ -1189,10 +1191,7 @@ mod tests {
     }
 
     fn capped(upper: DVector<f64>) -> Bounds {
-        Bounds {
-            lower: DVector::zeros(upper.len()),
-            upper,
-        }
+        Bounds::new(DVector::zeros(upper.len()), upper)
     }
 
     fn assert_close(a: &DVector<f64>, b: &DVector<f64>, tol: f64) {
@@ -1406,10 +1405,7 @@ mod tests {
         let q = DMatrix::identity(3, 3);
         let c = dvector![3.0, 0.0, 0.0];
         let (e, b) = budget(3);
-        let bounds = Bounds {
-            lower: dvector![0.0, 0.3, 0.1],
-            upper: dvector![1.0, 1.0, 0.1],
-        };
+        let bounds = Bounds::new(dvector![0.0, 0.3, 0.1], dvector![1.0, 1.0, 0.1]);
         let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.3, 0.6, 0.1]).unwrap();
         assert_close(&x, &dvector![0.6, 0.3, 0.1], 1e-15);
     }
@@ -1548,10 +1544,10 @@ mod tests {
         let (e, b) = budget(2);
         let q = dmatrix![1.0, 0.0; 0.0, 1.0];
         let c = dvector![-2.0, 1.0];
-        let free = Bounds {
-            lower: DVector::from_element(2, f64::NEG_INFINITY),
-            upper: DVector::from_element(2, f64::INFINITY),
-        };
+        let free = Bounds::new(
+            DVector::from_element(2, f64::NEG_INFINITY),
+            DVector::from_element(2, f64::INFINITY),
+        );
         let kinks = Kinks {
             at: dvector![0.5, 0.5],
             slopes: dvector![0.25, 0.25],
