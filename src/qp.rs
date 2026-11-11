@@ -97,10 +97,17 @@ struct Units {
 
 impl Units {
     fn new(k: &DMatrix<f64>, c: &DVector<f64>, e: &DMatrix<f64>, b: &DVector<f64>) -> Self {
-        let scales = k.diagonal().map(|v| match v.sqrt() {
-            s if s.is_finite() && s > 0.0 => s,
-            _ => 1.0,
-        });
+        Units::scaled(k, c, e, b, diagonal_scales(k))
+    }
+
+    /// [`Units::new`] with the variables' scales given.
+    fn scaled(
+        k: &DMatrix<f64>,
+        c: &DVector<f64>,
+        e: &DMatrix<f64>,
+        b: &DVector<f64>,
+        scales: DVector<f64>,
+    ) -> Self {
         let column_scales: Vec<f64> = e
             .column_iter()
             .map(|column| match column.amax() {
@@ -134,6 +141,14 @@ impl Units {
             multipliers[j] / self.column_scales[j]
         })
     }
+}
+
+/// `sqrt(Kᵢᵢ)` for each variable, or 1 where that's zero or not finite: [`Units`]' scales.
+fn diagonal_scales(k: &DMatrix<f64>) -> DVector<f64> {
+    k.diagonal().map(|v| match v.sqrt() {
+        s if s.is_finite() && s > 0.0 => s,
+        _ => 1.0,
+    })
 }
 
 /// [`solve_kkt`] for a `c` computed from terms of size up to `noise`, which may have cancelled
