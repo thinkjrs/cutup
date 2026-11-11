@@ -167,21 +167,11 @@ fn solve_noisy_kkt(
     let x = x0 + z * v;
     let multipliers = constraints.multipliers(&(&c - k * &x));
 
-    let stationarity = norm(&(k * &x + e * &multipliers - &c));
-    let feasibility = norm(&(e.transpose() * &x - &b));
-    let x_norm = norm(&x);
-    let size = norm(k) * x_norm
-        + norm(e) * (x_norm + norm(&multipliers))
-        + norm(&c)
-        + norm(&b)
-        + noise / problem.k_scale;
-    // A check that overflows can't tell a solution from an inconsistent system: `∞ > ∞` is
-    // false, so it would pass.
-    if !(stationarity + feasibility).is_finite() || !size.is_finite() {
-        return Err(CutupError::SingularCovariance);
-    }
-    if stationarity + feasibility > 1e-8 * size {
-        return Ok(None);
+    let residual = kkt_residual((k, &c, e, &b), &x, &multipliers, noise / problem.k_scale);
+    match within_rounding(residual) {
+        None => return Err(CutupError::SingularCovariance),
+        Some(false) => return Ok(None),
+        Some(true) => {}
     }
     if x.iter().any(|w| !w.is_finite()) {
         return Err(CutupError::SingularCovariance);
@@ -190,6 +180,33 @@ fn solve_noisy_kkt(
         multipliers[j] * problem.k_scale / problem.column_scales[j]
     });
     Ok(Some((x, multipliers)))
+}
+
+/// How far `x` and `λ` are from solving `Kx + Eλ = c`, `Eᵀx = b`, and the size of the terms
+/// that residual is a difference of: `‖K‖‖x‖ + ‖E‖(‖x‖ + ‖λ‖) + ‖c‖ + ‖b‖`, plus `noise` for a
+/// `c` that may have cancelled.
+fn kkt_residual(
+    (k, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
+    x: &DVector<f64>,
+    multipliers: &DVector<f64>,
+    noise: f64,
+) -> (f64, f64) {
+    let stationarity = norm(&(k * x + e * multipliers - c));
+    let feasibility = norm(&(e.transpose() * x - b));
+    let x_norm = norm(x);
+    let size =
+        norm(k) * x_norm + norm(e) * (x_norm + norm(multipliers)) + norm(c) + norm(b) + noise;
+    (stationarity + feasibility, size)
+}
+
+/// Whether a [`kkt_residual`] is within `1e-8` of the size of its terms, or `None` if either
+/// overflowed. A check that overflows can't tell a solution from an inconsistent system:
+/// `∞ ≤ ∞` holds, so it would pass.
+fn within_rounding((residual, size): (f64, f64)) -> Option<bool> {
+    if !residual.is_finite() || !size.is_finite() {
+        return None;
+    }
+    Some(residual <= 1e-8 * size)
 }
 
 /// The Euclidean norm of `m`'s entries, computed on `m / max|mᵢⱼ|` so that squaring entries
@@ -1054,6 +1071,33 @@ mod tests {
         assert_eq!(norm(&DVector::<f64>::zeros(2)), 0.0);
         assert_eq!(norm(&dvector![f64::INFINITY, 1.0]), f64::INFINITY);
         assert!(norm(&dvector![f64::NAN, f64::INFINITY]).is_nan());
+    }
+
+    #[test]
+    fn the_kkt_residual_is_measured_against_its_terms() {
+        // Kx + Eλ − c = 8 + 5 − 1 and Eᵀx − b = 4 − 3; the terms are 2·4, 1·(4 + 5), 1, 3 and
+        // the noise.
+        let problem = (
+            &dmatrix![2.0],
+            &dvector![1.0],
+            &dmatrix![1.0],
+            &dvector![3.0],
+        );
+        let residual = kkt_residual(problem, &dvector![4.0], &dvector![5.0], 0.5);
+        assert_eq!(residual, (13.0, 21.5));
+    }
+
+    #[test]
+    fn a_residual_within_rounding_is_at_most_1e_8_of_its_terms() {
+        let at = 1e-8 * 2.0;
+        assert_eq!(within_rounding((at, 2.0)), Some(true));
+        assert_eq!(
+            within_rounding((f64::from_bits(at.to_bits() + 1), 2.0)),
+            Some(false)
+        );
+        assert_eq!(within_rounding((f64::INFINITY, 2.0)), None);
+        assert_eq!(within_rounding((f64::NAN, 2.0)), None);
+        assert_eq!(within_rounding((0.0, f64::INFINITY)), None);
     }
 
     #[test]
