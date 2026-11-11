@@ -20,8 +20,10 @@ mutants that weren't caught last time, and `--in-diff <file>` only the lines a
 diff changes. `.cargo/mutants.toml` turns on every feature, so the `nalgebra`
 constructors are tested too, and sets a test timeout of at least 60 s.
 
-The whole crate has 2,158 mutants and takes about 80 minutes at four jobs. A
+The whole crate has 3,213 mutants and takes about 2 hours at four jobs. A
 mutant that makes a solver loop forever times out, which counts as caught.
+Run it on an otherwise idle machine: on a busy one, caught and missed mutants
+alike run past the timeout, and some mutants allocate without bound.
 
 ## CI
 
