@@ -652,7 +652,10 @@ fn solve_piecewise_in_units(
             .and_then(|cholesky| solve_factored(cholesky, problem, noise));
         let solved = match factored {
             Some(solution) => Some(solution),
-            None => solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?,
+            None => {
+                factoring.reset();
+                solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
+            }
         };
         let Some((delta, multipliers)) = solved else {
             // Without a linear term on the free variables the free problem is bounded below:
@@ -958,34 +961,44 @@ impl Factoring {
     }
 
     /// The factor of `q`'s block on `indices`, which are in increasing order, or `None` if
-    /// that block is singular or nearly so. It's updated from the last one if there is one,
-    /// and otherwise computed afresh unless the block contains the last singular one.
+    /// that block is singular or nearly so. It's updated from the last one where [`updated`]
+    /// can, and otherwise computed afresh unless the block contains the last singular one. An
+    /// update that finds the block singular is retried afresh too, since over many updates the
+    /// factor drifts by rounding.
     fn update(&mut self, q: &DMatrix<f64>, indices: &[usize]) -> Option<&Cholesky<f64, Dyn>> {
-        let factor = match self.factor.take() {
-            Some((held, cholesky)) => updated(q, held, cholesky, indices),
-            None if self
-                .singular
-                .as_ref()
-                .is_some_and(|s| s.iter().all(|i| indices.binary_search(i).is_ok())) =>
-            {
-                return None;
-            }
+        let updated = self
+            .factor
+            .take()
+            .and_then(|(held, cholesky)| updated(q, held, cholesky, indices));
+        let factor = match updated {
+            Some(cholesky) => cholesky,
             None => {
+                let contains_singular = self
+                    .singular
+                    .as_ref()
+                    .is_some_and(|s| s.iter().all(|i| indices.binary_search(i).is_ok()));
+                if contains_singular {
+                    return None;
+                }
                 #[cfg(test)]
                 {
                     self.factorizations += 1;
                 }
-                Cholesky::new(q.select_rows(indices).select_columns(indices))
-                    .filter(positive_definite)
+                let block = q.select_rows(indices).select_columns(indices);
+                let Some(cholesky) = Cholesky::new(block).filter(positive_definite) else {
+                    self.singular = Some(indices.to_vec());
+                    return None;
+                };
+                cholesky
             }
         };
-        match factor {
-            Some(cholesky) => Some(&self.factor.insert((indices.to_vec(), cholesky)).1),
-            None => {
-                self.singular = Some(indices.to_vec());
-                None
-            }
-        }
+        Some(&self.factor.insert((indices.to_vec(), factor)).1)
+    }
+
+    /// Drops the factor, as when its solution missed [`within_rounding`], which a factor drifted
+    /// over many updates can, so that the next one is computed afresh.
+    fn reset(&mut self) {
+        self.factor = None;
     }
 }
 
@@ -1680,10 +1693,12 @@ mod tests {
     #[test]
     fn an_insertion_that_makes_the_block_singular_stops_there() {
         // Inserting the third variable would solve with the second's zero pivot, which panics.
+        // The update is retried afresh, which finds the block singular too.
         let q = repeated_variable();
         let mut factoring = Factoring::new();
         factoring.update(&q, &[0]).unwrap();
         assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        assert_eq!(factoring.factorizations, 2);
     }
 
     #[test]
@@ -1701,6 +1716,18 @@ mod tests {
         assert!(factoring.update(&q, &[0, 1, 2]).is_none());
         assert!(factoring.update(&q, &[1, 2]).is_some());
         assert_eq!(factoring.factorizations, 3);
+    }
+
+    #[test]
+    fn a_reset_factor_is_computed_afresh() {
+        let q = positive_definite_matrix(3);
+        let mut factoring = Factoring::new();
+        factoring.update(&q, &[0, 1, 2]).unwrap();
+        factoring.update(&q, &[0, 1, 2]).unwrap();
+        assert_eq!(factoring.factorizations, 1);
+        factoring.reset();
+        factoring.update(&q, &[0, 1, 2]).unwrap();
+        assert_eq!(factoring.factorizations, 2);
     }
 
     #[test]
