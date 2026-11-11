@@ -65,10 +65,16 @@ All notable changes to this project are documented here. The format follows
   and now solves in 0.1 s. Bland's rule stays for a vertex the widening doesn't resolve.
   `MinCvar` still starts from its worst scenarios, which is faster, so its times are
   unchanged.
-- A long-only `MeanVariance::target_volatility(σ)` at the minimum variance portfolio's
-  volatility, or within rounding below it, takes the target's variance to be that portfolio's
-  own. Squaring the volatility back could miss it by an ulp, and the step from the portfolio,
-  the square root of that, moved the weights by up to 2e-8.
+- A long-only `MeanVariance::target_volatility(σ)` counts a variance within rounding of the
+  target's as at it. At the minimum variance portfolio's volatility it gives that portfolio:
+  squaring the volatility back could miss its variance by an ulp, and the step from it, the
+  square root of that, moved the weights by up to 2e-8. With a singular covariance, it gives
+  the highest-return portfolio among those with the least variance, where rounding could
+  stop the search partway.
+- A long-only `MeanVariance::target_volatility(σ)` counts a weight within `4nε` of a bound's
+  size as at that bound. The solver returns a held weight within rounding of its bound, and
+  compared exactly, that could hide every lower bound of a solution, as it did on wasm. The
+  search then stopped between two portfolios holding different assets, and was off by 1e-3.
 
 ## [0.3.6] - 2026-11-10
 

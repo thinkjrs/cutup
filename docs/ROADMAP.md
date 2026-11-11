@@ -473,9 +473,12 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   with a step of iterative refinement. A singular or nearly singular block
   still goes through the eigendecomposition. `MinVariance` went from 18.2 s to
   0.23 s at 500 assets, from 36.7 ms to 2.3 ms at 100 and from 31 µs to
-  10.7 µs at 10. That uncovered a long-only target volatility at the floor
-  stepping 2e-8 off the minimum variance portfolio, from squaring the
-  volatility back; the target's variance there is now that portfolio's own.
+  10.7 µs at 10. The changed rounding uncovered three things in the
+  long-only target volatility: at the floor it stepped 2e-8 off the minimum
+  variance portfolio, with a singular covariance the search could stop short
+  of the highest-return portfolio at the floor, and on wasm weights a rounding
+  off their bounds hid which assets were held. Variances within rounding of the
+  target now count as at it, and weights within rounding of a bound as on it.
 - **The target return's rounding tolerance:** `ReturnRange` moved a target
   within `1e-12 · max(|lowest|, |highest|)` of an end of the bounds' range of
   returns onto that end, so one mean far from the rest widened it even at an
