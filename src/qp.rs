@@ -1232,6 +1232,16 @@ mod tests {
     }
 
     #[test]
+    fn the_noise_scales_with_k() {
+        // K = 4 is scaled to 1, so the noise of 2 counts as 0.5 against the terms' 5.24: x = 1
+        // and x = 1 + 6.5e-8 then disagree by more than 1e-8 of them, but not of 7.24 or more.
+        let (k, c, e) = (dmatrix![4.0], dvector![0.0], dmatrix![1.0, 1.0]);
+        let b = dvector![1.0, 1.0 + 6.5e-8];
+        assert_eq!(solve_noisy_kkt(&k, &c, &e, &b, 2.0), Ok(None));
+        assert!(solve_noisy_kkt(&k, &c, &e, &b, 8.0).unwrap().is_some());
+    }
+
+    #[test]
     fn null_space_is_accurate_in_its_tiny_entries() {
         // For E = (s, 1), Z ∝ (1, −s). Householder got −s to rounding of 1, so at s = 1e-12
         // it was 2e-5 off relative to s, which converting back to x multiplies by 1/s.
