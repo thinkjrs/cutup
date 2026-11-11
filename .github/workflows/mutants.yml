@@ -48,10 +48,16 @@ jobs:
 
       # A mutant that makes the tests time out, as one that loops forever does, counts as
       # caught: cargo-mutants exits 3 for those, and 2 for missed ones, which fail the job.
+      # With both, it exits 3, so missed mutants are also read from missed.txt.
       - name: Mutate the changed lines
         run: |
           status=0
           cargo mutants --cargo-arg=--locked --no-shuffle -j 2 --in-diff pr.diff || status=$?
+          if [ -s mutants.out/missed.txt ]; then
+            echo "Missed mutants:"
+            cat mutants.out/missed.txt
+            exit 2
+          fi
           if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
             exit "$status"
           fi
