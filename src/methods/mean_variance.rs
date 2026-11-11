@@ -763,12 +763,15 @@ fn bounded_target_volatility(
     let minimum = bounded_min_variance(cov, bounds)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
-    // At the floor, the minimum variance portfolio is the only one within it. The steps below
-    // would take the floor squared for its variance, which misses it by the rounding of the
-    // square root, and move the weights by the square root of that.
-    if target <= risk.volatility(&minimum) {
-        return Ok(normalized(minimum));
-    }
+    // At the floor, the target's variance is the minimum's own. The floor squared misses it by
+    // the rounding of the square root, and the step from the minimum, the square root of that,
+    // moved the weights by 2e-8.
+    let units = risk.units(&minimum);
+    let target_variance = if target > risk.volatility(&minimum) {
+        target * target
+    } else {
+        risk.product(&units, &units)
+    };
     let at = |rho: f64| bounded_target_return(cov, mu, bounds, rho);
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
@@ -804,7 +807,7 @@ fn bounded_target_volatility(
         risk.product(&u, &u),
     );
     // Low is within the target, but for rounding.
-    let gap = (target * target - c).max(0.0);
+    let gap = (target_variance - c).max(0.0);
     #[allow(
         clippy::manual_clamp,
         reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
@@ -1365,6 +1368,30 @@ mod tests {
             assert_weights_close(&weights, &Weights::from(merton.as_slice().to_vec()), 1e-9);
             let got = volatility(&data, &weights);
             assert!((got - sigma).abs() <= 1e-12 * sigma, "{got} vs {sigma}");
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_at_a_singular_floor_has_its_highest_return() {
+        // The first two assets are the same, so every split of their weight has the least
+        // variance. At the floor, or within rounding below it, the one with the most return
+        // holds all of it in the one with the higher mean, whichever that is. Its bisection runs
+        // along that flat face, so it's found to about √ε.
+        let mut returns = factor_returns(3, 40, 5);
+        let first = returns.column(0).into_owned();
+        returns.set_column(1, &first);
+        let data = Returns::returns_matrix(returns).unwrap();
+        let minimum = data.allocate(&MinVariance::default()).unwrap();
+        let floor = volatility(&data, &minimum);
+        let pair = minimum[0] + minimum[1];
+        for (mu, higher) in [([0.002, 0.001, 0.0015], 0), ([0.001, 0.002, 0.0015], 1)] {
+            for sigma in [floor, floor * (1.0 - 1e-13)] {
+                let weights = data
+                    .allocate(&MeanVariance::target_volatility(sigma).expected_returns(mu))
+                    .unwrap();
+                assert!((weights[higher] - pair).abs() < 1e-7, "{weights:?}");
+                assert!((volatility(&data, &weights) - floor).abs() <= 1e-12 * floor);
+            }
         }
     }
 
