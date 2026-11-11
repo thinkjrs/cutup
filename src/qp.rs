@@ -753,6 +753,9 @@ fn solve_piecewise_in_units(
         let e_free = e.select_rows(solved).select_columns(&kept);
         let x_free = x.select_rows(&indices);
         let q_rows = q.select_rows(solved);
+        // The variables without the slacks, whose sizes the tolerances below measure: a slack
+        // sums up to all of them, and would loosen each tolerance up to that many times.
+        let variables = x.rows(0, originals).into_owned();
 
         // Solve for the step from x rather than for the new point, so that when Q is singular
         // and the free problem has many minima, the target is the one closest to x. The
@@ -762,7 +765,7 @@ fn solve_piecewise_in_units(
         let gradient_free = &c_free - &q_rows * &x;
         let residuals = b - e.transpose() * &x;
         let residual = residuals.select_rows(&kept);
-        let noise = step_noise(&q_rows, &x, &c_free);
+        let noise = step_noise(&q_rows, &variables, &c_free);
         // With Q positive definite on the free variables, from the factor kept across
         // iterations. Otherwise, or if that misses, from the eigendecomposition, which handles
         // a singular Q.
@@ -824,7 +827,7 @@ fn solve_piecewise_in_units(
         // instead. Rounding is measured against all of x, since variables held at a nonzero
         // point feed the step: a lone free variable at its bound would otherwise block on a
         // step of 1e-17.
-        let tolerance = 1e-12 * target.amax().max(x.amax());
+        let tolerance = 1e-12 * target.rows(0, solved.len()).amax().max(variables.amax());
         let blocking = (0..indices.len())
             .filter_map(|k| {
                 if target[k] < lower[k] - tolerance {
@@ -877,7 +880,8 @@ fn solve_piecewise_in_units(
         let gradient = q * &x - c;
         let pushback = e * &multipliers;
         // Like the step, the multipliers are differences of terms up to this size.
-        let scale = (q.amax() * x.amax() + c.amax().max(slope_amax)).max(pushback.amax());
+        let scale = (q.amax() * x.rows(0, originals).amax() + c.amax().max(slope_amax))
+            .max(pushback.amax());
         let wrong: Vec<(f64, usize, usize)> = (0..n)
             .filter(|&i| !fixed[i])
             .filter_map(|i| {
