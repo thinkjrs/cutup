@@ -653,6 +653,13 @@ impl Risk {
     }
 }
 
+/// How far the volatility `target` is above `floor`, counting a variance within `rounding` of
+/// the floor's as at it: `(target² − floor² − rounding) / (target + floor)`, written so that a
+/// target far above the floor can't overflow, and never negative.
+fn above_floor(target: f64, floor: f64, rounding: f64) -> f64 {
+    (target - floor - rounding / (target + floor)).max(0.0)
+}
+
 /// How far [`Risk::product`] of `u` with itself can round. The correlations are at most 1, so
 /// each of `Cu`'s sums of `n` terms is at most `Σ|uᵢ|`, and so are the dot product's terms
 /// divided by `|uᵢ|`: `2n` sums of terms up to `(Σ|uᵢ|)²`.
@@ -740,8 +747,13 @@ fn target_volatility(
         return Err(CutupError::Unbounded);
     }
     let floor = risk.volatility(&minimum);
-    // Two roots, so that a target far above the floor can't overflow the product.
-    let step = (target - floor).sqrt() * (target + floor).sqrt() / risk.volatility(&direction);
+    // The step is √(target² − floor²) over the direction's volatility, as two roots so that a
+    // target far above the floor can't overflow the product. A variance within rounding of the
+    // floor's counts as at it, as long-only: a target an ulp above the floor stepped by the
+    // square root of that, and moved the weights by 7e-9.
+    let rounding = variance_rounding(&risk.units(&minimum));
+    let step = above_floor(target, floor, rounding).sqrt() * (target + floor).sqrt()
+        / risk.volatility(&direction);
     Ok(minimum + direction * step)
 }
 
@@ -1412,6 +1424,14 @@ mod tests {
                 assert!((volatility(&data, &weights) - floor).abs() <= 1e-12 * floor);
             }
         }
+    }
+
+    #[test]
+    fn test_above_the_floor_is_net_of_the_variance_rounding() {
+        // (25 − 1 − 6) / 6 = 5 − 1 − 1.
+        assert_eq!(above_floor(5.0, 1.0, 6.0), 3.0);
+        // Within the rounding, at the floor.
+        assert_eq!(above_floor(1.0, 1.0, 1.0), 0.0);
     }
 
     #[test]
