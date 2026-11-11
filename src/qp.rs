@@ -407,17 +407,37 @@ impl Constraints {
     }
 }
 
-/// Lower and upper bounds `l ≤ x ≤ u` on each variable. Either may be infinite.
+/// Lower and upper bounds `l ≤ x ≤ u` on each variable, and on linear combinations of them,
+/// [`Rows`]. Any bound may be infinite.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bounds {
+    pub(crate) lower: DVector<f64>,
+    pub(crate) upper: DVector<f64>,
+    pub(crate) rows: Rows,
+}
+
+/// Two-sided limits `lⱼ ≤ aⱼᵀx ≤ uⱼ` on linear combinations of the variables, one for each
+/// column `aⱼ` of `a`, such as a cap and a floor on a group of weights' sum.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Rows {
+    pub(crate) a: DMatrix<f64>,
     pub(crate) lower: DVector<f64>,
     pub(crate) upper: DVector<f64>,
 }
 
 impl Bounds {
-    /// `lower ≤ x ≤ upper`.
+    /// `lower ≤ x ≤ upper`, with no [`Rows`].
     pub(crate) fn new(lower: DVector<f64>, upper: DVector<f64>) -> Self {
-        Bounds { lower, upper }
+        let n = lower.len();
+        Bounds {
+            lower,
+            upper,
+            rows: Rows {
+                a: DMatrix::zeros(n, 0),
+                lower: DVector::zeros(0),
+                upper: DVector::zeros(0),
+            },
+        }
     }
 
     /// `x ≥ 0`, with no upper bound.
@@ -488,8 +508,8 @@ enum Side {
     Upper,
 }
 
-/// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and l ≤ x ≤ u` for a positive
-/// semidefinite `Q`, starting from `start`, which must be feasible. This is
+/// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and l ≤ x ≤ u`, and the bounds' [`Rows`],
+/// for a positive semidefinite `Q`, starting from `start`, which must be feasible. This is
 /// [`solve_piecewise`] with no kinks.
 pub(crate) fn solve_bounded(
     q: &DMatrix<f64>,
@@ -502,9 +522,9 @@ pub(crate) fn solve_bounded(
     solve_piecewise(q, c, e, b, bounds, &Kinks::none(q.nrows()), start)
 }
 
-/// Solves `minimize ½ xᵀQx − cᵀx + Σᵢ κᵢ|xᵢ − aᵢ| subject to Eᵀx = b and l ≤ x ≤ u` for a
-/// positive semidefinite `Q` and `κ ≥ 0`, starting from `start`, which must be feasible. A
-/// bound may be infinite.
+/// Solves `minimize ½ xᵀQx − cᵀx + Σᵢ κᵢ|xᵢ − aᵢ| subject to Eᵀx = b and l ≤ x ≤ u`, and the
+/// bounds' [`Rows`], for a positive semidefinite `Q` and `κ ≥ 0`, starting from `start`, which
+/// must be feasible. A bound may be infinite.
 ///
 /// This is a primal active-set method (Nocedal and Wright, 2006, Algorithm 16.3). Each
 /// variable's range is cut at its kink `aᵢ` into segments on which the objective is smooth,
@@ -521,6 +541,12 @@ pub(crate) fn solve_bounded(
 /// direction of zero curvature that lowers the objective instead.
 ///
 /// A variable whose bounds are equal is fixed and never leaves the active set.
+///
+/// Each row `l ≤ aᵀx ≤ u` gets a slack variable `s = aᵀx` bounded by its limits, from
+/// [`with_slacks`], so a row reaches a limit, is held there and is released as a variable is.
+/// A slack that isn't held only measures its row, so each solve leaves it and its row out and
+/// sets it from the step afterwards. That keeps the block of `Q` the solve factors free of the
+/// slacks' zero curvature.
 ///
 /// The returned `x` is clamped to the bounds, so rounding never leaves an entry outside them.
 ///
@@ -541,10 +567,17 @@ pub(crate) fn solve_piecewise(
     kinks: &Kinks,
     start: DVector<f64>,
 ) -> Result<DVector<f64>, CutupError> {
+    let n = q.nrows();
+    let rows = &bounds.rows;
+    let (q, c, e, b) = with_slacks((q, c, e, b), &rows.a);
     // In the units of [`solve_kkt`], so that the tolerances below compare like with like. The
     // kinks move with x, and their slopes scale like c.
-    let units = Units::new(q, c, e, b);
-    let segments: Vec<Segments> = (0..q.nrows())
+    let mut scales = diagonal_scales(&q);
+    for j in 0..rows.a.ncols() {
+        scales[n + j] = slack_scale(&scales.as_slice()[..n], rows.a.column(j).iter().copied());
+    }
+    let units = Units::scaled(&q, &c, &e, &b, scales);
+    let segments: Vec<Segments> = (0..n)
         .map(|i| {
             let scale = units.scales[i];
             Segments::new(
@@ -554,22 +587,81 @@ pub(crate) fn solve_piecewise(
                 kinks.slopes[i] / scale,
             )
         })
+        .chain((0..rows.a.ncols()).map(|j| {
+            let scale = units.scales[n + j];
+            Segments::new(rows.lower[j] * scale, rows.upper[j] * scale, 0.0, 0.0)
+        }))
         .collect();
-    let start = start.component_mul(&units.scales);
-    let u = solve_piecewise_in_units(&units.k, &units.c, &units.e, &units.b, &segments, start)?;
-    checked(units.original(&u), e, b, &units.column_scales)
+    let start = DVector::from_iterator(
+        q.nrows(),
+        start
+            .iter()
+            .copied()
+            .chain(rows.a.tr_mul(&start).iter().copied()),
+    )
+    .component_mul(&units.scales);
+    let u = solve_piecewise_in_units(
+        (&units.k, &units.c, &units.e, &units.b),
+        &segments,
+        start,
+        n,
+    )?;
+    let x = checked(units.original(&u), &e, &b, &units.column_scales)?;
+    Ok(x.rows(0, n).into_owned())
 }
 
-/// [`solve_piecewise`] for a problem already in [`Units`].
+/// The problem `(Q, c, E, b)` with a slack variable `sⱼ = aⱼᵀx` for each column `aⱼ` of `a`,
+/// after `x`: no curvature or linear term, and a constraint `aⱼᵀx − sⱼ = 0` each, after `E`'s.
+/// Bounding `sⱼ` then bounds `aⱼᵀx`, and the active-set method holds a row at a limit as it
+/// holds any variable at a bound.
+fn with_slacks(
+    (q, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
+    a: &DMatrix<f64>,
+) -> (DMatrix<f64>, DVector<f64>, DMatrix<f64>, DVector<f64>) {
+    let (n, r) = a.shape();
+    let m = e.ncols();
+    let mut q_all = DMatrix::zeros(n + r, n + r);
+    q_all.view_mut((0, 0), (n, n)).copy_from(q);
+    let mut e_all = DMatrix::zeros(n + r, m + r);
+    e_all.view_mut((0, 0), (n, m)).copy_from(e);
+    e_all.view_mut((0, m), (n, r)).copy_from(a);
+    e_all.view_mut((n, m), (r, r)).fill_diagonal(-1.0);
+    let zeros = |v: &DVector<f64>| {
+        DVector::from_iterator(
+            v.len() + r,
+            v.iter().copied().chain(std::iter::repeat_n(0.0, r)),
+        )
+    };
+    (q_all, zeros(c), e_all, zeros(b))
+}
+
+/// The scale of the slack variable `s = aᵀx` in [`Units`], given the variables' `scales`:
+/// `minᵢ scaleᵢ / |aᵢ|` over the variables in it, so that in units `s` is a combination
+/// whose largest coefficient is 1, like a variable's own row. 1 if `a` is zero.
+fn slack_scale(scales: &[f64], a: impl IntoIterator<Item = f64>) -> f64 {
+    let scale = a
+        .into_iter()
+        .zip(scales)
+        .filter(|(a, _)| *a != 0.0)
+        .map(|(a, s)| s / a.abs())
+        .fold(f64::INFINITY, f64::min);
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// [`solve_piecewise`] for a problem already in [`Units`], whose variables after the first
+/// `originals` are [`with_slacks`]' slacks, one for each of the last columns of `E`.
 fn solve_piecewise_in_units(
-    q: &DMatrix<f64>,
-    c: &DVector<f64>,
-    e: &DMatrix<f64>,
-    b: &DVector<f64>,
+    (q, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
     segments: &[Segments],
     start: DVector<f64>,
+    originals: usize,
 ) -> Result<DVector<f64>, CutupError> {
     let n = q.nrows();
+    let first_slack_column = e.ncols() - (n - originals);
     let fixed: Vec<bool> = segments
         .iter()
         .map(|s| s.points[0] >= s.points[s.last()])
@@ -614,13 +706,15 @@ fn solve_piecewise_in_units(
         let indices: Vec<usize> = (0..n)
             .filter(|&i| matches!(state[i], State::Free(_)))
             .collect();
+        // The free variables come first, then the free slacks.
+        let (solved, slacks) = indices.split_at(indices.partition_point(|&i| i < originals));
         // Every variable is held, as when starting from a vertex. Freeing all of them lets the
         // steps below block back the ones that belong where they are, one per step; at an
         // optimal vertex they block back onto it without x moving. Steps never block the last
         // free variable, so getting here again at the same x means the solver can't make
-        // progress.
-        if indices.is_empty() {
-            if fixed.iter().all(|&f| f) {
+        // progress. Free slacks alone don't count: they only measure their rows.
+        if solved.is_empty() {
+            if fixed[..originals].iter().all(|&f| f) {
                 return Ok(x);
             }
             if freed_at.as_ref() == Some(&x) {
@@ -645,12 +739,26 @@ fn solve_piecewise_in_units(
             .collect();
         let lower: Vec<f64> = free.iter().map(|(s, j)| s.points[*j]).collect();
         let upper: Vec<f64> = free.iter().map(|(s, j)| s.points[j + 1]).collect();
-        let slope = DVector::from_iterator(free.len(), free.iter().map(|(s, j)| s.slopes[*j]));
-        let q_free = q.select_rows(&indices).select_columns(&indices);
-        let c_free = c.select_rows(&indices) - slope;
-        let e_free = e.select_rows(&indices);
+        let slope = DVector::from_iterator(
+            solved.len(),
+            free.iter().map(|(s, j)| s.slopes[*j]).take(solved.len()),
+        );
+        // A free slack and its row's constraint are left out of the solve: the slack only
+        // measures its row, so it moves to keep the constraint once the step is known, and
+        // the constraint's multiplier is 0. Without them Q's block on the variables solved for
+        // has no zero rows, and can be factored.
+        let slack_columns: Vec<(usize, usize)> = slacks
+            .iter()
+            .map(|&i| (i, first_slack_column + i - originals))
+            .collect();
+        let kept: Vec<usize> = (0..e.ncols())
+            .filter(|&j| !slack_columns.iter().any(|&(_, column)| column == j))
+            .collect();
+        let q_free = q.select_rows(solved).select_columns(solved);
+        let c_free = c.select_rows(solved) - slope;
+        let e_free = e.select_rows(solved).select_columns(&kept);
         let x_free = x.select_rows(&indices);
-        let q_rows = q.select_rows(&indices);
+        let q_rows = q.select_rows(solved);
 
         // Solve for the step from x rather than for the new point, so that when Q is singular
         // and the free problem has many minima, the target is the one closest to x. The
@@ -658,23 +766,34 @@ fn solve_piecewise_in_units(
         // at once. The rows of Q over all of x include the pull of variables held at a
         // nonzero point.
         let gradient_free = &c_free - &q_rows * &x;
-        let residual = b - e.transpose() * &x;
+        let residuals = b - e.transpose() * &x;
+        let residual = residuals.select_rows(&kept);
         let noise = step_noise(&q_rows, &x, &c_free);
         // With Q positive definite on the free variables, from the factor kept across
         // iterations. Otherwise, or if that misses, from the eigendecomposition, which handles
         // a singular Q.
         let problem = (&q_free, &gradient_free, &e_free, &residual);
         let factored = factoring
-            .update(q, &indices)
+            .update(q, solved)
             .and_then(|cholesky| solve_factored(cholesky, problem, noise));
-        let solved = match factored {
+        let solution = match factored {
             Some(solution) => Some(solution),
             None => {
                 factoring.reset();
                 solve_noisy_kkt(&q_free, &gradient_free, &e_free, &residual, noise)?
             }
         };
-        let Some((delta, multipliers)) = solved else {
+        let slack_steps = |step: DVector<f64>, residuals: Option<&DVector<f64>>| {
+            with_slack_steps(step, (solved, &slack_columns), e, residuals)
+        };
+        let solution = solution.map(|(delta, multipliers)| {
+            let mut all = DVector::zeros(e.ncols());
+            for (k, &j) in kept.iter().enumerate() {
+                all[j] = multipliers[k];
+            }
+            (slack_steps(delta, Some(&residuals)), all)
+        });
+        let Some((delta, multipliers)) = solution else {
             // Without a linear term on the free variables the free problem is bounded below:
             // the held variables only add Q_fh·x_h, which for a positive semidefinite Q lies in
             // the range of Q_ff. So it has a minimum, and the solve failed numerically.
@@ -684,8 +803,8 @@ fn solve_piecewise_in_units(
             // No minimum on the free variables: move along a direction of zero curvature
             // until a variable reaches an end of its segment. The free problem's linear term
             // includes the pull of the held variables.
-            let linear = &gradient_free + &q_free * &x_free;
-            let direction = descent_ray(&q_free, &linear, &e_free)?;
+            let linear = &gradient_free + &q_free * x.select_rows(solved);
+            let direction = slack_steps(descent_ray(&q_free, &linear, &e_free)?, None);
             let (step, blocking, side) =
                 ratio_test(&x_free, &direction, &lower, &upper).ok_or(CutupError::Unbounded)?;
             for k in 0..indices.len() {
@@ -798,6 +917,29 @@ fn solve_piecewise_in_units(
         }
     }
     Err(CutupError::NotConverged)
+}
+
+/// A step `δ` on the variables `solved`, extended to the free slacks: each `(i, j)` of
+/// `slacks`, slack `i` with its constraint in column `j` of `E`, moves so that the constraint
+/// holds after the step, `Eⱼᵀ(x + δ) = bⱼ`, given the `residuals` `b − Eᵀx`, or none for a
+/// direction.
+fn with_slack_steps(
+    step: DVector<f64>,
+    (solved, slacks): (&[usize], &[(usize, usize)]),
+    e: &DMatrix<f64>,
+    residuals: Option<&DVector<f64>>,
+) -> DVector<f64> {
+    let moves = slacks.iter().map(|&(i, j)| {
+        let residual = residuals.map_or(0.0, |r| r[j]);
+        let others: f64 = solved
+            .iter()
+            .zip(step.iter())
+            .map(|(&k, d)| e[(k, j)] * d)
+            .sum();
+        (residual - others) / e[(i, j)]
+    });
+    let len = step.len() + slacks.len();
+    DVector::from_iterator(len, step.iter().copied().chain(moves.collect::<Vec<_>>()))
 }
 
 /// Solves [`solve_piecewise`]'s problem with the turnover `Σᵢ|xᵢ − aᵢ|` capped at `cap`, `a`
