@@ -1006,12 +1006,23 @@ impl Factoring {
 /// increasing order: each variable that left is removed, then each that joined is inserted,
 /// each in `O(k²)`. `None` if an insertion makes the block singular, or nearly so; stopping
 /// there also keeps the next insertion from solving with a zero pivot, which panics.
+///
+/// Also `None`, for a fresh factor instead, if more than a sixth of `indices` join: `j`
+/// insertions into a block of `k` cost about `2jk²`, and a fresh factor `k³/3`. That happens
+/// when every variable is freed at once.
 fn updated(
     q: &DMatrix<f64>,
     mut held: Vec<usize>,
     mut cholesky: Cholesky<f64, Dyn>,
     indices: &[usize],
 ) -> Option<Cholesky<f64, Dyn>> {
+    let joining = indices
+        .iter()
+        .filter(|i| held.binary_search(i).is_err())
+        .count();
+    if 6 * joining > indices.len() {
+        return None;
+    }
     for position in (0..held.len()).rev() {
         if indices.binary_search(&held[position]).is_err() {
             cholesky = cholesky.remove_column(position);
@@ -1653,57 +1664,74 @@ mod tests {
         &a * a.transpose() + DMatrix::identity(n, n)
     }
 
-    /// The first two variables are the same, so their block is singular, with a second pivot
-    /// of exactly 0.
-    fn repeated_variable() -> DMatrix<f64> {
-        dmatrix![1.0, 1.0, 0.0; 1.0, 1.0, 0.0; 0.0, 0.0, 1.0]
+    /// `n` variables, the first two the same, so a block with both is singular, with a second
+    /// pivot of exactly 0.
+    fn repeated_variable(n: usize) -> DMatrix<f64> {
+        let mut q = DMatrix::identity(n, n);
+        q[(0, 1)] = 1.0;
+        q[(1, 0)] = 1.0;
+        q
     }
 
     #[test]
     fn a_factor_updated_a_variable_at_a_time_matches_a_fresh_one() {
-        let q = positive_definite_matrix(6);
+        let q = positive_definite_matrix(12);
+        let all: Vec<usize> = (0..12).collect();
         let mut factoring = Factoring::new();
-        // Variables leaving, joining, both at once, and several joining.
+        // Variables leaving, joining, both at once, and two joining a block of 12: a sixth, as
+        // many as an update takes.
         for indices in [
-            vec![0, 1, 2, 3, 4, 5],
-            vec![0, 2, 3, 5],
-            vec![0, 1, 2, 3, 5],
-            vec![1, 3, 4],
-            vec![0, 1, 2, 3, 4, 5],
+            all.clone(),
+            vec![0, 2, 3, 5, 6, 7, 8, 9, 10, 11],
+            vec![0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            all.clone(),
+            (0..10).collect(),
+            all.clone(),
         ] {
             let block = q.select_rows(&indices).select_columns(&indices);
             let l = factoring.update(&q, &indices).unwrap().l();
             assert!((&l * l.transpose() - block).amax() < 1e-12, "{indices:?}");
         }
         assert_eq!(factoring.factorizations, 1);
+        // Eleven joining one is factored afresh.
+        factoring.update(&q, &[0]).unwrap();
+        factoring.update(&q, &all).unwrap();
+        assert_eq!(factoring.factorizations, 2);
     }
 
     #[test]
     fn a_block_is_factored_down_to_the_pivot_floor() {
         // The floor is a power of 2, so its square root squares back to it exactly.
         for (pivot, factored) in [(PIVOT_FLOOR, true), (PIVOT_FLOOR / 2.0, false)] {
-            let q = dmatrix![1.0, 0.0; 0.0, pivot];
-            assert_eq!(Factoring::new().update(&q, &[0, 1]).is_some(), factored);
+            let mut q = DMatrix::identity(7, 7);
+            q[(6, 6)] = pivot;
+            let all: Vec<usize> = (0..7).collect();
+            assert_eq!(Factoring::new().update(&q, &all).is_some(), factored);
+            // And inserted into the factor of the others.
             let mut factoring = Factoring::new();
-            factoring.update(&q, &[0]).unwrap();
-            assert_eq!(factoring.update(&q, &[0, 1]).is_some(), factored);
+            factoring.update(&q, &all[..6]).unwrap();
+            assert_eq!(factoring.update(&q, &all).is_some(), factored);
         }
     }
 
     #[test]
     fn an_insertion_that_makes_the_block_singular_stops_there() {
-        // Inserting the third variable would solve with the second's zero pivot, which panics.
-        // The update is retried afresh, which finds the block singular too.
-        let q = repeated_variable();
+        // Inserting the third variable after the second would solve with the second's zero
+        // pivot, which panics. The update is retried afresh, which finds the block singular
+        // too.
+        let q = repeated_variable(13);
         let mut factoring = Factoring::new();
-        factoring.update(&q, &[0]).unwrap();
-        assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        let others: Vec<usize> = [0].into_iter().chain(3..13).collect();
+        factoring.update(&q, &others).unwrap();
+        let all: Vec<usize> = (0..13).collect();
+        assert!(factoring.update(&q, &all).is_none());
         assert_eq!(factoring.factorizations, 2);
     }
 
     #[test]
     fn a_block_containing_a_singular_one_is_not_factored_again() {
-        let q = repeated_variable();
+        let q = repeated_variable(3);
         let mut factoring = Factoring::new();
         assert!(factoring.update(&q, &[0, 1, 2]).is_none());
         assert!(factoring.update(&q, &[0, 1, 2]).is_none());
@@ -1711,9 +1739,10 @@ mod tests {
         // Without the second variable it's positive definite, and factored afresh.
         assert!(factoring.update(&q, &[0, 2]).is_some());
         assert_eq!(factoring.factorizations, 2);
-        // Updating to the second variable finds it singular again, but a block without the
-        // first variable doesn't contain that one.
+        // With it again, too many join to update, and the block contains the singular one. A
+        // block without the first variable doesn't.
         assert!(factoring.update(&q, &[0, 1, 2]).is_none());
+        assert_eq!(factoring.factorizations, 2);
         assert!(factoring.update(&q, &[1, 2]).is_some());
         assert_eq!(factoring.factorizations, 3);
     }
