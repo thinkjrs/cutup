@@ -29,6 +29,14 @@ All notable changes to this project are documented here. The format follows
   factoring every iteration. An optimum or an unbounded direction is always confirmed from
   fresh factors. `MinCvar` takes 1.06 s at 500 assets rather than 10.7 s, 8.6 ms at 100 rather
   than 28 ms, and 39 µs at 10 rather than 46 µs.
+- The active-set solver behind long-only `MinVariance`, `MeanVariance`, `MaxSharpe` and
+  `MaxDiversification`, and behind the rebalancing settings, keeps a Cholesky factor of the
+  covariance's block on the weights it's solving for, updated as weights reach their bounds or
+  leave them, rather than taking an eigendecomposition every iteration. A block that's
+  singular, or has a pivot below `2⁻²⁶` of its diagonal, still goes through the
+  eigendecomposition, as does a step whose solution misses the KKT conditions, after which the
+  factor is computed afresh. `MinVariance` takes 0.23 s at 500 assets rather than 18.2 s,
+  2.3 ms at 100 rather than 36.7 ms, and 10.7 µs at 10 rather than 31 µs.
 
 ### Fixed
 
@@ -57,6 +65,10 @@ All notable changes to this project are documented here. The format follows
   and now solves in 0.1 s. Bland's rule stays for a vertex the widening doesn't resolve.
   `MinCvar` still starts from its worst scenarios, which is faster, so its times are
   unchanged.
+- A long-only `MeanVariance::target_volatility(σ)` at the minimum variance portfolio's
+  volatility, or within rounding below it, takes the target's variance to be that portfolio's
+  own. Squaring the volatility back could miss it by an ulp, and the step from the portfolio,
+  the square root of that, moved the weights by up to 2e-8.
 
 ## [0.3.6] - 2026-11-10
 

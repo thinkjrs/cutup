@@ -466,10 +466,16 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
   starting point, which is still faster. The turnover LP widens its bounds at
   100 and 200 assets too, but its time is in the QP, so it's no faster.
 - **Factorization reuse** in the active-set solver: profiling `MinVariance`
-  at 500 assets, 18 s a solve, puts about two-thirds of its time in the
-  symmetric eigendecomposition of each KKT solve. A Cholesky factorization of
-  the reduced Hessian, updated as the active set changes, with the
-  eigendecomposition kept for a singular one.
+  at 500 assets, 18 s a solve, put about two-thirds of its time in the
+  symmetric eigendecomposition of each KKT solve. The solver now keeps a
+  Cholesky factor of the covariance's block on the free weights, updated in
+  `O(k²)` as a weight joins or leaves, and solves by the range-space method
+  with a step of iterative refinement. A singular or nearly singular block
+  still goes through the eigendecomposition. `MinVariance` went from 18.2 s to
+  0.23 s at 500 assets, from 36.7 ms to 2.3 ms at 100 and from 31 µs to
+  10.7 µs at 10. That uncovered a long-only target volatility at the floor
+  stepping 2e-8 off the minimum variance portfolio, from squaring the
+  volatility back; the target's variance there is now that portfolio's own.
 - **The target return's rounding tolerance:** `ReturnRange` moved a target
   within `1e-12 · max(|lowest|, |highest|)` of an end of the bounds' range of
   returns onto that end, so one mean far from the rest widened it even at an
