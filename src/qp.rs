@@ -921,9 +921,13 @@ pub(crate) fn search_multiplier(
 }
 
 /// The pivot `Lᵢᵢ²` of a Cholesky factor below which [`Factoring`] counts `Q`'s block on the
-/// free variables as singular. In [`Units`], `Q` has a unit diagonal, so this is relative.
-/// Blocks this close to singular are left to [`solve_noisy_kkt`], whose eigenvalue cutoff
-/// decides what counts as zero. It's `2⁻²⁶`, about `1.5e-8`.
+/// free variables as singular, leaving it to [`solve_noisy_kkt`]. In [`Units`], `Q` has a unit
+/// diagonal, so this is relative. It's `2⁻²⁶`, about `1.5e-8`.
+///
+/// The smallest pivot only bounds the smallest eigenvalue from above, so a block can pass with
+/// an eigenvalue below [`solve_noisy_kkt`]'s cutoff, whose direction that would treat as zero
+/// curvature. The factored solve then takes the block as nonsingular, and [`within_rounding`]
+/// checks its solution.
 const PIVOT_FLOOR: f64 = 1.0 / 67_108_864.0;
 
 /// Whether every pivot of `cholesky` is at least [`PIVOT_FLOOR`]. A NaN pivot isn't.
