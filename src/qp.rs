@@ -569,7 +569,7 @@ pub(crate) fn solve_piecewise(
 ) -> Result<DVector<f64>, CutupError> {
     let n = q.nrows();
     let rows = &bounds.rows;
-    let (q, c, e, b) = with_slacks((q, c, e, b), &rows.a);
+    let Problem { q, c, e, b } = with_slacks((q, c, e, b), &rows.a);
     // In the units of [`solve_kkt`], so that the tolerances below compare like with like. The
     // kinks move with x, and their slopes scale like c.
     let mut scales = diagonal_scales(&q);
@@ -617,7 +617,7 @@ pub(crate) fn solve_piecewise(
 fn with_slacks(
     (q, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
     a: &DMatrix<f64>,
-) -> (DMatrix<f64>, DVector<f64>, DMatrix<f64>, DVector<f64>) {
+) -> Problem {
     let (n, r) = a.shape();
     let m = e.ncols();
     let mut q_all = DMatrix::zeros(n + r, n + r);
@@ -632,7 +632,21 @@ fn with_slacks(
             v.iter().copied().chain(std::iter::repeat_n(0.0, r)),
         )
     };
-    (q_all, zeros(c), e_all, zeros(b))
+    Problem {
+        q: q_all,
+        c: zeros(c),
+        e: e_all,
+        b: zeros(b),
+    }
+}
+
+/// A problem `(Q, c, E, b)` that [`with_slacks`] built. A struct rather than a tuple, so that
+/// cargo-mutants doesn't try every combination of replacement values for its four parts.
+struct Problem {
+    q: DMatrix<f64>,
+    c: DVector<f64>,
+    e: DMatrix<f64>,
+    b: DVector<f64>,
 }
 
 /// The scale of the slack variable `s = aᵀx` in [`Units`], given the variables' `scales`:
