@@ -824,10 +824,10 @@ fn solve_piecewise_in_units(
                 return Err(CutupError::SingularCovariance);
             }
             // No minimum on the free variables: move along a direction of zero curvature
-            // until a variable reaches an end of its segment. The free problem's linear term
-            // includes the pull of the held variables.
-            let linear = &gradient_free + &q_free * x.select_rows(solved);
-            let direction = slack_steps(descent_ray(&q_free, &linear, &e_free)?, None);
+            // until a variable reaches an end of its segment. The gradient includes the pull of
+            // the held variables; its free variables' own part, Q_ff·x_f, is orthogonal to any
+            // direction of zero curvature, so descent_ray leaves it out anyway.
+            let direction = slack_steps(descent_ray(&q_free, &gradient_free, &e_free)?, None);
             let (step, blocking, side) =
                 ratio_test(&x_free, &direction, &lower, &upper).ok_or(CutupError::Unbounded)?;
             for k in 0..indices.len() {
