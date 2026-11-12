@@ -209,6 +209,8 @@ impl WeightBounds {
         let (n, r) = (labels.len(), self.groups.len());
         let mut a = DMatrix::zeros(n, r);
         let (mut row_lower, mut row_upper) = (DVector::zeros(r), DVector::zeros(r));
+        // Every group is checked before any is found infeasible, so that a mistake in one
+        // isn't hidden behind another that can't be met.
         for (j, (members, l, u)) in self.groups.iter().enumerate() {
             let (l, u) = (*l, *u);
             if members.is_empty() {
@@ -232,6 +234,8 @@ impl WeightBounds {
             for member in members {
                 a[(member.resolve(labels)?, j)] = 1.0;
             }
+        }
+        for (j, &(_, l, u)) in self.groups.iter().enumerate() {
             let (least, most) = group_range(a.column(j).as_slice(), lower, upper);
             // Within rounding of what the members can hold, as for the bounds' sums.
             if l > most + 1e-12 || u < least - 1e-12 {
@@ -1197,6 +1201,17 @@ mod tests {
             feasible_start(&pairs),
             Err(CutupError::InfeasibleGroups { group: None })
         );
+    }
+
+    #[test]
+    fn test_a_mistake_in_a_group_isnt_hidden_by_one_that_cant_be_met() {
+        let bounds = WeightBounds::uniform(0.0, 0.4)
+            .group(["A", "B"], 0.9, 1.0)
+            .group(["A", "D"], 0.0, 1.0);
+        assert!(matches!(
+            bounds.resolve(&three()),
+            Err(CutupError::UnknownAsset { .. })
+        ));
     }
 
     #[test]
