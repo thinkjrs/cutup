@@ -1030,6 +1030,285 @@ mod tests {
     }
 
     #[test]
+    fn test_groups_resolve_to_rows_narrowed_to_what_their_members_can_hold() {
+        // Caps of 0.6 leave A and C at least 0.4 together, and an asset listed twice counts
+        // once.
+        let resolved = WeightBounds::uniform(0.0, 0.6)
+            .group(["A", "C"], 0.0, f64::INFINITY)
+            .group(["B", "A", "B"], 0.1, 0.5)
+            .resolve(&three())
+            .unwrap();
+        let rows = &resolved.rows;
+        assert_eq!(
+            rows.a,
+            DMatrix::from_row_slice(3, 2, &[1.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+        );
+        assert_eq!(rows.lower, dvector![0.4, 0.4]);
+        assert_eq!(rows.upper, dvector![1.0, 0.5]);
+        // By column, and with a floor on the others that leaves room.
+        let resolved = WeightBounds::per_asset(vec![0.0, 0.0, 0.3], vec![1.0; 3])
+            .group([0, 1], 0.2, 0.9)
+            .resolve(&three())
+            .unwrap();
+        assert_eq!(resolved.rows.lower, dvector![0.2]);
+        assert_eq!(resolved.rows.upper, dvector![0.7]);
+        // Without groups, none.
+        assert_eq!(
+            WeightBounds::default()
+                .resolve(&three())
+                .unwrap()
+                .rows
+                .a
+                .ncols(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_the_range_of_a_group_is_its_members_or_what_the_others_leave() {
+        let (lower, upper) = (dvector![0.1, 0.2, 0.0], dvector![0.3, 0.9, 0.5]);
+        // A and C: 0.1 to 0.8 alone, but B takes 0.2 to 0.9 of the budget.
+        assert_eq!(group_range(&[1.0, 0.0, 1.0], &lower, &upper), (0.1, 0.8));
+        assert_eq!(group_range(&[0.0, 1.0, 0.0], &lower, &upper), (0.2, 0.9));
+        let (lower, upper) = (dvector![0.0, 0.0, 0.0], dvector![0.3, 0.3, 0.3]);
+        assert_eq!(group_range(&[1.0, 1.0, 0.0], &lower, &upper), (0.7, 0.6));
+    }
+
+    #[test]
+    fn test_invalid_groups_are_rejected() {
+        let resolve = |bounds: WeightBounds| bounds.resolve(&three());
+        let invalid = |field, value| Err(CutupError::InvalidConfig { field, value });
+        let bounds = WeightBounds::default;
+        assert_eq!(
+            resolve(bounds().group(Vec::<usize>::new(), 0.0, 1.0)),
+            invalid("group", 0.0)
+        );
+        assert_eq!(
+            resolve(bounds().group(["A"], -0.1, 1.0)),
+            invalid("group_lower_bound", -0.1)
+        );
+        assert_eq!(
+            resolve(bounds().group(["A"], f64::INFINITY, f64::INFINITY)),
+            invalid("group_lower_bound", f64::INFINITY)
+        );
+        assert!(matches!(
+            resolve(bounds().group(["A"], f64::NAN, 1.0)),
+            Err(CutupError::InvalidConfig {
+                field: "group_lower_bound",
+                ..
+            })
+        ));
+        assert_eq!(
+            resolve(bounds().group(["A"], 0.5, 0.4)),
+            invalid("group_upper_bound", 0.4)
+        );
+        assert!(matches!(
+            resolve(bounds().group(["A"], 0.0, f64::NAN)),
+            Err(CutupError::InvalidConfig {
+                field: "group_upper_bound",
+                ..
+            })
+        ));
+        assert!(matches!(
+            resolve(bounds().group(["A", "D"], 0.0, 1.0)),
+            Err(CutupError::UnknownAsset { .. })
+        ));
+    }
+
+    #[test]
+    fn test_a_group_its_members_cant_meet_is_named() {
+        let named = |group: &str| {
+            Err(CutupError::InfeasibleGroups {
+                group: Some(group.into()),
+            })
+        };
+        let capped = || WeightBounds::uniform(0.0, 0.4);
+        // A and B hold at most 0.8 under caps of 0.4, and at least 0.6 with C's cap.
+        assert_eq!(
+            capped().group(["B", "A"], 0.9, 1.0).resolve(&three()),
+            named("A + B")
+        );
+        assert_eq!(
+            capped().group([0, 1], 0.0, 0.1).resolve(&three()),
+            named("A + B")
+        );
+        // Within 1e-12 is rounding, and the limit is moved onto what the members can hold.
+        let resolved = capped()
+            .group(["A", "B"], 0.8 + 1e-12, 1.0)
+            .resolve(&three())
+            .unwrap();
+        assert_eq!(resolved.rows.lower, dvector![0.8]);
+        assert!(
+            capped()
+                .group(["A", "B"], 0.8 + 2e-12, 1.0)
+                .resolve(&three())
+                .is_err()
+        );
+        let resolved = capped()
+            .group(["A", "B"], 0.0, 0.6 - 1e-12)
+            .resolve(&three())
+            .unwrap();
+        assert_eq!(resolved.rows.upper, dvector![0.6]);
+        assert!(
+            capped()
+                .group(["A", "B"], 0.0, 0.6 - 2e-12)
+                .resolve(&three())
+                .is_err()
+        );
+    }
+
+    /// Checks `w` sums to 1 and meets resolved `bounds`, groups included, to `tolerance`.
+    fn assert_feasible(w: &DVector<f64>, bounds: &qp::Bounds, tolerance: f64) {
+        assert!((w.sum() - 1.0).abs() <= tolerance, "{w:?}");
+        for i in 0..w.len() {
+            assert!(bounds.lower[i] - tolerance <= w[i] && w[i] <= bounds.upper[i] + tolerance);
+        }
+        let totals = bounds.rows.a.tr_mul(w);
+        for j in 0..totals.len() {
+            assert!(
+                bounds.rows.lower[j] - tolerance <= totals[j]
+                    && totals[j] <= bounds.rows.upper[j] + tolerance,
+                "group {j}: {}",
+                totals[j]
+            );
+        }
+    }
+
+    #[test]
+    fn test_the_start_meets_the_groups_or_finds_they_cant_all_be_met() {
+        // Equal weights, the start without groups, break both groups.
+        let bounds = WeightBounds::uniform(0.0, 0.6)
+            .group(["A", "B"], 0.0, 0.5)
+            .group(["B", "C"], 0.0, 0.5)
+            .resolve(&three())
+            .unwrap();
+        assert_feasible(&feasible_start(&bounds).unwrap(), &bounds, 1e-15);
+        // Without groups, the start strictly inside the bounds.
+        let plain = WeightBounds::uniform(0.0, 0.6).resolve(&three()).unwrap();
+        assert_eq!(feasible_start(&plain).unwrap(), interior_start(&plain));
+        // Each pair at least 0.7 needs 1.05 in all.
+        let pairs = WeightBounds::default()
+            .group(["A", "B"], 0.7, 1.0)
+            .group(["B", "C"], 0.7, 1.0)
+            .group(["A", "C"], 0.7, 1.0)
+            .resolve(&three())
+            .unwrap();
+        assert_eq!(
+            feasible_start(&pairs),
+            Err(CutupError::InfeasibleGroups { group: None })
+        );
+    }
+
+    #[test]
+    fn test_grouped_min_variance_water_fills_within_the_groups() {
+        let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
+        let solve = |bounds: WeightBounds| {
+            let method = MinVariance::default()
+                .covariance(CovarianceConfig::default())
+                .bounds(bounds);
+            allocator.allocate(&method).unwrap()
+        };
+        // Unbounded, 4/7, 2/7 and 1/7 by inverse variance. Capping the first two at 50%
+        // together splits that 2 : 1 between them, and leaves the rest to the third.
+        assert_weights_close(
+            &solve(WeightBounds::default().group([0, 1], 0.0, 0.5)),
+            &Weights::from(vec![1.0 / 3.0, 1.0 / 6.0, 0.5]),
+            1e-12,
+        );
+        // A floor of 60% on the last two leaves 40% to the first, and splits the rest 2 : 1.
+        assert_weights_close(
+            &solve(WeightBounds::default().group([1, 2], 0.6, 1.0)),
+            &Weights::from(vec![0.4, 0.4, 0.2]),
+            1e-12,
+        );
+        // Groups that don't bind change nothing.
+        assert_weights_close(
+            &solve(WeightBounds::default().group([0, 2], 0.0, 0.9)),
+            &Weights::from(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
+            1e-12,
+        );
+        // Each pair at least 0.7 can't hold at once.
+        let pairs = WeightBounds::default()
+            .group([0, 1], 0.7, 1.0)
+            .group([1, 2], 0.7, 1.0)
+            .group([0, 2], 0.7, 1.0);
+        assert_eq!(
+            allocator.allocate(&MinVariance::default().bounds(pairs)),
+            Err(CutupError::InfeasibleGroups { group: None })
+        );
+    }
+
+    #[test]
+    fn test_grouped_mean_variance_shares_the_groups_multiplier() {
+        // Risk aversion 1 on uncorrelated assets, variances 4, 8 and 16 in units of 1/30000:
+        // each free weight is (μᵢ − ν)/σᵢ², ν the budget's multiplier. Long-only, the third
+        // asset holds nothing. With the first two capped at 50% together, they share ν + η,
+        // so with equal means they split it 2 : 1, and the third takes the rest.
+        let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
+        let method = |bounds: WeightBounds| {
+            MeanVariance::risk_aversion(1.0)
+                .expected_returns([0.0002, 0.0002, 0.0001])
+                .covariance(CovarianceConfig::default())
+                .bounds(bounds)
+        };
+        let free = allocator
+            .allocate(&method(WeightBounds::default()))
+            .unwrap();
+        assert_eq!(free[2], 0.0);
+        assert_weights_close(
+            &allocator
+                .allocate(&method(WeightBounds::default().group([0, 1], 0.0, 0.5)))
+                .unwrap(),
+            &Weights::from(vec![1.0 / 3.0, 1.0 / 6.0, 0.5]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_methods_without_groups_yet_say_so() {
+        let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
+        let grouped = WeightBounds::default().group([0, 1], 0.0, 0.5);
+        let mu = [0.0004, 0.0003, 0.0001];
+        let unsupported = |with| {
+            Err(CutupError::NotSupported {
+                setting: "group",
+                with,
+            })
+        };
+        let target = MeanVariance::target_return(0.0002)
+            .expected_returns(mu)
+            .bounds(grouped.clone());
+        assert_eq!(allocator.allocate(&target), unsupported("a target return"));
+        let rebalanced = target
+            .clone()
+            .current_weights([0.2, 0.3, 0.5])
+            .max_turnover(1.0);
+        assert_eq!(
+            allocator.allocate(&rebalanced),
+            unsupported("a target return")
+        );
+        assert_eq!(
+            allocator.allocate(&rebalanced.transaction_costs(0.001)),
+            unsupported("a target return")
+        );
+        let volatility = MeanVariance::target_volatility(0.02)
+            .expected_returns(mu)
+            .bounds(grouped.clone());
+        assert_eq!(
+            allocator.allocate(&volatility),
+            unsupported("a target volatility")
+        );
+        assert_eq!(
+            allocator.frontier(&target, 3).unwrap_err(),
+            unsupported("a frontier").unwrap_err()
+        );
+        assert_eq!(
+            allocator.allocate(&crate::MinCvar::default().bounds(grouped)),
+            unsupported("MinCvar")
+        );
+    }
+
+    #[test]
     fn test_invalid_bounds_are_rejected() {
         let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
         let n = full_rank_prices().ncols();

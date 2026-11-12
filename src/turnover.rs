@@ -941,6 +941,61 @@ mod tests {
     }
 
     #[test]
+    fn the_least_turnover_into_groups_comes_from_the_linear_program() {
+        // From (0.6, 0.3, 0.1), the second and third at least 0.9 together leave the first at
+        // most 0.1, selling 0.5, and the first two at most 0.5 put at least 0.5 in the third,
+        // buying 0.4 and 0.1 of the second: 1.0 in all. Each weight is within its own bounds
+        // already, so clipping them into those misses it. Each order has one group's limit
+        // first.
+        let current = DVector::from_vec(vec![0.6, 0.3, 0.1]);
+        let labels = ["A", "B", "C"].map(String::from);
+        let floor = |bounds: WeightBounds| bounds.group(["B", "C"], 0.9, 1.0);
+        let cap = |bounds: WeightBounds| bounds.group(["A", "B"], 0.0, 0.5);
+        for bounds in [
+            cap(floor(WeightBounds::default())),
+            floor(cap(WeightBounds::default())),
+        ] {
+            let bounds = bounds.resolve(&labels).unwrap();
+            let minimum = minimum_turnover(&current, &bounds).unwrap();
+            assert!((minimum - 1.0).abs() < 1e-15, "{minimum}");
+            assert!(matches!(
+                check_cap(&current, &bounds, 0.9),
+                Err(CutupError::InfeasibleTurnover { cap: 0.9, .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_capped_rebalance_meets_the_groups() {
+        let allocator = allocator();
+        let current = [0.6, 0.3, 0.1];
+        let grouped = WeightBounds::default()
+            .group([1, 2], 0.9, 1.0)
+            .group([0, 1], 0.0, 0.5);
+        let method = MinVariance::default()
+            .current_weights(current)
+            .bounds(grouped);
+        assert!(matches!(
+            allocator.allocate(&method.clone().max_turnover(0.9)),
+            Err(CutupError::InfeasibleTurnover { cap: 0.9, .. })
+        ));
+        // A cap of exactly the least turnover leaves only the portfolios that reach the groups
+        // with it, and a penalty pulls toward the current weights.
+        for (method, cap) in [
+            (method.clone().max_turnover(1.0), 1.0),
+            (method.turnover_penalty(1.0), f64::INFINITY),
+        ] {
+            let w = allocator.allocate(&method).unwrap();
+            assert!(
+                w[1] + w[2] >= 0.9 - 1e-15 && w[0] + w[1] <= 0.5 + 1e-15,
+                "{w:?}"
+            );
+            let turnover: f64 = w.iter().zip(current).map(|(w, c)| (w - c).abs()).sum();
+            assert!(turnover <= cap + 1e-12, "{turnover}");
+        }
+    }
+
+    #[test]
     fn minimum_turnover_counts_both_sides_of_a_trade() {
         let bounds = qp::Bounds::new(DVector::from_element(3, 0.1), DVector::from_element(3, 0.5));
         // Moving into the bounds sells 0.2 of the first asset and buys 0.1 of the third, 0.3 in
