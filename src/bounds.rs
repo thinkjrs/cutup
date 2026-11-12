@@ -107,10 +107,10 @@ impl WeightBounds {
     /// are taken as rounding. A group holds to the rounding of its sum, as the weights sum to
     /// 1 to theirs.
     ///
-    /// Groups are supported by [`MinVariance`](crate::MinVariance) and by
-    /// [`MeanVariance::risk_aversion`](crate::MeanVariance::risk_aversion), with or without
-    /// rebalancing. The other methods that take bounds return [`CutupError::NotSupported`]
-    /// with groups.
+    /// Groups are supported by [`MinVariance`](crate::MinVariance), by every
+    /// [`MeanVariance`](crate::MeanVariance) objective, with or without rebalancing, and by
+    /// [`Returns::frontier`](crate::Returns::frontier). [`MinCvar`](crate::MinCvar) returns
+    /// [`CutupError::NotSupported`] with groups.
     ///
     /// # Errors
     ///
@@ -373,6 +373,87 @@ impl Program {
     fn solve(&self, cost: &DVector<f64>) -> Result<lp::Outcome, CutupError> {
         lp::solve(cost, &self.a, &self.b, &self.lower, &self.upper)
     }
+
+    /// The lowest expected return `μᵀw` within resolved `bounds`, from this program without a
+    /// target, or with `highest` the highest, and the bounds of every portfolio that reaches
+    /// it. [`CutupError::InfeasibleGroups`] if the program has no solution.
+    ///
+    /// Those portfolios are the program's optimal face: at an optimum with multipliers `y`,
+    /// each variable whose reduced cost `cⱼ − aⱼᵀy` isn't 0 is held where the optimum has it,
+    /// at a bound, by every optimum. So the face holds those weights and groups' totals there,
+    /// and keeps the others' bounds. A reduced cost counts as 0 within the simplex method's own
+    /// rounding of it. A group whose members are all held needs no limit of its own.
+    fn end(
+        &self,
+        mu: &DVector<f64>,
+        bounds: &qp::Bounds,
+        highest: bool,
+    ) -> Result<End, CutupError> {
+        let (n, columns) = (mu.len(), self.a.ncols());
+        let sign = if highest { -1.0 } else { 1.0 };
+        let cost = DVector::from_fn(columns, |j, _| if j < n { sign * mu[j] } else { 0.0 });
+        let lp::Outcome::Optimal(solution) = self.solve(&cost)? else {
+            return Err(CutupError::InfeasibleGroups { group: None });
+        };
+        let x = &solution.x;
+        let (reduced, held) = reduced_costs(&cost, &self.a, &solution.y);
+        let weights = x.rows(0, n).into_owned();
+        let mut face = bounds.clone();
+        for j in (0..n).filter(|&j| held[j]) {
+            face.lower[j] = weights[j];
+            face.upper[j] = weights[j];
+        }
+        let rows = &bounds.rows;
+        for k in 0..rows.a.ncols() {
+            let open = (0..n).any(|i| rows.a[(i, k)] != 0.0 && !held[i]);
+            if held[n + k] && open {
+                face.rows.lower[k] = x[n + k];
+                face.rows.upper[k] = x[n + k];
+            }
+        }
+        // The asset a target just inside the end moves weight into: of those at their lower
+        // bound with room above them, the one whose reduced cost is least, as the greedy
+        // fill's next in order. Not only those held: at a degenerate end, one can sit in the
+        // basis at its bound, with a reduced cost of 0.
+        let next = (0..n)
+            .filter(|&j| weights[j] == bounds.lower[j] && weights[j] < bounds.upper[j])
+            .min_by(|&i, &j| reduced[i].abs().total_cmp(&reduced[j].abs()))
+            .map_or(0.0, |j| mu[j].abs());
+        Ok(End {
+            value: mu.dot(&weights),
+            rounding: (mu.component_mul(&weights).abs() * 1e-12).sum() + next * 1e-12,
+            weights,
+            face,
+        })
+    }
+}
+
+/// The reduced costs `cⱼ − aⱼᵀy` of a linear program `min cᵀx` subject to `Ax = b` at an
+/// optimum with multipliers `y`, and which aren't 0. As the simplex method counts them, each is
+/// a difference of terms up to `|cⱼ| + |aⱼ|ᵀ|y|`, so only beyond `1e-9` of that counts, but
+/// never less than `1e-14` of the largest such sum.
+fn reduced_costs(
+    cost: &DVector<f64>,
+    a: &DMatrix<f64>,
+    y: &DVector<f64>,
+) -> (DVector<f64>, Vec<bool>) {
+    let reduced = cost - a.tr_mul(y);
+    let magnitude = cost.abs() + a.abs().tr_mul(&y.abs());
+    let floor = 1e-14 * magnitude.amax();
+    let nonzero = (0..cost.len())
+        .map(|j| reduced[j].abs() > (1e-9 * magnitude[j]).max(floor))
+        .collect();
+    (reduced, nonzero)
+}
+
+/// An end of the range of expected returns within the bounds, from [`Program::end`]: its
+/// expected return, the rounding of that, a portfolio that reaches it, and the bounds of
+/// every one that does.
+struct End {
+    value: f64,
+    rounding: f64,
+    weights: DVector<f64>,
+    face: qp::Bounds,
 }
 
 /// Whether `w` sums to 1 and meets resolved `bounds`, groups included, each to within
@@ -408,24 +489,56 @@ pub(crate) struct TargetProblem {
 }
 
 /// The lowest and highest expected return of any portfolio within resolved bounds, and the
-/// portfolios that reach them: start every asset at its lower bound, then raise assets to
-/// their upper bounds in order of expected return until the weights sum to 1.
+/// portfolios that reach them. Without groups: start every asset at its lower bound, then
+/// raise assets to their upper bounds in order of expected return until the weights sum to 1.
+/// With groups, which that can break, from the simplex method.
 pub(crate) struct ReturnRange {
     lowest: f64,
     highest: f64,
     lowest_weights: DVector<f64>,
     highest_weights: DVector<f64>,
-    /// The expected return of the last asset raised above its lower bound, for the lowest
-    /// and the highest, or `None` if the lower bounds already sum to 1.
-    margins: (Option<f64>, Option<f64>),
     /// How far from the lowest and the highest a target is within rounding of them.
     tolerances: (f64, f64),
-    /// The assets by expected return, highest first, ties in column order.
-    descending: Vec<usize>,
+    ends: Ends,
+}
+
+/// How a [`ReturnRange`] found its ends, and what it keeps of them.
+enum Ends {
+    /// Filled in order of expected return.
+    Filled {
+        /// The expected return of the last asset raised above its lower bound, for the lowest
+        /// and the highest, or `None` if the lower bounds already sum to 1.
+        margins: (Option<f64>, Option<f64>),
+        /// The assets by expected return, highest first, ties in column order.
+        descending: Vec<usize>,
+    },
+    /// From the simplex method: the bounds of the portfolios at the lowest, and at the highest.
+    Faces(Box<(qp::Bounds, qp::Bounds)>),
 }
 
 impl ReturnRange {
-    pub(crate) fn new(mu: &DVector<f64>, bounds: &qp::Bounds) -> Self {
+    /// [`CutupError::InfeasibleGroups`] if no portfolio within the bounds meets every group.
+    pub(crate) fn new(mu: &DVector<f64>, bounds: &qp::Bounds) -> Result<Self, CutupError> {
+        if bounds.rows.a.ncols() == 0 {
+            return Ok(ReturnRange::filled(mu, bounds));
+        }
+        let program = Program::new(bounds, None);
+        let (low, high) = (
+            program.end(mu, bounds, false)?,
+            program.end(mu, bounds, true)?,
+        );
+        Ok(ReturnRange {
+            lowest: low.value,
+            highest: high.value,
+            lowest_weights: low.weights,
+            highest_weights: high.weights,
+            tolerances: (low.rounding, high.rounding),
+            ends: Ends::Faces(Box::new((low.face, high.face))),
+        })
+    }
+
+    /// [`ReturnRange::new`] without groups.
+    fn filled(mu: &DVector<f64>, bounds: &qp::Bounds) -> Self {
         // Stable sorts, so that ties are filled in column order, as argmin and argmax pick.
         let mut ascending: Vec<usize> = (0..mu.len()).collect();
         ascending.sort_by(|&i, &j| mu[i].total_cmp(&mu[j]));
@@ -470,8 +583,10 @@ impl ReturnRange {
             ),
             lowest_weights,
             highest_weights,
-            margins: (low_margin, high_margin),
-            descending,
+            ends: Ends::Filled {
+                margins: (low_margin, high_margin),
+                descending,
+            },
         }
     }
 
@@ -513,31 +628,33 @@ impl ReturnRange {
     }
 
     /// The constraints `eᵀw = b` and bounds of a long-only problem at expected return
-    /// `target`, and a start that meets them. Only the portfolios that fill the bounds in
-    /// order of expected return reach an end of the range, so there every asset but those
-    /// tied at the margin is fixed, and the target needs no constraint of its own. Inside it,
-    /// the start holds only assets next to each other in expected return.
+    /// `target`, and a start that meets them. At an end of the range, the bounds are those of
+    /// the portfolios that reach it, its face, and the target needs no constraint of its own.
+    /// Without groups, those fill the bounds in order of expected return, so every asset but
+    /// those tied at the margin is fixed, and a start inside the range holds only assets next
+    /// to each other in expected return. With groups, the face and the start come from the
+    /// simplex method.
     pub(crate) fn target_problem(
         mu: &DVector<f64>,
         bounds: qp::Bounds,
         target: f64,
     ) -> Result<TargetProblem, CutupError> {
         let n = mu.len();
-        let range = ReturnRange::new(mu, &bounds);
+        let range = ReturnRange::new(mu, &bounds)?;
         let target = range.reachable(target)?;
         if target == range.lowest || target == range.highest {
             let bounds = range.face(mu, &bounds, target == range.highest);
             return Ok(TargetProblem {
                 e: DMatrix::from_element(n, 1, 1.0),
                 b: DVector::from_element(1, 1.0),
-                start: interior_start(&bounds),
+                start: feasible_start(&bounds)?,
                 bounds,
             });
         }
         Ok(TargetProblem {
             e: DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
             b: DVector::from_vec(vec![1.0, target]),
-            start: range.start(mu, &bounds, target),
+            start: range.start(mu, &bounds, target)?,
             bounds,
         })
     }
@@ -551,14 +668,30 @@ impl ReturnRange {
     /// asset whose expected return is far from the rest is held only if the target needs it:
     /// a start holding a little of every asset would leave it free in the solver's first step,
     /// where its expected return swamps the target's constraint.
-    fn start(&self, mu: &DVector<f64>, bounds: &qp::Bounds, target: f64) -> DVector<f64> {
+    ///
+    /// With groups, a vertex from the simplex method of the portfolios that reach the target.
+    fn start(
+        &self,
+        mu: &DVector<f64>,
+        bounds: &qp::Bounds,
+        target: f64,
+    ) -> Result<DVector<f64>, CutupError> {
+        let Ends::Filled { descending, .. } = &self.ends else {
+            let program = Program::new(bounds, Some((mu, target)));
+            let columns = program.a.ncols();
+            return match program.solve(&DVector::zeros(columns))? {
+                lp::Outcome::Optimal(solution) => Ok(solution.x.rows(0, mu.len()).into_owned()),
+                // The target is inside the range, so some portfolio reaches it.
+                _ => Err(CutupError::NotConverged),
+            };
+        };
         // Divided by the largest in magnitude, so that no sum below can overflow. The target
         // is strictly inside the range, so some expected return isn't 0.
         let scale = mu.amax();
         let (mu, target) = (mu / scale, target / scale);
         let budget = 1.0 - bounds.lower.sum();
         // Highest first, ties in column order, as the highest return portfolio fills them.
-        let order = &self.descending;
+        let order = descending;
         // Each asset's stretch of the line, no longer than the budget.
         let mut edges = vec![0.0];
         for &i in order {
@@ -594,22 +727,33 @@ impl ReturnRange {
                               which clamp keeps"
                 )]
                 let t = ((high - target) / (high - low)).max(0.0).min(1.0);
-                return at(pair[0] + t * (pair[1] - pair[0]));
+                return Ok(at(pair[0] + t * (pair[1] - pair[0])));
             }
             high = low;
         }
-        self.lowest_weights.clone()
+        Ok(self.lowest_weights.clone())
     }
 
-    /// The bounds of the portfolios with the highest expected return, or the lowest. Assets
-    /// whose expected return is above the margin's (below it, for the lowest) are held at
-    /// their upper bound, those on the other side at their lower bound, and only assets tied
-    /// with the margin keep their bounds.
+    /// The bounds of the portfolios with the highest expected return, or the lowest. Without
+    /// groups, assets whose expected return is above the margin's (below it, for the lowest)
+    /// are held at their upper bound, those on the other side at their lower bound, and only
+    /// assets tied with the margin keep their bounds. With groups, the face the simplex method
+    /// found.
     fn face(&self, mu: &DVector<f64>, bounds: &qp::Bounds, highest: bool) -> qp::Bounds {
+        let margins = match &self.ends {
+            Ends::Filled { margins, .. } => margins,
+            Ends::Faces(faces) => {
+                return if highest {
+                    faces.1.clone()
+                } else {
+                    faces.0.clone()
+                };
+            }
+        };
         let (weights, margin) = if highest {
-            (&self.highest_weights, self.margins.1)
+            (&self.highest_weights, margins.1)
         } else {
-            (&self.lowest_weights, self.margins.0)
+            (&self.lowest_weights, margins.0)
         };
         let mut face = bounds.clone();
         for i in (0..mu.len()).filter(|&i| margin != Some(mu[i])) {
@@ -841,7 +985,7 @@ mod tests {
         // From 0 to 1. The top's portfolio earns 1, and the next asset 0, so its rounding is
         // 1e-12: a target exactly that far inside snaps to it. The bottom's earns exactly 0,
         // but a target just above it moves weight into the asset earning 1, so it's 1e-12 too.
-        let range = ReturnRange::new(&dvector![0.0, 1.0], &unit);
+        let range = ReturnRange::new(&dvector![0.0, 1.0], &unit).unwrap();
         assert_eq!(range.reachable(1.0 - 1e-12), Ok(1.0));
         assert_eq!(range.reachable(1.0 - 2e-12), Ok(1.0 - 2e-12));
         assert_eq!(range.reachable(1.0 + 1e-12), Ok(1.0));
@@ -853,10 +997,10 @@ mod tests {
         // With no asset left to move into, as when the bounds hold every asset at its cap,
         // only the end's own terms count.
         let full = qp::Bounds::new(dvector![0.0, 0.0], dvector![0.5, 0.5]);
-        let range = ReturnRange::new(&dvector![1.0, 3.0], &full);
+        let range = ReturnRange::new(&dvector![1.0, 3.0], &full).unwrap();
         assert_eq!(range.tolerances, (2e-12, 2e-12));
         // In a range within rounding, a target goes to the nearer end, and halfway to the top.
-        let narrow = ReturnRange::new(&dvector![1.0, 1.0 + 4.0 * f64::EPSILON], &unit);
+        let narrow = ReturnRange::new(&dvector![1.0, 1.0 + 4.0 * f64::EPSILON], &unit).unwrap();
         assert_eq!(narrow.reachable(1.0 + f64::EPSILON), Ok(1.0));
         assert_eq!(
             narrow.reachable(1.0 + 3.0 * f64::EPSILON),
@@ -874,7 +1018,7 @@ mod tests {
         // The top holds only the second asset, so the first's −1e6 doesn't widen its rounding,
         // 2e-14. The bottom holds the first, so its rounding is 1e-6.
         let mu = dvector![-1e6, 0.02, 0.02 - 5e-7];
-        let range = ReturnRange::new(&mu, &unit);
+        let range = ReturnRange::new(&mu, &unit).unwrap();
         assert_eq!(range.reachable(0.02 - 1e-7), Ok(0.02 - 1e-7));
         assert_eq!(range.reachable(0.02 - 1e-14), Ok(0.02));
         assert_eq!(range.reachable(-1e6 + 5e-7), Ok(-1e6));
@@ -1443,46 +1587,15 @@ mod tests {
     }
 
     #[test]
-    fn test_methods_without_groups_yet_say_so() {
+    fn test_min_cvar_without_groups_yet_says_so() {
         let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
         let grouped = WeightBounds::default().group([0, 1], 0.0, 0.5);
-        let mu = [0.0004, 0.0003, 0.0001];
-        let unsupported = |with| {
-            Err(CutupError::NotSupported {
-                setting: "group",
-                with,
-            })
-        };
-        let target = MeanVariance::target_return(0.0002)
-            .expected_returns(mu)
-            .bounds(grouped.clone());
-        assert_eq!(allocator.allocate(&target), unsupported("a target return"));
-        let rebalanced = target
-            .clone()
-            .current_weights([0.2, 0.3, 0.5])
-            .max_turnover(1.0);
-        assert_eq!(
-            allocator.allocate(&rebalanced),
-            unsupported("a target return")
-        );
-        assert_eq!(
-            allocator.allocate(&rebalanced.transaction_costs(0.001)),
-            unsupported("a target return")
-        );
-        let volatility = MeanVariance::target_volatility(0.02)
-            .expected_returns(mu)
-            .bounds(grouped.clone());
-        assert_eq!(
-            allocator.allocate(&volatility),
-            unsupported("a target volatility")
-        );
-        assert_eq!(
-            allocator.frontier(&target, 3).unwrap_err(),
-            unsupported("a frontier").unwrap_err()
-        );
         assert_eq!(
             allocator.allocate(&crate::MinCvar::default().bounds(grouped)),
-            unsupported("MinCvar")
+            Err(CutupError::NotSupported {
+                setting: "group",
+                with: "MinCvar",
+            })
         );
     }
 

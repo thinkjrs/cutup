@@ -122,7 +122,7 @@ impl Allocation for MinCvar {
             }
             Some(target) => {
                 let mu = returns.row_mean().transpose();
-                Some((ReturnRange::new(&mu, &bounds).reachable(target)?, mu))
+                Some((ReturnRange::new(&mu, &bounds)?.reachable(target)?, mu))
             }
             None => None,
         };

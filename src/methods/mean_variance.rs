@@ -2,7 +2,7 @@
 
 use super::min_variance::{bounded_min_variance, min_variance};
 use super::{correlation, in_null_space, long_only_weights, normalized};
-use crate::bounds::{ReturnRange, feasible_start, without_groups};
+use crate::bounds::{ReturnRange, feasible_start};
 use crate::turnover::{Costs, Trading};
 use crate::{
     Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
@@ -397,13 +397,11 @@ impl Returns {
             Objective::TargetReturn(target) => target,
             Objective::TargetVolatility(sigma) => {
                 let cov = self.adjusted_covariance(covariance)?;
-                let bounds = without_groups(bounds, "a target volatility")?;
                 return bounded_target_volatility(&cov, &mu, &bounds, sigma)
                     .map(|w| self.weights(w));
             }
         };
         // An unreachable target is rejected before the covariance is built.
-        let bounds = without_groups(bounds, "a target return")?;
         let problem = ReturnRange::target_problem(&mu, bounds, target)?;
         let cov = self.adjusted_covariance(covariance)?;
         long_only_weights(
@@ -503,7 +501,7 @@ impl Returns {
         method.trading.check(self.labels())?;
         let mu = self.expected_returns(expected_returns.as_ref())?;
         let bounds = match &method.bounds {
-            Some(bounds) => Some(without_groups(bounds.resolve(&self.labels)?, "a frontier")?),
+            Some(bounds) => Some(bounds.resolve(&self.labels)?),
             None => None,
         };
         let cov = self.adjusted_covariance(&method.covariance)?;
@@ -512,7 +510,7 @@ impl Returns {
         let (minimum, highest) = match &bounds {
             Some(bounds) => (
                 bounded_min_variance(&cov, bounds)?,
-                ReturnRange::new(&mu, bounds).highest(),
+                ReturnRange::new(&mu, bounds)?.highest(),
             ),
             None => (min_variance(&cov)?, mu.max()),
         };
@@ -753,7 +751,8 @@ fn target_volatility(
     Ok(minimum + direction * step)
 }
 
-/// Which bound each weight is held at, if any: the active set of a long-only solution.
+/// Which bound each weight is held at, if any, then which limit each group's total is: the
+/// active set of a long-only solution.
 ///
 /// A weight held at a bound comes back within rounding of it, not on it: the solver clamps it
 /// in scaled units, and the weights are then divided by their sum, which is 1 within `n` ulps.
@@ -762,17 +761,21 @@ fn target_volatility(
 /// different assets, and the step along the line between them was off by 1e-3.
 fn held(w: &DVector<f64>, bounds: &qp::Bounds) -> Vec<Option<bool>> {
     let n = w.len();
+    // A group's limit may be infinite, where nothing is held.
+    let at = |value: f64, lower: f64, upper: f64| {
+        if lower.is_finite() && value <= lower + qp::sum_rounding(n, lower.abs()) {
+            Some(false)
+        } else if upper.is_finite() && value >= upper - qp::sum_rounding(n, upper.abs()) {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    let rows = &bounds.rows;
+    let totals = rows.a.tr_mul(w);
     (0..n)
-        .map(|i| {
-            let (lower, upper) = (bounds.lower[i], bounds.upper[i]);
-            if w[i] <= lower + qp::sum_rounding(n, lower.abs()) {
-                Some(false)
-            } else if w[i] >= upper - qp::sum_rounding(n, upper.abs()) {
-                Some(true)
-            } else {
-                None
-            }
-        })
+        .map(|i| at(w[i], bounds.lower[i], bounds.upper[i]))
+        .chain((0..totals.len()).map(|k| at(totals[k], rows.lower[k], rows.upper[k])))
         .collect()
 }
 
@@ -801,7 +804,7 @@ fn bounded_target_volatility(
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
     // there up to some return and above it after.
-    let highest = ReturnRange::new(mu, bounds).highest();
+    let highest = ReturnRange::new(mu, bounds)?.highest();
     let top = at(highest)?;
     if risk.volatility(&top) <= target {
         return Ok(normalized(top));
@@ -1507,6 +1510,7 @@ mod tests {
         );
         let highest =
             ReturnRange::new(&sample_mean(&data), &bounds.resolve(data.labels()).unwrap())
+                .unwrap()
                 .highest();
         let top = data
             .allocate(&MeanVariance::target_return(highest).bounds(bounds.clone()))
@@ -1805,7 +1809,9 @@ mod tests {
         let method = MeanVariance::risk_aversion(1.0).bounds(bounds.clone());
         let frontier = data.frontier(&method, 5).unwrap();
         assert_frontier(&data, &method, &frontier);
-        let highest = ReturnRange::new(&mu, &bounds.resolve(data.labels()).unwrap()).highest();
+        let highest = ReturnRange::new(&mu, &bounds.resolve(data.labels()).unwrap())
+            .unwrap()
+            .highest();
         assert!((frontier[4].expected_return() - highest).abs() <= 4.0 * f64::EPSILON * mu.amax());
         for point in &frontier {
             assert!(
