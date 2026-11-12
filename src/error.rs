@@ -155,13 +155,6 @@ pub enum CutupError {
         /// The sum of the upper bounds.
         upper_sum: f64,
     },
-    /// No portfolio summing to 1 within the weight bounds satisfies the
-    /// [groups](crate::WeightBounds::group).
-    InfeasibleGroups {
-        /// The group that can't be met even on its own, by its members' labels joined with
-        /// `" + "`, or `None` if each can but not all at once.
-        group: Option<String>,
-    },
     /// A weight is NaN or infinite: one an [`Allocation`](crate::Allocation) returned, or one
     /// given to [`Weights::clean`](crate::Weights::clean).
     NonFiniteWeight {
@@ -227,6 +220,13 @@ pub enum CutupError {
         target_volatility: f64,
         /// The minimum variance portfolio's volatility, the lowest of any portfolio.
         minimum: f64,
+    },
+    /// No portfolio summing to 1 within the weight bounds satisfies the
+    /// [groups](crate::WeightBounds::group).
+    InfeasibleGroups {
+        /// The group that can't be met even on its own, by its members' labels joined with
+        /// `" + "`, or `None` if each can but not all at once.
+        group: Option<String>,
     },
 }
 
