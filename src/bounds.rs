@@ -1587,6 +1587,158 @@ mod tests {
     }
 
     #[test]
+    fn test_the_range_with_groups_comes_from_the_simplex_method() {
+        // C at most 0.5: the top holds 0.5 of C and 0.5 of B, 2.5, and the bottom all of A, 1.
+        let bounds = WeightBounds::default()
+            .group(["C"], 0.0, 0.5)
+            .resolve(&three())
+            .unwrap();
+        let mu = dvector![1.0, 2.0, 3.0];
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        assert_eq!((range.lowest, range.highest), (1.0, 2.5));
+        // 1e-12 of each end's Σ|μᵢwᵢ| and of the next asset a target inside moves into: A
+        // from the top, and from the bottom B, whose reduced cost is the least.
+        let (low, high) = range.tolerances;
+        assert!(
+            (low - 3e-12).abs() < 1e-24 && (high - 3.5e-12).abs() < 1e-24,
+            "{low} {high}"
+        );
+        // The top holds A at 0 and the group at its cap, which leaves B and C one portfolio.
+        let top = range.face(&mu, &bounds, true);
+        assert_eq!((top.lower[0], top.upper[0]), (0.0, 0.0));
+        assert_eq!((top.lower[1], top.upper[1]), (0.0, 1.0));
+        assert_eq!((top.rows.lower[0], top.rows.upper[0]), (0.5, 0.5));
+        // The bottom is all of A, whichever multipliers the end has. C is held, so the group,
+        // with no other member, keeps its limits.
+        let bottom = range.face(&mu, &bounds, false);
+        assert_eq!(feasible_start(&bottom).unwrap(), dvector![1.0, 0.0, 0.0]);
+        assert_eq!((bottom.lower[2], bottom.upper[2]), (0.0, 0.0));
+        assert_eq!(bottom.rows.upper, dvector![0.5]);
+        assert_eq!(bottom.rows.lower[0], f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_a_face_with_groups_leaves_tied_assets_to_the_solver() {
+        // A and B tie at the top, so the group on A isn't held there, and minimum variance
+        // splits them 2 : 1 up to its cap of 0.6.
+        let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
+        let mu = [0.0002, 0.0002, 0.0001];
+        let grouped = WeightBounds::default().group([0], 0.0, 0.6);
+        let bounds = grouped.resolve(allocator.labels()).unwrap();
+        let range = ReturnRange::new(&DVector::from_row_slice(&mu), &bounds).unwrap();
+        let top = range.face(&DVector::from_row_slice(&mu), &bounds, true);
+        assert_eq!(
+            (top.rows.lower[0], top.rows.upper[0]),
+            (f64::NEG_INFINITY, 0.6)
+        );
+        let method = MeanVariance::target_return(0.0002)
+            .expected_returns(mu)
+            .covariance(CovarianceConfig::default())
+            .bounds(grouped);
+        assert_weights_close(
+            &allocator.allocate(&method).unwrap(),
+            &Weights::from(vec![0.6, 0.4, 0.0]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_the_next_asset_from_an_end_with_groups_has_room() {
+        // Caps of 0.4, D fixed at 0.4, and A and B at least 0.3 together: the top holds C at
+        // 0.3 and B at 0.3, 2.9. D's reduced cost, 0.5, is less than A's, 1, but D has no room
+        // above its lower bound, so a target inside moves into A.
+        let four: Vec<String> = ["A", "B", "C", "D"].map(String::from).to_vec();
+        let bounds = WeightBounds::per_asset(vec![0.0, 0.0, 0.0, 0.4], vec![0.4; 4])
+            .group(["A", "B"], 0.3, 1.0)
+            .resolve(&four)
+            .unwrap();
+        let range = ReturnRange::new(&dvector![1.0, 2.0, 3.0, 3.5], &bounds).unwrap();
+        assert!((range.highest - 2.9).abs() < 1e-15);
+        assert!(
+            (range.tolerances.1 - 3.9e-12).abs() < 1e-24,
+            "{}",
+            range.tolerances.1
+        );
+    }
+
+    #[test]
+    fn test_a_start_inside_the_range_with_groups_reaches_the_target() {
+        let bounds = WeightBounds::uniform(0.0, 0.6)
+            .group(["A", "B"], 0.0, 0.7)
+            .resolve(&three())
+            .unwrap();
+        let mu = dvector![1.0, 2.0, 3.0];
+        let problem = ReturnRange::target_problem(&mu, bounds.clone(), 2.1).unwrap();
+        assert_eq!(problem.e.ncols(), 2);
+        assert!((mu.dot(&problem.start) - 2.1).abs() < 1e-15);
+        assert!(meets(&bounds, &problem.start, 1e-15));
+        // At the top, the face, with only the budget.
+        let top = ReturnRange::target_problem(&mu, bounds, 2.6).unwrap();
+        assert_eq!(top.e.ncols(), 1);
+    }
+
+    #[test]
+    fn test_a_reduced_cost_counts_beyond_rounding_of_its_terms() {
+        // The first column's reduced cost, 1.5e-9, is within 1e-9 of its terms, 1 and 1, but
+        // beyond 1e-9 of their difference. The second's, 3, counts, and its terms, 3, set the
+        // floor at 3e-14, which the third's, 2e-14, is within.
+        let a = DMatrix::from_row_slice(1, 3, &[1.0, -1.0, 0.0]);
+        let y = dvector![1.0 - 1.5e-9];
+        let cost = dvector![1.0, 2.0 - 1.5e-9, 2e-14];
+        let (reduced, nonzero) = reduced_costs(&cost, &a, &y);
+        assert!((reduced[0] - 1.5e-9).abs() < 1e-15);
+        assert_eq!(nonzero, [false, true, false]);
+        // A cost of 0 with no terms can't count.
+        let (_, nonzero) = reduced_costs(&dvector![0.0], &DMatrix::zeros(1, 1), &dvector![0.0]);
+        assert_eq!(nonzero, [false]);
+    }
+
+    #[test]
+    fn test_a_group_whose_members_end_at_zero_changes_nothing() {
+        // From a random search: a target return where a cap that doesn't bind is on assets
+        // that end at 0. The solver's slack for the group came back at 4e-33 of rounding,
+        // which the final check, measured against the row's own terms, took as all residual.
+        let mut state = 129_u64;
+        let mut uniform = || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let n = 5 + (uniform() * 8.0) as usize;
+        let rows: Vec<Vec<f64>> = (0..3 * n)
+            .map(|_| {
+                let f = uniform() - 0.5;
+                (0..n)
+                    .map(|i| {
+                        let scale = 1.0 + i as f64 / n as f64;
+                        0.0003 * i as f64 + 0.01 * f * scale + 0.01 * (uniform() - 0.5)
+                    })
+                    .collect()
+            })
+            .collect();
+        let data = Returns::new(&rows).unwrap();
+        let cap = (1.5 + uniform()) / n as f64;
+        let mu: Vec<f64> = (0..n)
+            .map(|i| 0.0003 * i as f64 + 0.0002 * uniform())
+            .collect();
+        let method = |bounds: WeightBounds| {
+            MeanVariance::target_return(0.0007182175668002149)
+                .expected_returns(mu.clone())
+                .bounds(bounds)
+        };
+        let plain = WeightBounds::uniform(0.0, cap);
+        let w = data.allocate(&method(plain.clone())).unwrap();
+        let zeros: Vec<usize> = (0..n).filter(|&i| w[i] == 0.0).collect();
+        assert_eq!(zeros, [3, 5, 6, 7]);
+        let grouped = data
+            .allocate(&method(plain.group(zeros, 0.0, 0.3)))
+            .unwrap();
+        assert_weights_close(&grouped, &w, 1e-12);
+    }
+
+    #[test]
     fn test_min_cvar_without_groups_yet_says_so() {
         let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
         let grouped = WeightBounds::default().group([0, 1], 0.0, 0.5);
