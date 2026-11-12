@@ -34,6 +34,14 @@ cutup's implementation:
   greedy fill cutup uses, and bounds that can't sum to 1 are an error. Each bounded result
   is cross-checked against PyPortfolioOpt's EfficientFrontier with the same weight_bounds,
   which uses cvxpy, to 1e-5.
+
+  With groups, each group is also inactive, at its floor or at its cap; an active group's
+  total is one more equality on the support, and every candidate must meet every group to
+  1e-9. The optimum holds some groups at a limit, so it's among the candidates. Groups no
+  portfolio within the bounds meets, alone or together, are an error, decided by
+  scipy.optimize.linprog. The cross-check adds them through PyPortfolioOpt's
+  add_sector_constraints, or one constraint per limit where groups overlap, on Clarabel at
+  a tolerance of 1e-12: cvxpy's default solver stops well short of these optima.
 * Target volatility, the highest expected return at a volatility of at most σ: long-short,
   Merton's closed form for the return on the frontier at σ, ρ = B/A + sqrt(D(Aσ² − 1))/A,
   then the target-return portfolio there, or with Σ singular the minimum variance
@@ -80,7 +88,8 @@ cutup's implementation:
   objective is written out from each method's definition, not from cutup's. Each result
   is cross-checked against PyPortfolioOpt, with an L1 cost, a squared-distance objective
   and an L1 constraint on cvxpy with Clarabel at tight tolerances, to 1e-6. A cap below the turnover needed to
-  move w₀ into the bounds is an expected error.
+  move w₀ into the bounds is an expected error. Groups are enumerated as above, and the
+  least turnover into them comes from scipy.optimize.linprog.
 * Min CVaR: scipy.optimize.linprog (HiGHS) on the primal Rockafellar-Uryasev program, one
   constraint per scenario, independent of the dual cutup solves. The optimal portfolio
   needn't be unique, so cases hold the CVaR of linprog's weights, which the test compares,
@@ -221,11 +230,12 @@ def long_only(
     b: np.ndarray,
     lower: np.ndarray | None = None,
     upper: np.ndarray | None = None,
+    check=None,
 ) -> np.ndarray | None:
     """Minimizes ½wᵀKw − cᵀw subject to Eᵀw = b and l ≤ w ≤ u, by default w ≥ 0, by support
     enumeration: every variable is held at its lower bound, at its upper bound, or left free.
     Works in units u = Dw with D = diag(sqrt(Kᵢᵢ)), which change neither the objective nor
-    which points are within the bounds."""
+    which points are within the bounds. `check`, if given, must accept a candidate too."""
     n, m = e.shape
     lower = np.zeros(n) if lower is None else np.asarray(lower, dtype=float)
     upper = np.full(n, np.inf) if upper is None else np.asarray(upper, dtype=float)
@@ -284,11 +294,97 @@ def long_only(
             if np.any(x < lower[support]) or np.any(x > upper[support]):
                 continue
             candidate[support] = x
+        if check is not None and not check(candidate / d):
+            continue
         value = 0.5 * candidate @ k @ candidate - c @ candidate
         if value < best_value:
             best, best_value = candidate, value
     # None when no support is feasible, such as an unreachable target return.
     return None if best is None else best / d
+
+
+def weight_groups(params: dict, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """The case's groups, from `groups`, each [members by column, lower, upper]: a matrix with
+    a column of ones on each group's members, and the limits. None without any."""
+    if "groups" not in params:
+        return None
+    a = np.zeros((n, len(params["groups"])))
+    for j, (members, _, _) in enumerate(params["groups"]):
+        a[members, j] = 1.0
+    lower = np.array([group[1] for group in params["groups"]], dtype=float)
+    upper = np.array([group[2] for group in params["groups"]], dtype=float)
+    return a, lower, upper
+
+
+def meets_groups(groups, w: np.ndarray) -> bool:
+    """Whether w's total in each group is within its limits, to 1e-9."""
+    a, lower, upper = groups
+    totals = a.T @ w
+    return bool(np.all(totals >= lower - 1e-9) and np.all(totals <= upper + 1e-9))
+
+
+def group_states(groups):
+    """Every way the groups can sit: each inactive (None), at its floor, or at its cap."""
+    _, lower, upper = groups
+    return itertools.product(*[
+        (None, lower[j]) + ((upper[j],) if np.isfinite(upper[j]) and upper[j] > lower[j] else ())
+        for j in range(len(lower))
+    ])
+
+
+def grouped(solve, groups, objective):
+    """The best of `solve(rows, check)` over every state of the groups, each active group's
+    total held at its limit by `rows`, a list of (column, limit), and every group's limits
+    checked by `check`. Without groups, `solve([], None)`. The optimum holds some groups at a
+    limit, so it's among the candidates, and every candidate meets every group."""
+    if groups is None:
+        return solve([], None)
+    a = groups[0]
+    best, best_value = None, np.inf
+    for states in group_states(groups):
+        rows = [(a[:, j], limit) for j, limit in enumerate(states) if limit is not None]
+        w = solve(rows, lambda w: meets_groups(groups, w))
+        if w is not None and objective(w) < best_value:
+            best, best_value = w, objective(w)
+    return best
+
+
+def long_only_grouped(k, c, e, b, lower=None, upper=None, groups=None) -> np.ndarray | None:
+    """long_only with the groups' limits too, each active group's total as one more column of E."""
+    def solve(rows, check):
+        e_all = np.column_stack([e] + [column for column, _ in rows])
+        b_all = np.concatenate([b, [limit for _, limit in rows]])
+        return long_only(k, c, e_all, b_all, lower, upper, check)
+    return grouped(solve, groups, lambda w: 0.5 * w @ k @ w - c @ w)
+
+
+def groups_infeasible(lower: np.ndarray, upper: np.ndarray, groups) -> bool:
+    """Whether no portfolio summing to 1 within the bounds meets every group, from
+    scipy.optimize.linprog."""
+    a, group_lower, group_upper = groups
+    n = len(lower)
+    a_ub = np.vstack([a.T, -a.T])
+    b_ub = np.concatenate([np.minimum(group_upper, 1.0), -group_lower])
+    box = list(zip(lower, np.minimum(upper, 1.0)))
+    result = linprog(np.zeros(n), A_ub=a_ub, b_ub=b_ub, A_eq=np.ones((1, n)), b_eq=[1.0], bounds=box, method="highs")
+    return result.status == 2
+
+
+def add_groups(frontier, groups) -> None:
+    """The groups as PyPortfolioOpt constraints: through add_sector_constraints when no asset
+    is in two, otherwise one constraint per limit."""
+    if groups is None:
+        return
+    a, lower, upper = groups
+    if np.all(a.sum(axis=1) <= 1):
+        mapper = {i: f"group{np.argmax(a[i])}" if a[i].any() else "none" for i in range(a.shape[0])}
+        names = [f"group{j}" for j in range(a.shape[1])]
+        frontier.add_sector_constraints(mapper, dict(zip(names, lower)), dict(zip(names, np.minimum(upper, 1.0))))
+        return
+    for j in range(a.shape[1]):
+        column, low, high = a[:, j], lower[j], min(upper[j], 1.0)
+        frontier.add_constraint(lambda w, column=column, low=low: column @ w >= low)
+        frontier.add_constraint(lambda w, column=column, high=high: column @ w <= high)
 
 
 def weight_bounds(params: dict, n: int) -> tuple[np.ndarray, np.ndarray] | None:
@@ -361,8 +457,11 @@ def long_only_min_variance(cov: np.ndarray, params: dict) -> np.ndarray | str:
         return long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]))
     if infeasible(bounds):
         return "InfeasibleBounds"
-    weights = long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *bounds)
-    cross_check(cov, None, bounds, weights, lambda frontier: frontier.min_volatility())
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(*bounds, groups):
+        return "InfeasibleGroups"
+    weights = long_only_grouped(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *bounds, groups)
+    cross_check(cov, None, bounds, weights, lambda frontier: frontier.min_volatility(), groups)
     return weights
 
 
@@ -374,9 +473,12 @@ def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np
     bounds_or_none = bounds or (None, None)
     if "risk_aversion" in params:
         gamma = params["risk_aversion"]
-        weights = long_only(gamma * cov, mu, np.ones((n, 1)), np.array([1.0]), *bounds_or_none)
+        groups = weight_groups(params, n)
+        if groups is not None and groups_infeasible(*bounds, groups):
+            return "InfeasibleGroups"
+        weights = long_only_grouped(gamma * cov, mu, np.ones((n, 1)), np.array([1.0]), *bounds_or_none, groups)
         if bounds is not None:
-            cross_check(cov, mu, bounds, weights, lambda frontier: frontier.max_quadratic_utility(gamma))
+            cross_check(cov, mu, bounds, weights, lambda frontier: frontier.max_quadratic_utility(gamma), groups)
         return weights
     target = params["target_return"]
     ends = range_ends(mu, bounds)
@@ -391,7 +493,7 @@ def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np
     return weights
 
 
-def cross_check(cov, mu, bounds, weights, optimize) -> None:
+def cross_check(cov, mu, bounds, weights, optimize, groups=None) -> None:
     """Checks bounded weights against PyPortfolioOpt's EfficientFrontier with the same
     weight bounds, which solves the problem with cvxpy. That solver is only accurate to
     about 1e-6, so this catches a wrong reference rather than setting the fixture. It's
@@ -400,7 +502,11 @@ def cross_check(cov, mu, bounds, weights, optimize) -> None:
     if np.linalg.cond(cov) > 1e8:
         return
     lower, upper = bounds
-    frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))))
+    # With groups, cvxpy's default solver stops well short of optimum at these variances'
+    # scale, so Clarabel at tight tolerances, as for rebalancing.
+    solver = {} if groups is None else {"solver": "CLARABEL", "solver_options": {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}}
+    frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))), **solver)
+    add_groups(frontier, groups)
     optimize(frontier)
     theirs = np.array(list(frontier.weights))
     # efficient_return asks for a return of at least the target, which only matches an
@@ -758,12 +864,15 @@ def kinked(
     cap: float | None,
     target: tuple[np.ndarray, float] | None = None,
     net: np.ndarray | None = None,
+    rows=(),
+    check=None,
 ) -> np.ndarray | None:
     """Minimizes ½wᵀKw − cᵀw + Σᵢ costsᵢ|wᵢ − currentᵢ| subject to 1ᵀw = 1, l ≤ w ≤ u, with a
     target (μ, ρ) μᵀw = ρ, and with a cap Σᵢ|wᵢ − currentᵢ| ≤ cap, by support enumeration
     over five states per asset. With `net`, per-asset costs cᵢ, the target is instead a net
     return μᵀw − Σᵢ cᵢ|wᵢ − currentᵢ| ≥ ρ. On a support that's linear, so each support has a
-    candidate without it and one with it as an equality."""
+    candidate without it and one with it as an equality. `rows`, pairs (a, limit), hold aᵀw at
+    the limit, and `check`, if given, must accept a candidate too."""
     n = len(c)
     # 0: lower bound, 1: upper bound, 2: at current, 3: free above it, 4: free below it.
     def choices(i):
@@ -809,6 +918,9 @@ def kinked(
                 if capped:
                     columns.append(sign)
                     rhs.append(cap - np.abs(w[held] - current[held]).sum() + sign @ current[free])
+                for column, limit in rows:
+                    columns.append(column[free])
+                    rhs.append(limit - column[held] @ w[held])
                 e = np.column_stack(columns)
                 m = e.shape[1]
                 kkt = np.block([[k[np.ix_(free, free)], e], [e.T, np.zeros((m, m))]])
@@ -831,6 +943,8 @@ def kinked(
                 if np.any(sign * moved < -tolerance):
                     continue
                 if cap is not None and np.abs(candidate - current).sum() > cap + 1e-12:
+                    continue
+                if check is not None and not check(candidate):
                     continue
                 value = objective(candidate)
                 if value < best_value:
@@ -856,6 +970,9 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
         # Each cap lowered to what the other floors leave, as cutup resolves them.
         upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(lower, upper, groups):
+        return "InfeasibleGroups"
     target, net = None, None
     if mean_variance and "target_return" in params:
         rho = params["target_return"]
@@ -879,21 +996,41 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
     # With costs, the cap was checked above.
     if cap is not None and net is None:
         if target is None:
-            minimum = turnover_into_bounds(current, lower, upper)
+            minimum = turnover_into_bounds(current, lower, upper, groups)
         else:
             minimum = least_turnover(current, mu, target[1], lower, upper)
         if minimum > cap + 1e-12:
             return "InfeasibleTurnover"
     # With a target, costs only count against its net return.
     charged = np.zeros(n) if target is not None else costs
-    weights = kinked(k, c, current, charged, lower, upper, cap, target, net)
-    cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, params if mean_variance else None)
+    def objective(w):
+        return 0.5 * w @ k @ w - c @ w + charged @ np.abs(w - current)
+
+    weights = grouped(lambda rows, check: kinked(k, c, current, charged, lower, upper, cap, target, net, rows, check), groups, objective)
+    cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, params if mean_variance else None, groups)
     return weights
 
 
-def turnover_into_bounds(current: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> float:
+def turnover_into_bounds(current: np.ndarray, lower: np.ndarray, upper: np.ndarray, groups=None) -> float:
     """The least turnover from current to a portfolio summing to 1 within the bounds: clip each
-    weight into its bounds, then trade what that leaves over or short of 1."""
+    weight into its bounds, then trade what that leaves over or short of 1. With groups, from
+    scipy.optimize.linprog over w and the purchases and sales w − current = p − s."""
+    if groups is not None:
+        n = len(current)
+        a, group_lower, group_upper = groups
+        a_eq = np.vstack([
+            np.hstack([np.eye(n), -np.eye(n), np.eye(n)]),
+            np.concatenate([np.ones(n), np.zeros(2 * n)]),
+        ])
+        a_ub = np.vstack([np.hstack([a.T, np.zeros((a.shape[1], 2 * n))]), np.hstack([-a.T, np.zeros((a.shape[1], 2 * n))])])
+        b_ub = np.concatenate([np.minimum(group_upper, 1.0), -group_lower])
+        box = list(zip(lower, upper)) + [(0, None)] * (2 * n)
+        tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
+        cost = np.concatenate([np.zeros(n), np.ones(2 * n)])
+        result = linprog(cost, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=np.concatenate([current, [1.0]]), bounds=box, method="highs", options=tight)
+        if result.status != 0:
+            raise ValueError(f"turnover into groups: {result.message}")
+        return result.fun
     clipped = np.clip(current, lower, upper)
     return np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
 
@@ -940,7 +1077,7 @@ def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.nd
     return result.fun
 
 
-def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, mean_variance) -> None:
+def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, weights, mean_variance, groups=None) -> None:
     """Checks a rebalance against PyPortfolioOpt on cvxpy, with Clarabel at tight
     tolerances, to 1e-6. Unlike the other cross-checks it holds even on near_singular4."""
     bounds = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)]
@@ -954,6 +1091,7 @@ def cross_check_rebalance(cov, mu, current, kappa, costs, cap, lower, upper, wei
         frontier.add_objective(lambda w: kappa * cp.sum_squares(w - current))
     if cap is not None:
         frontier.add_constraint(lambda w: cp.norm(w - current, 1) <= cap)
+    add_groups(frontier, groups)
     if targeted and "transaction_costs" in mean_variance:
         rho = mean_variance["target_return"]
         frontier.add_constraint(lambda w: mu @ w - cp.sum(cp.multiply(costs, cp.abs(w - current))) >= rho)
@@ -1572,6 +1710,41 @@ def cases(datasets: dict) -> list[dict]:
         ]}),
     ]:
         out.append({"dataset": name, "method": "black_litterman", "params": params, "tolerance": linear})
+
+    # Groups on long-only min variance and mean-variance: caps and floors on several assets'
+    # total, disjoint and overlapping, with per-asset bounds and shrinkage, one group no
+    # portfolio meets, and groups each portfolio can meet alone but not all at once.
+    for name, params in [
+        ("orthogonal3", {"bounds": [0.0, 1.0], "groups": [[[0, 1], 0.0, 0.5]]}),
+        ("two_blocks5", {"bounds": [0.0, 0.4], "groups": [[[0, 1, 2], 0.0, 0.5], [[3, 4], 0.75, 1.0]]}),
+        ("two_blocks5", {"bounds": [0.0, 1.0], "groups": [[[0, 1, 2], 0.0, 0.15], [[2, 3], 0.5, 0.6]]}),
+        ("near_singular4", {"lower_bounds": [0.1, 0.0, 0.1, 0.0], "upper_bounds": [0.5, 0.6, 1.0, 0.35], "groups": [[[0, 3], 0.4, 0.7]]}),
+        ("scales4", {"bounds": [0.0, 1.0], "groups": [[[0, 1], 0.6, 1.0]]}),
+        ("rank_deficient6", {"bounds": [0.0, 0.5], "shrinkage": 0.3, "groups": [[[0, 1, 2], 0.0, 0.4], [[1, 4, 5], 0.35, 0.6]]}),
+        ("orthogonal3", {"bounds": [0.0, 0.4], "groups": [[[0, 1], 0.9, 1.0]]}),
+        ("orthogonal3", {"bounds": [0.0, 1.0], "groups": [[[0, 1], 0.7, 1.0], [[1, 2], 0.7, 1.0], [[0, 2], 0.7, 1.0]]}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_min_variance", "params": params, "tolerance": solver})
+    for name, params in [
+        ("two_blocks5", {"risk_aversion": 5.0, "bounds": [0.0, 1.0], "expected_returns": mu5, "groups": [[[0, 2], 0.0, 0.4]]}),
+        ("two_blocks5", {"risk_aversion": 50.0, "bounds": [0.0, 0.5], "expected_returns": mu5, "groups": [[[0, 1, 2], 0.0, 0.6], [[2, 3, 4], 0.5, 1.0]]}),
+        ("near_singular4", {"risk_aversion": 100.0, "bounds": [0.0, 1.0], "groups": [[[1, 2], 0.0, 0.3], [[0, 1], 0.4, 1.0]]}),
+        ("rank_deficient6", {"risk_aversion": 20.0, "shrinkage": 0.3, "bounds": [0.0, 0.4], "groups": [[[0, 1], 0.0, 0.3], [[1, 2, 3], 0.2, 0.5]]}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_mean_variance", "params": params, "tolerance": solver})
+    # Rebalancing with groups: a cap at exactly the least turnover into them, which clipping
+    # each weight misses, and below it; a turnover penalty; costs, with and without a cap.
+    for method, name, params in [
+        ("rebalance_min_variance", "orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 1.0, "groups": [[[1, 2], 0.9, 1.0], [[0, 1], 0.0, 0.5]]}),
+        ("rebalance_min_variance", "orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 0.9, "groups": [[[1, 2], 0.9, 1.0], [[0, 1], 0.0, 0.5]]}),
+        ("rebalance_min_variance", "orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "max_turnover": 0.5, "groups": [[[0, 2], 0.0, 0.5]]}),
+        ("rebalance_min_variance", "two_blocks5", {"current_weights": [0.5, 0.0, 0.0, 0.25, 0.25], "turnover_penalty": 2e-4, "groups": [[[0, 1], 0.0, 0.3]]}),
+        ("rebalance_mean_variance", "two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0005, "groups": [[[0, 2], 0.0, 0.35]]}),
+        ("rebalance_mean_variance", "two_blocks5", {"risk_aversion": 50.0, "expected_returns": mu5, "current_weights": [0.2] * 5, "transaction_costs": 0.0002, "max_turnover": 0.3, "groups": [[[0, 2, 4], 0.0, 0.5], [[1, 3], 0.25, 1.0]]}),
+        ("rebalance_mean_variance", "near_singular4", {"risk_aversion": 100.0, "current_weights": [0.25] * 4, "transaction_costs": 0.0001, "bounds": [0.0, 0.5], "groups": [[[0, 1], 0.85, 1.0]]}),
+        ("rebalance_min_variance", "orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "turnover_penalty": 1e-4, "groups": [[[0, 1], 0.7, 1.0], [[1, 2], 0.7, 1.0], [[0, 2], 0.7, 1.0]]}),
+    ]:
+        out.append({"dataset": name, "method": method, "params": params, "tolerance": solver})
     return out
 
 

@@ -76,18 +76,33 @@ fn covariance_config(params: &Value) -> CovarianceConfig {
 }
 
 /// Bounds from `bounds: [lower, upper]` for every asset, or from per-asset `lower_bounds`
-/// and `upper_bounds`, if the case has either.
+/// and `upper_bounds`, if the case has either, with its `groups`, each
+/// `[members by column, lower, upper]`. Groups alone go on the default bounds.
 fn weight_bounds(params: &Value) -> Option<WeightBounds> {
-    if params["bounds"].is_array() {
+    let bounds = if params["bounds"].is_array() {
         let bounds = floats(&params["bounds"]);
-        return Some(WeightBounds::uniform(bounds[0], bounds[1]));
-    }
-    params["lower_bounds"].is_array().then(|| {
-        WeightBounds::per_asset(
-            floats(&params["lower_bounds"]),
-            floats(&params["upper_bounds"]),
-        )
-    })
+        Some(WeightBounds::uniform(bounds[0], bounds[1]))
+    } else {
+        params["lower_bounds"].is_array().then(|| {
+            WeightBounds::per_asset(
+                floats(&params["lower_bounds"]),
+                floats(&params["upper_bounds"]),
+            )
+        })
+    };
+    let Some(groups) = params["groups"].as_array() else {
+        return bounds;
+    };
+    Some(
+        groups
+            .iter()
+            .fold(bounds.unwrap_or_default(), |bounds, group| {
+                let members = group[0].as_array().unwrap();
+                let members = members.iter().map(|m| m.as_u64().unwrap() as usize);
+                let limits = floats(&Value::Array(group.as_array().unwrap()[1..].to_vec()));
+                bounds.group(members, limits[0], limits[1])
+            }),
+    )
 }
 
 fn mean_variance(params: &Value) -> MeanVariance {
