@@ -316,21 +316,9 @@ pub(crate) fn feasible_start(bounds: &qp::Bounds) -> Result<DVector<f64>, CutupE
     if r == 0 {
         return Ok(interior_start(bounds));
     }
-    // The weights, then each group's total tⱼ, with 1ᵀw = 1 and aⱼᵀw − tⱼ = 0.
-    let mut a = DMatrix::zeros(1 + r, n + r);
-    a.row_mut(0).columns_mut(0, n).fill(1.0);
-    a.view_mut((1, 0), (r, n)).copy_from(&rows.a.transpose());
-    a.view_mut((1, n), (r, r)).fill_diagonal(-1.0);
-    let b = DVector::from_fn(1 + r, |i, _| if i == 0 { 1.0 } else { 0.0 });
-    let both = |weights: &DVector<f64>, groups: &DVector<f64>| {
-        DVector::from_iterator(n + r, weights.iter().chain(groups.iter()).copied())
-    };
-    let (lower, upper) = (
-        both(&bounds.lower, &rows.lower),
-        both(&bounds.upper, &rows.upper),
-    );
     let infeasible = CutupError::InfeasibleGroups { group: None };
-    let w = match lp::solve(&DVector::zeros(n + r), &a, &b, &lower, &upper)? {
+    let program = Program::new(bounds, None);
+    let w = match program.solve(&DVector::zeros(n + r))? {
         lp::Outcome::Optimal(solution) => solution.x.rows(0, n).into_owned(),
         // With no objective, nothing is unbounded.
         _ => return Err(infeasible),
@@ -342,6 +330,48 @@ pub(crate) fn feasible_start(bounds: &qp::Bounds) -> Result<DVector<f64>, CutupE
         Ok(w)
     } else {
         Err(infeasible)
+    }
+}
+
+/// The linear program over the weights `w`, then each group's total `tⱼ`: `1ᵀw = 1`, then
+/// `μᵀw = ρ` for a target `(μ, ρ)` if there's one, then `aⱼᵀw − tⱼ = 0` for each group, with the
+/// weights within resolved bounds and the totals within the groups' limits.
+struct Program {
+    a: DMatrix<f64>,
+    b: DVector<f64>,
+    lower: DVector<f64>,
+    upper: DVector<f64>,
+}
+
+impl Program {
+    fn new(bounds: &qp::Bounds, target: Option<(&DVector<f64>, f64)>) -> Self {
+        let rows = &bounds.rows;
+        let (n, r) = rows.a.shape();
+        let first = 1 + usize::from(target.is_some());
+        let mut a = DMatrix::zeros(first + r, n + r);
+        let mut b = DVector::zeros(first + r);
+        a.row_mut(0).columns_mut(0, n).fill(1.0);
+        b[0] = 1.0;
+        if let Some((mu, rho)) = target {
+            a.view_mut((1, 0), (1, n)).copy_from(&mu.transpose());
+            b[1] = rho;
+        }
+        a.view_mut((first, 0), (r, n))
+            .copy_from(&rows.a.transpose());
+        a.view_mut((first, n), (r, r)).fill_diagonal(-1.0);
+        let both = |weights: &DVector<f64>, groups: &DVector<f64>| {
+            DVector::from_iterator(n + r, weights.iter().chain(groups.iter()).copied())
+        };
+        Program {
+            a,
+            b,
+            lower: both(&bounds.lower, &rows.lower),
+            upper: both(&bounds.upper, &rows.upper),
+        }
+    }
+
+    fn solve(&self, cost: &DVector<f64>) -> Result<lp::Outcome, CutupError> {
+        lp::solve(cost, &self.a, &self.b, &self.lower, &self.upper)
     }
 }
 
