@@ -8,7 +8,8 @@
 //!
 //! The solvers are private, so each one is measured through a method that uses it:
 //! `MinVariance` for the active-set QP solver, `MinCvar` for the LP, `Hrp` and `Herc` for the
-//! clustering, and `RiskParity` for its Newton iteration. Each run covers the whole of
+//! clustering, and `RiskParity` for its Newton iteration. `MinVarianceGroups` adds groups
+//! that bind, which the QP solver holds at their limits. Each run covers the whole of
 //! `allocate`, including the sample covariance.
 //!
 //! `cargo test --all-targets` runs this file too, once per benchmark and unoptimized, so
@@ -27,7 +28,7 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
-    use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity};
+    use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity, WeightBounds};
 
     /// The sizes each method is timed at, in assets, with how many samples criterion takes at
     /// each. Its default is 100. Sizes where a solve takes over a tenth of a second get its minimum
@@ -107,11 +108,11 @@ mod native {
         std::env::args().any(|arg| arg == "--bench")
     }
 
-    /// Times `method` on the generated returns at each of `sizes`, under `name/assets`.
-    fn bench_method(
+    /// Times the `method` for each of `sizes` on the generated returns, under `name/assets`.
+    fn bench_method<M: Allocation>(
         c: &mut Criterion,
         name: &str,
-        method: &dyn Allocation,
+        method: impl Fn(usize) -> M,
         sizes: &[(usize, usize)],
     ) {
         let sizes = if benchmarking() { sizes } else { &sizes[..1] };
@@ -121,9 +122,10 @@ mod native {
             // Generated only if criterion's filter selects this benchmark.
             group.bench_function(BenchmarkId::from_parameter(assets), |b| {
                 let data = returns(assets);
+                let method = method(assets);
                 b.iter(|| {
                     black_box(&data)
-                        .allocate(method)
+                        .allocate(&method)
                         .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"))
                 });
             });
@@ -131,12 +133,23 @@ mod native {
         group.finish();
     }
 
+    /// `MinVariance` with two groups that bind on the generated returns, which spread the
+    /// weight about evenly: the first half of the assets at most 30% together, and every third
+    /// asset, overlapping it, at least 40%.
+    fn grouped(assets: usize) -> MinVariance {
+        let bounds = WeightBounds::default()
+            .group(0..assets / 2, 0.0, 0.3)
+            .group((0..assets).step_by(3), 0.4, 1.0);
+        MinVariance::default().bounds(bounds)
+    }
+
     fn allocate(c: &mut Criterion) {
-        bench_method(c, "MinVariance", &MinVariance::default(), &SLOW_SIZES);
-        bench_method(c, "MinCvar", &MinCvar::default(), &SLOW_SIZES);
-        bench_method(c, "Hrp", &Hrp::default(), &SIZES);
-        bench_method(c, "Herc", &Herc::default(), &SIZES);
-        bench_method(c, "RiskParity", &RiskParity::default(), &SIZES);
+        bench_method(c, "MinVariance", |_| MinVariance::default(), &SLOW_SIZES);
+        bench_method(c, "MinVarianceGroups", grouped, &SLOW_SIZES);
+        bench_method(c, "MinCvar", |_| MinCvar::default(), &SLOW_SIZES);
+        bench_method(c, "Hrp", |_| Hrp::default(), &SIZES);
+        bench_method(c, "Herc", |_| Herc::default(), &SIZES);
+        bench_method(c, "RiskParity", |_| RiskParity::default(), &SIZES);
     }
 
     criterion_group!(benches, allocate);
