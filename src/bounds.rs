@@ -197,9 +197,12 @@ impl WeightBounds {
     }
 
     /// The groups as the solver's rows, for the assets `labels` within resolved `lower` and
-    /// `upper` bounds: one column of `a` per group, 1 for each member, with the group's limits
-    /// narrowed to the totals its members can hold in a portfolio summing to 1. That doesn't
-    /// change which portfolios are feasible, and makes every limit finite.
+    /// `upper` bounds: one column of `a` per group, 1 for each member, with the group's limits.
+    /// A limit the bounds and the budget already meet, at or beyond the least or the most its
+    /// members can hold in a portfolio summing to 1, is dropped, made infinite. Otherwise the
+    /// solver could hold the group's total at it while holding every member at its bound
+    /// too, and that row would depend on the others, leaving no unique step. A limit just
+    /// past what the members can hold, within rounding, is moved onto it.
     fn rows(
         &self,
         labels: &[String],
@@ -247,8 +250,16 @@ impl WeightBounds {
                     group: Some(names.join(" + ")),
                 });
             }
-            row_lower[j] = l.max(least).min(most);
-            row_upper[j] = u.min(most).max(row_lower[j]);
+            row_lower[j] = if l <= least {
+                f64::NEG_INFINITY
+            } else {
+                l.min(most)
+            };
+            row_upper[j] = if u >= most {
+                f64::INFINITY
+            } else {
+                u.max(least)
+            };
         }
         Ok(qp::Rows {
             a,
@@ -1057,27 +1068,33 @@ mod tests {
 
     #[test]
     fn test_groups_resolve_to_rows_narrowed_to_what_their_members_can_hold() {
-        // Caps of 0.6 leave A and C at least 0.4 together, and an asset listed twice counts
-        // once.
+        // Caps of 0.6 leave A and C at least 0.4 together, and B and A too, so floors up to
+        // that are met already and dropped, as is a cap at or above the 1 they can hold. An
+        // asset listed twice counts once.
         let resolved = WeightBounds::uniform(0.0, 0.6)
-            .group(["A", "C"], 0.0, f64::INFINITY)
+            .group(["A", "C"], 0.4, f64::INFINITY)
             .group(["B", "A", "B"], 0.1, 0.5)
+            .group(["A", "C"], 0.4 + 1e-9, 1.0 - 1e-9)
             .resolve(&three())
             .unwrap();
         let rows = &resolved.rows;
         assert_eq!(
             rows.a,
-            DMatrix::from_row_slice(3, 2, &[1.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+            DMatrix::from_row_slice(3, 3, &[1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0])
         );
-        assert_eq!(rows.lower, dvector![0.4, 0.4]);
-        assert_eq!(rows.upper, dvector![1.0, 0.5]);
-        // By column, and with a floor on the others that leaves room.
+        assert_eq!(
+            rows.lower,
+            dvector![f64::NEG_INFINITY, f64::NEG_INFINITY, 0.4 + 1e-9]
+        );
+        assert_eq!(rows.upper, dvector![f64::INFINITY, 0.5, 1.0 - 1e-9]);
+        // By column, with a floor on the others that leaves at most 0.7, and equal limits.
         let resolved = WeightBounds::per_asset(vec![0.0, 0.0, 0.3], vec![1.0; 3])
-            .group([0, 1], 0.2, 0.9)
+            .group([0, 1], 0.2, 0.7)
+            .group([1], 0.3, 0.3)
             .resolve(&three())
             .unwrap();
-        assert_eq!(resolved.rows.lower, dvector![0.2]);
-        assert_eq!(resolved.rows.upper, dvector![0.7]);
+        assert_eq!(resolved.rows.lower, dvector![0.2, 0.3]);
+        assert_eq!(resolved.rows.upper, dvector![f64::INFINITY, 0.3]);
         // Without groups, none.
         assert_eq!(
             WeightBounds::default()
@@ -1341,6 +1358,58 @@ mod tests {
             &Weights::from(vec![1.0 / 3.0, 1.0 / 6.0, 0.5]),
             1e-12,
         );
+    }
+
+    #[test]
+    fn test_a_group_of_assets_at_their_floors_changes_nothing() {
+        // A cap that doesn't bind on the assets mean-variance holds nothing of. Narrowed onto
+        // the 0 its members' floors already force, the group's floor let the solver hold its
+        // total there as well as every member, and the step had no unique solution.
+        let mut failures = Vec::new();
+        for seed in 0..10_u64 {
+            let mut state = seed;
+            let mut uniform = || {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let n = 6 + (uniform() * 10.0) as usize;
+            let rows: Vec<Vec<f64>> = (0..3 * n)
+                .map(|_| {
+                    let f = uniform() - 0.5;
+                    (0..n)
+                        .map(|i| {
+                            let scale = 1.0 + i as f64 / n as f64;
+                            0.0003 * i as f64 + 0.01 * f * scale + 0.01 * (uniform() - 0.5)
+                        })
+                        .collect()
+                })
+                .collect();
+            let data = Returns::new(&rows).unwrap();
+            let cap = (1.5 + uniform()) / n as f64;
+            let gamma = 1.0 + 9.0 * uniform();
+            for rebalance in [false, true] {
+                let method = |bounds: WeightBounds| {
+                    let method = MeanVariance::risk_aversion(gamma).bounds(bounds);
+                    match rebalance {
+                        true => method
+                            .current_weights(vec![1.0 / n as f64; n])
+                            .turnover_penalty(1e-4),
+                        false => method,
+                    }
+                };
+                let plain = WeightBounds::uniform(0.0, cap);
+                let w = data.allocate(&method(plain.clone())).unwrap();
+                let zeros: Vec<usize> = (0..n).filter(|&i| w[i] == 0.0).collect();
+                match data.allocate(&method(plain.group(zeros, 0.0, 0.3))) {
+                    Ok(grouped) => assert_weights_close(&grouped, &w, 1e-9),
+                    Err(error) => failures.push((seed, rebalance, error)),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
     #[test]
