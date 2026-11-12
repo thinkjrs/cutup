@@ -572,11 +572,7 @@ pub(crate) fn solve_piecewise(
     let Problem { q, c, e, b } = with_slacks((q, c, e, b), &rows.a);
     // In the units of [`solve_kkt`], so that the tolerances below compare like with like. The
     // kinks move with x, and their slopes scale like c.
-    let mut scales = diagonal_scales(&q);
-    for j in 0..rows.a.ncols() {
-        scales[n + j] = slack_scale(&scales.as_slice()[..n], rows.a.column(j).iter().copied());
-    }
-    let units = Units::scaled(&q, &c, &e, &b, scales);
+    let units = Units::scaled(&q, &c, &e, &b, scales_with_slacks(&q, &rows.a));
     let segments: Vec<Segments> = (0..n)
         .map(|i| {
             let scale = units.scales[i];
@@ -647,6 +643,17 @@ struct Problem {
     c: DVector<f64>,
     e: DMatrix<f64>,
     b: DVector<f64>,
+}
+
+/// [`Units`]' scales for `q`, which [`with_slacks`] padded with a slack for each column of
+/// `a`: [`diagonal_scales`] for the variables, and [`slack_scale`] for the slacks after them.
+fn scales_with_slacks(q: &DMatrix<f64>, a: &DMatrix<f64>) -> DVector<f64> {
+    let n = a.nrows();
+    let mut scales = diagonal_scales(q);
+    for (j, column) in a.column_iter().enumerate() {
+        scales[n + j] = slack_scale(&scales.as_slice()[..n], column.iter().copied());
+    }
+    scales
 }
 
 /// The scale of the slack variable `s = aᵀx` in [`Units`], given the variables' `scales`:
@@ -2258,6 +2265,19 @@ mod tests {
         assert_eq!(slack_scale(&scales, [0.0, 0.0, 0.0]), 1.0);
         // A scale that underflows to 0 can't be divided by.
         assert_eq!(slack_scale(&[1e-300], [1e300]), 1.0);
+    }
+
+    #[test]
+    fn each_slack_gets_its_own_rows_scale_after_the_variables() {
+        // Variables scaled 2 and 3, and two rows: x₀ + x₁ and 6x₁.
+        let a = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 1.0, 6.0]);
+        let mut q = DMatrix::zeros(4, 4);
+        q[(0, 0)] = 4.0;
+        q[(1, 1)] = 9.0;
+        assert_eq!(
+            scales_with_slacks(&q, &a),
+            DVector::from_vec(vec![2.0, 3.0, 2.0, 0.5])
+        );
     }
 
     #[test]
