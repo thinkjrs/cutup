@@ -224,8 +224,9 @@ pub(super) fn bounded_min_variance(
     bounds: &qp::Bounds,
 ) -> Result<DVector<f64>, CutupError> {
     let n = cov.ncols();
-    // From a point strictly inside the bounds, the solver's first step is to the
-    // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
+    // Without groups, from a point strictly inside the bounds, the solver's first step is to
+    // the unconstrained minimum variance portfolio; with the default bounds it's equal
+    // weights. With groups, from a vertex that meets them.
     let start = feasible_start(bounds)?;
     Ok(DVector::from_vec(long_only_weights(
         cov,
