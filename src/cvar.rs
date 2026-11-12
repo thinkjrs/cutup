@@ -1,6 +1,6 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
-use crate::bounds::ReturnRange;
+use crate::bounds::{ReturnRange, without_groups};
 use crate::methods::normalized;
 use crate::{Allocation, CutupError, Returns, WeightBounds, Weights, lp};
 use nalgebra::{DMatrix, DVector};
@@ -112,7 +112,7 @@ impl Allocation for MinCvar {
         let returns = &data.returns;
         let (t, n) = returns.shape();
         let cap = tail_weight(self.confidence, t)?;
-        let bounds = self.bounds.resolve(data.labels())?;
+        let bounds = without_groups(self.bounds.resolve(data.labels())?, "MinCvar")?;
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
                 return Err(CutupError::InvalidConfig {

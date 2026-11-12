@@ -2,7 +2,7 @@
 
 use super::min_variance::{bounded_min_variance, min_variance};
 use super::{correlation, in_null_space, long_only_weights, normalized};
-use crate::bounds::{ReturnRange, interior_start};
+use crate::bounds::{ReturnRange, feasible_start, without_groups};
 use crate::turnover::{Costs, Trading};
 use crate::{
     Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
@@ -390,24 +390,20 @@ impl Returns {
             Objective::RiskAversion(gamma) => {
                 let cov = self.adjusted_covariance(covariance)?;
                 let (e, b) = budget(cov.ncols());
-                return long_only_weights(
-                    &(cov * gamma),
-                    &mu,
-                    &e,
-                    &b,
-                    &bounds,
-                    interior_start(&bounds),
-                )
-                .map(|w| self.weights(w));
+                let start = feasible_start(&bounds)?;
+                return long_only_weights(&(cov * gamma), &mu, &e, &b, &bounds, start)
+                    .map(|w| self.weights(w));
             }
             Objective::TargetReturn(target) => target,
             Objective::TargetVolatility(sigma) => {
                 let cov = self.adjusted_covariance(covariance)?;
+                let bounds = without_groups(bounds, "a target volatility")?;
                 return bounded_target_volatility(&cov, &mu, &bounds, sigma)
                     .map(|w| self.weights(w));
             }
         };
         // An unreachable target is rejected before the covariance is built.
+        let bounds = without_groups(bounds, "a target return")?;
         let problem = ReturnRange::target_problem(&mu, bounds, target)?;
         let cov = self.adjusted_covariance(covariance)?;
         long_only_weights(
@@ -507,7 +503,7 @@ impl Returns {
         method.trading.check(self.labels())?;
         let mu = self.expected_returns(expected_returns.as_ref())?;
         let bounds = match &method.bounds {
-            Some(bounds) => Some(bounds.resolve(&self.labels)?),
+            Some(bounds) => Some(without_groups(bounds.resolve(&self.labels)?, "a frontier")?),
             None => None,
         };
         let cov = self.adjusted_covariance(&method.covariance)?;

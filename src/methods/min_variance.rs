@@ -1,7 +1,7 @@
 //! [`MinVariance`]: the minimum variance portfolio.
 
 use super::long_only_weights;
-use crate::bounds::interior_start;
+use crate::bounds::feasible_start;
 use crate::turnover::Trading;
 use crate::{
     Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
@@ -226,13 +226,14 @@ pub(super) fn bounded_min_variance(
     let n = cov.ncols();
     // From a point strictly inside the bounds, the solver's first step is to the
     // unconstrained minimum variance portfolio. With the default bounds it's equal weights.
+    let start = feasible_start(bounds)?;
     Ok(DVector::from_vec(long_only_weights(
         cov,
         &DVector::zeros(n),
         &DMatrix::from_element(n, 1, 1.0),
         &DVector::from_element(1, 1.0),
         bounds,
-        interior_start(bounds),
+        start,
     )?))
 }
 

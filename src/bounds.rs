@@ -1,6 +1,6 @@
 //! Weight bounds, and the expected returns a portfolio within them can reach.
 
-use crate::{Asset, CutupError, PerAsset, asset, qp};
+use crate::{Asset, CutupError, PerAsset, asset, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
 /// Lower and upper limits on each asset's weight, for
@@ -16,6 +16,9 @@ use nalgebra::{DMatrix, DVector};
 /// rounding: ten caps of 0.1 sum to 0.9999999999999999. No portfolio meets such bounds
 /// exactly, so they're rescaled to sum to 1, which moves each by at most `1e-12` of itself.
 ///
+/// [Groups](WeightBounds::group) limit the total weight of several assets at once, such as
+/// every ad channel on one platform, or every signal from one source.
+///
 /// ```
 /// use cutup::WeightBounds;
 ///
@@ -27,12 +30,18 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// // No asset above 40%, except between 10% and 60% in TLT.
 /// let labeled = WeightBounds::uniform(0.0, 0.4).asset("TLT", 0.1, 0.6);
+///
+/// // No channel above 30%, search at most 40% together, and the last two columns at least 20%.
+/// let grouped = WeightBounds::uniform(0.0, 0.3)
+///     .group(["search", "shopping"], 0.0, 0.4)
+///     .group([5, 6], 0.2, 1.0);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeightBounds {
     lower: Limit,
     upper: Limit,
     assets: Vec<(Asset, f64, f64)>,
+    groups: Vec<(Vec<Asset>, f64, f64)>,
 }
 
 /// One side of [`WeightBounds`].
@@ -68,6 +77,7 @@ impl WeightBounds {
             lower: Limit::Uniform(lower),
             upper: Limit::Uniform(upper),
             assets: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -78,6 +88,7 @@ impl WeightBounds {
             lower: Limit::PerAsset(lower.into()),
             upper: Limit::PerAsset(upper.into()),
             assets: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -85,6 +96,39 @@ impl WeightBounds {
     /// bounds. Setting the same asset again replaces them.
     pub fn asset(mut self, asset: impl Into<Asset>, lower: f64, upper: f64) -> Self {
         self.assets.push((asset.into(), lower, upper));
+        self
+    }
+
+    /// Limits `lower ≤ Σᵢ wᵢ ≤ upper` on the total weight of the assets `members`, by label or
+    /// by column, on top of each asset's own bounds. Groups may overlap, and an asset listed
+    /// twice in one counts once. An upper limit of `f64::INFINITY` means no cap.
+    ///
+    /// Like the bounds, a group's limits within `1e-12` of what its members can hold together
+    /// are taken as rounding. A group holds to the rounding of its sum, as the weights sum to
+    /// 1 to theirs.
+    ///
+    /// Groups are supported by [`MinVariance`](crate::MinVariance) and by
+    /// [`MeanVariance::risk_aversion`](crate::MeanVariance::risk_aversion), with or without
+    /// rebalancing. The other methods that take bounds return [`CutupError::NotSupported`]
+    /// with groups.
+    ///
+    /// # Errors
+    ///
+    /// When the bounds are used:
+    ///
+    /// * [`CutupError::InvalidConfig`] if `members` is empty, `lower` isn't finite and
+    ///   nonnegative, or `upper` is NaN or below `lower`.
+    /// * [`CutupError::UnknownAsset`] if a member isn't one of the assets.
+    /// * [`CutupError::InfeasibleGroups`] naming the group if no portfolio summing to 1 within
+    ///   the bounds meets it, or with no name if each group can be met but not all at once.
+    pub fn group<A: Into<Asset>>(
+        mut self,
+        members: impl IntoIterator<Item = A>,
+        lower: f64,
+        upper: f64,
+    ) -> Self {
+        let members = members.into_iter().map(Into::into).collect();
+        self.groups.push((members, lower, upper));
         self
     }
 
@@ -148,7 +192,132 @@ impl WeightBounds {
         let upper = DVector::from_fn(n, |i, _| {
             upper[i].min(1.0 - (lower_sum - lower[i])).max(lower[i])
         });
-        Ok(qp::Bounds::new(lower, upper))
+        let rows = self.rows(labels, &lower, &upper)?;
+        Ok(qp::Bounds { lower, upper, rows })
+    }
+
+    /// The groups as the solver's rows, for the assets `labels` within resolved `lower` and
+    /// `upper` bounds: one column of `a` per group, 1 for each member, with the group's limits
+    /// narrowed to the totals its members can hold in a portfolio summing to 1. That doesn't
+    /// change which portfolios are feasible, and makes every limit finite.
+    fn rows(
+        &self,
+        labels: &[String],
+        lower: &DVector<f64>,
+        upper: &DVector<f64>,
+    ) -> Result<qp::Rows, CutupError> {
+        let (n, r) = (labels.len(), self.groups.len());
+        let mut a = DMatrix::zeros(n, r);
+        let (mut row_lower, mut row_upper) = (DVector::zeros(r), DVector::zeros(r));
+        for (j, (members, l, u)) in self.groups.iter().enumerate() {
+            let (l, u) = (*l, *u);
+            if members.is_empty() {
+                return Err(CutupError::InvalidConfig {
+                    field: "group",
+                    value: 0.0,
+                });
+            }
+            if !(l.is_finite() && l >= 0.0) {
+                return Err(CutupError::InvalidConfig {
+                    field: "group_lower_bound",
+                    value: l,
+                });
+            }
+            if u.is_nan() || u < l {
+                return Err(CutupError::InvalidConfig {
+                    field: "group_upper_bound",
+                    value: u,
+                });
+            }
+            for member in members {
+                a[(member.resolve(labels)?, j)] = 1.0;
+            }
+            let (least, most) = group_range(a.column(j).as_slice(), lower, upper);
+            // Within rounding of what the members can hold, as for the bounds' sums.
+            if l > most + 1e-12 || u < least - 1e-12 {
+                let names: Vec<&str> = (0..n)
+                    .filter(|&i| a[(i, j)] != 0.0)
+                    .map(|i| labels[i].as_str())
+                    .collect();
+                return Err(CutupError::InfeasibleGroups {
+                    group: Some(names.join(" + ")),
+                });
+            }
+            row_lower[j] = l.max(least).min(most);
+            row_upper[j] = u.min(most).max(row_lower[j]);
+        }
+        Ok(qp::Rows {
+            a,
+            lower: row_lower,
+            upper: row_upper,
+        })
+    }
+}
+
+/// The least and the most total weight the assets with `member` 1 can hold in a portfolio
+/// summing to 1 within resolved `lower` and `upper` bounds: their own bounds' sums, or what the
+/// other assets' bounds leave of the budget, whichever is tighter.
+fn group_range(member: &[f64], lower: &DVector<f64>, upper: &DVector<f64>) -> (f64, f64) {
+    let sum = |bounds: &DVector<f64>, inside: bool| -> f64 {
+        bounds
+            .iter()
+            .zip(member)
+            .filter(|&(_, &m)| (m != 0.0) == inside)
+            .map(|(b, _)| b)
+            .sum()
+    };
+    (
+        sum(lower, true).max(1.0 - sum(upper, false)),
+        sum(upper, true).min(1.0 - sum(lower, false)),
+    )
+}
+
+/// `bounds`, or [`CutupError::NotSupported`] if they have groups, which `with` doesn't take
+/// yet.
+pub(crate) fn without_groups(
+    bounds: qp::Bounds,
+    with: &'static str,
+) -> Result<qp::Bounds, CutupError> {
+    if bounds.rows.a.ncols() == 0 {
+        Ok(bounds)
+    } else {
+        Err(CutupError::NotSupported {
+            setting: "group",
+            with,
+        })
+    }
+}
+
+/// A portfolio summing to 1 within resolved `bounds`, to start the solver from:
+/// [`interior_start`] without groups. With them, a vertex from the simplex method's first
+/// phase, which also finds whether the groups can all be met at once.
+///
+/// # Errors
+///
+/// [`CutupError::InfeasibleGroups`] with no name if they can't.
+pub(crate) fn feasible_start(bounds: &qp::Bounds) -> Result<DVector<f64>, CutupError> {
+    let rows = &bounds.rows;
+    let (n, r) = rows.a.shape();
+    if r == 0 {
+        return Ok(interior_start(bounds));
+    }
+    // The weights, then each group's total tⱼ, with 1ᵀw = 1 and aⱼᵀw − tⱼ = 0.
+    let mut a = DMatrix::zeros(1 + r, n + r);
+    a.row_mut(0).columns_mut(0, n).fill(1.0);
+    a.view_mut((1, 0), (r, n)).copy_from(&rows.a.transpose());
+    a.view_mut((1, n), (r, r)).fill_diagonal(-1.0);
+    let b = DVector::from_fn(1 + r, |i, _| if i == 0 { 1.0 } else { 0.0 });
+    let both = |weights: &DVector<f64>, groups: &DVector<f64>| {
+        DVector::from_iterator(n + r, weights.iter().chain(groups.iter()).copied())
+    };
+    let (lower, upper) = (
+        both(&bounds.lower, &rows.lower),
+        both(&bounds.upper, &rows.upper),
+    );
+    match lp::solve(&DVector::zeros(n + r), &a, &b, &lower, &upper)? {
+        lp::Outcome::Optimal(solution) => Ok(solution.x.rows(0, n).into_owned()),
+        // With no objective, nothing is unbounded.
+        _ => Err(CutupError::InfeasibleGroups { group: None }),
     }
 }
 
