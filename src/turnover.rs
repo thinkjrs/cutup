@@ -2,7 +2,7 @@
 //! mean-variance.
 
 use crate::asset::check_values;
-use crate::bounds::{ReturnRange, TargetProblem, interior_start};
+use crate::bounds::{ReturnRange, TargetProblem, feasible_start, interior_start, without_groups};
 use crate::methods::normalized;
 use crate::{CutupError, PerAsset, Returns, WeightBounds, Weights, lp, qp};
 use nalgebra::{DMatrix, DVector};
@@ -140,7 +140,7 @@ pub(crate) fn rebalance(
     // problem, and the current weights are a feasible start. So are they when the optimum is
     // too ill-conditioned to meet the budget: the solve below only needs somewhere to start.
     let start = if bounds.lower.iter().all(|l| l.is_finite()) {
-        interior_start(&bounds)
+        feasible_start(&bounds)?
     } else {
         match qp::solve_kkt(&q, &c, &e, &b) {
             Ok(Some((x, _))) => x,
@@ -188,7 +188,8 @@ pub(crate) fn rebalance_to_target(
         },
     ) = match bounds {
         Some(bounds) => {
-            let problem = ReturnRange::target_problem(&mu, bounds.resolve(labels)?, target)?;
+            let bounds = without_groups(bounds.resolve(labels)?, "a target return")?;
+            let problem = ReturnRange::target_problem(&mu, bounds, target)?;
             (cov()?, problem)
         }
         None => {
@@ -214,7 +215,7 @@ pub(crate) fn rebalance_to_target(
     let minimum = if cap.is_infinite() {
         0.0
     } else if e.ncols() == 1 {
-        minimum_turnover(&current, &bounds)
+        minimum_turnover(&current, &bounds)?
     } else {
         least_turnover(&current, &e, &b, &bounds)?
     };
@@ -282,7 +283,7 @@ pub(crate) fn rebalance_to_net_target(
     }
     let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
     let costs = checked.costs;
-    let bounds = resolve_bounds(bounds, labels)?;
+    let bounds = without_groups(resolve_bounds(bounds, labels)?, "a target return")?;
     let cap = cap.max(check_cap(&current, &bounds, cap)?);
     let (highest, rounding) = highest_net_return(&current, (&mu, &costs), &bounds, cap)?;
     if target > highest + rounding {
@@ -340,7 +341,10 @@ fn least_turnover(
 ) -> Result<f64, CutupError> {
     let n = current.len();
     let trades = Trades::new(current, e, b, bounds, None);
-    let cost = DVector::from_fn(trades.columns(), |j, _| if j < n { 0.0 } else { 1.0 });
+    // The purchases and sales; not the weights or the groups' totals.
+    let cost = DVector::from_fn(trades.columns(), |j, _| {
+        if (n..3 * n).contains(&j) { 1.0 } else { 0.0 }
+    });
     // A feasible portfolio exists, and turnover is bounded below by 0.
     match trades.solve(&cost)? {
         lp::Outcome::Optimal(solution) => Ok(solution.objective),
@@ -398,7 +402,9 @@ fn net_terms(
 /// `w − w₀ = p − s`, with purchases `p` and sales `s` both nonnegative, so that `Σᵢ(pᵢ + sᵢ)`
 /// is at least the turnover, and equal to it at an optimum that charges for trading. The
 /// weights meet `eᵀw = b` within `bounds`, and with a cap a slack variable makes
-/// `Σᵢ(pᵢ + sᵢ) ≤ cap` a row. The variables are `w`, `p` and `s`, then the slack.
+/// `Σᵢ(pᵢ + sᵢ) ≤ cap` a row. Each of the bounds' groups gets a row too, `aⱼᵀw − tⱼ = 0`, with
+/// its total `tⱼ` within its limits. The variables are `w`, `p` and `s`, then the cap's slack,
+/// then the groups' totals.
 struct Trades {
     a: DMatrix<f64>,
     rhs: DVector<f64>,
@@ -416,7 +422,9 @@ impl Trades {
     ) -> Self {
         let (n, k) = e.shape();
         let capped = usize::from(cap.is_some());
-        let (rows, columns) = (n + k + capped, 3 * n + capped);
+        let groups = &bounds.rows;
+        let r = groups.a.ncols();
+        let (rows, columns) = (n + k + capped + r, 3 * n + capped + r);
         let mut a = DMatrix::zeros(rows, columns);
         let mut rhs = DVector::zeros(rows);
         for i in 0..n {
@@ -433,16 +441,23 @@ impl Trades {
             a.row_mut(n + k).columns_mut(n, 2 * n + 1).fill(1.0);
             rhs[n + k] = cap;
         }
+        let (first_row, first_total) = (rows - r, columns - r);
+        a.view_mut((first_row, 0), (r, n))
+            .copy_from(&groups.a.transpose());
+        a.view_mut((first_row, first_total), (r, r))
+            .fill_diagonal(-1.0);
         Trades {
             a,
             rhs,
-            lower: DVector::from_fn(columns, |j, _| if j < n { bounds.lower[j] } else { 0.0 }),
-            upper: DVector::from_fn(columns, |j, _| {
-                if j < n {
-                    bounds.upper[j]
-                } else {
-                    f64::INFINITY
-                }
+            lower: DVector::from_fn(columns, |j, _| match j {
+                _ if j < n => bounds.lower[j],
+                _ if j < first_total => 0.0,
+                _ => groups.lower[j - first_total],
+            }),
+            upper: DVector::from_fn(columns, |j, _| match j {
+                _ if j < n => bounds.upper[j],
+                _ if j < first_total => f64::INFINITY,
+                _ => groups.upper[j - first_total],
             }),
         }
     }
@@ -478,7 +493,7 @@ fn unbounded(n: usize) -> qp::Bounds {
 /// The least turnover from `current` into `bounds`, or [`CutupError::InfeasibleTurnover`] if
 /// it's above `cap` by more than summing it rounds by.
 fn check_cap(current: &DVector<f64>, bounds: &qp::Bounds, cap: f64) -> Result<f64, CutupError> {
-    let minimum = minimum_turnover(current, bounds);
+    let minimum = minimum_turnover(current, bounds)?;
     if minimum > cap + qp::sum_rounding(current.len(), 1.0) {
         return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
@@ -487,12 +502,19 @@ fn check_cap(current: &DVector<f64>, bounds: &qp::Bounds, cap: f64) -> Result<f6
 
 /// The least turnover from `current` to a portfolio summing to 1 within `bounds`: move each
 /// weight into its bounds, then make up what that left over or short of 1 on assets with room.
-/// Every unit of that last step is turned over once, wherever it goes.
-fn minimum_turnover(current: &DVector<f64>, bounds: &qp::Bounds) -> f64 {
-    let clipped = DVector::from_fn(current.len(), |i, _| {
-        current[i].clamp(bounds.lower[i], bounds.upper[i])
-    });
-    (&clipped - current).abs().sum() + (1.0 - clipped.sum()).abs()
+/// Every unit of that last step is turned over once, wherever it goes. With groups, which
+/// that can break, from the linear program.
+fn minimum_turnover(current: &DVector<f64>, bounds: &qp::Bounds) -> Result<f64, CutupError> {
+    let n = current.len();
+    if bounds.rows.a.ncols() != 0 {
+        let budget = (
+            DMatrix::from_element(n, 1, 1.0),
+            DVector::from_element(1, 1.0),
+        );
+        return least_turnover(current, &budget.0, &budget.1, bounds);
+    }
+    let clipped = DVector::from_fn(n, |i, _| current[i].clamp(bounds.lower[i], bounds.upper[i]));
+    Ok((&clipped - current).abs().sum() + (1.0 - clipped.sum()).abs())
 }
 
 #[cfg(test)]
@@ -924,7 +946,7 @@ mod tests {
         // Moving into the bounds sells 0.2 of the first asset and buys 0.1 of the third, 0.3 in
         // all, and leaves the weights summing to 0.9, so 0.1 more is bought.
         let current = DVector::from_vec(vec![0.7, 0.3, 0.0]);
-        assert!((minimum_turnover(&current, &bounds) - 0.4).abs() < 1e-15);
+        assert!((minimum_turnover(&current, &bounds).unwrap() - 0.4).abs() < 1e-15);
         let least = least_turnover(
             &current,
             &DMatrix::from_element(3, 1, 1.0),
