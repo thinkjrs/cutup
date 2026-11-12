@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `WeightBounds::group(members, lower, upper)` limits the total weight of several assets at
+  once, such as every ad channel on one platform or every signal from one source, by label
+  or by column. Groups may overlap, an asset listed twice in a group counts once, and an
+  upper limit of `f64::INFINITY` means no cap. `MinVariance` and `MeanVariance::risk_aversion`
+  take them, with or without rebalancing. Target returns, target volatilities, the frontier
+  and `MinCvar` return `NotSupported` with groups for now.
+- `CutupError::InfeasibleGroups { group }`: `group` names a group no portfolio summing to 1
+  within the bounds can meet, by its members' labels joined with `" + "`, and is `None` when
+  each group can be met but not all at once, which the simplex solver finds. A group's
+  limits within `1e-12` of what its members can hold are rounding, as for the bounds.
+- A `MinVarianceGroups` benchmark, with two binding groups that overlap.
+
+### Changed
+
+- The active-set solver takes two-sided limits on sums of weights, each through a slack
+  variable for the sum that it holds at a limit and releases as it does a weight. Free
+  slacks are left out of each factored solve, so the Cholesky path still applies.
+- With groups, the solver starts from a vertex the simplex solver finds, and the least
+  turnover into the bounds for a turnover cap comes from the simplex solver too, since
+  clipping each weight into its own bounds can break a group.
+
 ## [0.3.7] - 2026-11-11
 
 ### Added
