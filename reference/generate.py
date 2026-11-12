@@ -41,7 +41,11 @@ cutup's implementation:
   portfolio within the bounds meets, alone or together, are an error, decided by
   scipy.optimize.linprog. The cross-check adds them through PyPortfolioOpt's
   add_sector_constraints, or one constraint per limit where groups overlap, on Clarabel at
-  a tolerance of 1e-12: cvxpy's default solver stops well short of these optima.
+  a tolerance of 1e-12: cvxpy's default solver stops well short of these optima. With
+  groups, the range of target returns comes from linprog with the groups' rows, and each
+  end's rounding takes the asset at its lower bound with room above it whose reduced cost,
+  from HiGHS's marginals, is least as the next. Target volatilities, frontier points and
+  rebalancing to a target take groups the same way.
 * Target volatility, the highest expected return at a volatility of at most σ: long-short,
   Merton's closed form for the return on the frontier at σ, ρ = B/A + sqrt(D(Aσ² − 1))/A,
   then the target-return portfolio there, or with Σ singular the minimum variance
@@ -370,6 +374,17 @@ def groups_infeasible(lower: np.ndarray, upper: np.ndarray, groups) -> bool:
     return result.status == 2
 
 
+def group_rows(groups, extra: int = 0):
+    """The groups as linprog's A_ub and b_ub over the weights and `extra` more variables, or
+    (None, None) without groups."""
+    if groups is None:
+        return None, None
+    a, lower, upper = groups
+    r = a.shape[1]
+    a_ub = np.vstack([np.hstack([a.T, np.zeros((r, extra))]), np.hstack([-a.T, np.zeros((r, extra))])])
+    return a_ub, np.concatenate([np.minimum(upper, 1.0), -lower])
+
+
 def add_groups(frontier, groups) -> None:
     """The groups as PyPortfolioOpt constraints: through add_sector_constraints when no asset
     is in two, otherwise one constraint per limit."""
@@ -437,20 +452,35 @@ def end_rounding(mu: np.ndarray, lower: np.ndarray, upper: np.ndarray, highest: 
     return 1e-12 * (float(np.abs(mu * w).sum()) + nxt)
 
 
-def range_ends(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray] | None):
+def range_ends(mu: np.ndarray, bounds: tuple[np.ndarray, np.ndarray] | None, groups=None):
     """The lowest and highest expected return within the bounds, or long-only without them,
-    and each end's rounding, from end_rounding. The bounds are resolved as cutup resolves
-    them: each cap lowered to what the other floors leave."""
+    and each end's rounding, from end_rounding, or with groups group_end_rounding. The bounds
+    are resolved as cutup resolves them: each cap lowered to what the other floors leave."""
     n = len(mu)
     lower, upper = bounds if bounds is not None else (np.zeros(n), np.ones(n))
     upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
     box = list(zip(lower, upper))
-    budget = {"A_eq": np.ones((1, n)), "b_eq": [1.0], "bounds": box}
+    a_ub, b_ub = group_rows(groups)
+    budget = {"A_eq": np.ones((1, n)), "b_eq": [1.0], "A_ub": a_ub, "b_ub": b_ub, "bounds": box}
     lowest, highest = linprog(mu, **budget), linprog(-mu, **budget)
     if lowest.status != 0 or highest.status != 0:
         raise ValueError(f"linprog failed: {lowest.message} / {highest.message}")
-    low, high = end_rounding(mu, lower, upper, False), end_rounding(mu, lower, upper, True)
+    if groups is None:
+        low, high = end_rounding(mu, lower, upper, False), end_rounding(mu, lower, upper, True)
+    else:
+        low, high = group_end_rounding(mu, lowest, lower, upper), group_end_rounding(mu, highest, lower, upper)
     return float(lowest.fun), float(-highest.fun), low, high
+
+
+def group_end_rounding(mu: np.ndarray, result, lower: np.ndarray, upper: np.ndarray) -> float:
+    """end_rounding with groups, from linprog's solution at an end: 1e-12 of Σ|μᵢwᵢ|, plus
+    |μₖ| for the asset k at its lower bound with room above it whose reduced cost, from the
+    marginals HiGHS reports, is least."""
+    w = result.x
+    reduced = np.abs(result.lower.marginals)
+    at_floor = [j for j in range(len(mu)) if abs(w[j] - lower[j]) <= 1e-12 and w[j] < upper[j]]
+    nxt = abs(mu[min(at_floor, key=lambda j: reduced[j])]) if at_floor else 0.0
+    return 1e-12 * (float(np.abs(mu * w).sum()) + nxt)
 
 
 def out_of_range(ends: tuple[float, float, float, float], target: float) -> bool:
@@ -490,15 +520,18 @@ def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np
             cross_check(cov, mu, bounds, weights, lambda frontier: frontier.max_quadratic_utility(gamma), groups)
         return weights
     target = params["target_return"]
-    ends = range_ends(mu, bounds)
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(*bounds, groups):
+        return "InfeasibleGroups"
+    ends = range_ends(mu, bounds, groups)
     if out_of_range(ends, target):
         return "TargetReturnOutOfRange"
     lowest, highest = ends[:2]
     target = min(max(target, lowest), highest)
-    weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]), *bounds_or_none)
+    weights = long_only_grouped(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, target]), *bounds_or_none, groups)
     # PyPortfolioOpt only accepts targets strictly inside the range.
     if bounds is not None and lowest < target < highest:
-        cross_check(cov, mu, bounds, weights, lambda frontier: frontier.efficient_return(target))
+        cross_check(cov, mu, bounds, weights, lambda frontier: frontier.efficient_return(target), groups)
     return weights
 
 
@@ -602,20 +635,23 @@ def long_only_target_volatility(cov: np.ndarray, mu: np.ndarray, params: dict) -
     volatility of at most σ, or the error cutup should return."""
     n = cov.shape[0]
     sigma = params["target_volatility"]
-    bounds = weight_bounds(params, n)
+    bounds = weight_bounds_or_default(params, n)
     if bounds is not None and infeasible(bounds):
         return "InfeasibleBounds"
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(*bounds, groups):
+        return "InfeasibleGroups"
     bounds_or_none = bounds or (None, None)
     budget = (np.ones((n, 1)), np.array([1.0]))
-    minimum = long_only(cov, np.zeros(n), *budget, *bounds_or_none)
+    minimum = long_only_grouped(cov, np.zeros(n), *budget, *bounds_or_none, groups)
     floor = volatility(cov, minimum)
     if below_floor(sigma, floor):
         return "TargetVolatilityOutOfRange"
 
     def at(rho: float) -> np.ndarray:
-        return long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), *bounds_or_none)
+        return long_only_grouped(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), *bounds_or_none, groups)
 
-    highest = mu.max() if bounds is None else return_range(mu, bounds)[1]
+    highest = mu.max() if bounds is None else range_ends(mu, bounds, groups)[1]
     top = at(highest)
     if volatility(cov, top) <= sigma:
         weights = top
@@ -623,10 +659,14 @@ def long_only_target_volatility(cov: np.ndarray, mu: np.ndarray, params: dict) -
         low = float(mu @ minimum)
         rho = brentq(lambda r: volatility(cov, at(r)) - sigma, low, highest, xtol=1e-18, rtol=4 * np.finfo(float).eps, maxiter=500)
         weights = at(rho)
-    # With every expected return equal, any portfolio within the volatility is optimal.
-    if np.linalg.cond(cov) <= 1e8 and np.ptp(mu) > 1e-12 * np.abs(mu).max():
+    # With every expected return equal, any portfolio within the volatility is optimal, and so
+    # is any at the top within it, where the grouped cases' tied assets can split either way.
+    at_top = groups is not None and volatility(cov, top) <= sigma
+    if np.linalg.cond(cov) <= 1e8 and np.ptp(mu) > 1e-12 * np.abs(mu).max() and not at_top:
         lower, upper = bounds if bounds is not None else (np.zeros(n), np.ones(n))
-        frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))))
+        solver = {} if groups is None else {"solver": "CLARABEL", "solver_options": {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}}
+        frontier = EfficientFrontier(mu, cov, weight_bounds=list(zip(lower, np.minimum(upper, 1.0))), **solver)
+        add_groups(frontier, groups)
         frontier.efficient_risk(sigma)
         theirs = np.array(list(frontier.weights))
         # cvxpy meets the volatility constraint only to its tolerance, which moves the weights
@@ -643,9 +683,10 @@ def frontier_ends(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: boo
     if long_short:
         minimum, highest = min_variance(cov), mu.max()
     else:
-        bounds = weight_bounds(params, n)
-        minimum = long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *(bounds or (None, None)))
-        highest = mu.max() if bounds is None else return_range(mu, bounds)[1]
+        bounds = weight_bounds_or_default(params, n)
+        groups = weight_groups(params, n)
+        minimum = long_only_grouped(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]), *(bounds or (None, None)), groups)
+        highest = mu.max() if bounds is None else range_ends(mu, bounds, groups)[1]
     lowest = float(mu @ minimum)
     highest = max(float(highest), lowest)
     one_point = not highest - lowest > 1e-12 * max(abs(lowest), abs(highest))
@@ -656,9 +697,12 @@ def frontier(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: bool) ->
     """Point `point` of `points` on the efficient frontier: the minimum variance portfolio,
     then the least-variance portfolios at returns evenly spaced up to the highest."""
     n = cov.shape[0]
-    bounds = None if long_short else weight_bounds(params, n)
+    bounds = None if long_short else weight_bounds_or_default(params, n)
     if bounds is not None and infeasible(bounds):
         return "InfeasibleBounds"
+    groups = None if long_short else weight_groups(params, n)
+    if groups is not None and groups_infeasible(*bounds, groups):
+        return "InfeasibleGroups"
     minimum, lowest, highest, one_point = frontier_ends(cov, mu, params, long_short)
     point = params["point"]
     if point == 0:
@@ -672,7 +716,7 @@ def frontier(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: bool) ->
         lower, upper = None, None
     else:
         lower, upper = bounds or (np.zeros(n), np.ones(n))
-        weights = long_only(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), lower, upper)
+        weights = long_only_grouped(cov, np.zeros(n), np.column_stack([np.ones(n), mu]), np.array([1.0, rho]), lower, upper, groups)
     # PyPortfolioOpt only accepts targets below the highest return, and its absolute
     # tolerances can't tell apart variances of badly conditioned covariances.
     if rho < highest and np.linalg.cond(cov) <= 1e8:
@@ -684,6 +728,7 @@ def frontier(cov: np.ndarray, mu: np.ndarray, params: dict, long_short: bool) ->
         # weights here, so this asks an interior-point solver for 1e-12.
         tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12}
         ef = EfficientFrontier(mu, cov, weight_bounds=box, solver="CLARABEL", solver_options=tight)
+        add_groups(ef, groups)
         ef.efficient_return(rho)
         theirs = np.array(list(ef.weights))
         if np.abs(theirs - weights).max() > 1e-6 * max(np.abs(weights).max(), 1.0):
@@ -987,13 +1032,13 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         rho = params["target_return"]
         if "transaction_costs" in params:
             # The cap is checked first, as only the budget limits it.
-            if cap is not None and turnover_into_bounds(current, lower, upper) > cap + 1e-12:
+            if cap is not None and turnover_into_bounds(current, lower, upper, groups) > cap + 1e-12:
                 return "InfeasibleTurnover"
-            if rho > highest_net_return(current, mu, costs, lower, upper, cap) + 1e-12:
+            if rho > highest_net_return(current, mu, costs, lower, upper, cap, groups) + 1e-12:
                 return "TargetReturnOutOfRange"
             net = costs
         elif np.all(np.isfinite(lower)):
-            if out_of_range(range_ends(mu, (lower, upper)), rho):
+            if out_of_range(range_ends(mu, (lower, upper), groups), rho):
                 return "TargetReturnOutOfRange"
         target = (mu, rho)
         k, c = 2 * cov + 2 * kappa * np.eye(n), 2 * kappa * current
@@ -1007,7 +1052,7 @@ def rebalance(cov: np.ndarray, mu: np.ndarray, params: dict, mean_variance: bool
         if target is None:
             minimum = turnover_into_bounds(current, lower, upper, groups)
         else:
-            minimum = least_turnover(current, mu, target[1], lower, upper)
+            minimum = least_turnover(current, mu, target[1], lower, upper, groups)
         if minimum > cap + 1e-12:
             return "InfeasibleTurnover"
     # With a target, costs only count against its net return.
@@ -1044,7 +1089,7 @@ def turnover_into_bounds(current: np.ndarray, lower: np.ndarray, upper: np.ndarr
     return np.abs(clipped - current).sum() + abs(1.0 - clipped.sum())
 
 
-def highest_net_return(current: np.ndarray, mu: np.ndarray, costs: np.ndarray, lower: np.ndarray, upper: np.ndarray, cap: float | None) -> float:
+def highest_net_return(current: np.ndarray, mu: np.ndarray, costs: np.ndarray, lower: np.ndarray, upper: np.ndarray, cap: float | None, groups=None) -> float:
     """The highest μᵀw − Σᵢ cᵢ|wᵢ − currentᵢ| over portfolios summing to 1 within the bounds
     and the cap, from scipy.optimize.linprog over w and the purchases and sales
     w − current = p − s, or infinity if it's unbounded."""
@@ -1057,6 +1102,10 @@ def highest_net_return(current: np.ndarray, mu: np.ndarray, costs: np.ndarray, l
     b_eq = np.concatenate([current, [1.0]])
     a_ub = None if cap is None else np.concatenate([np.zeros(n), np.ones(2 * n)])[None, :]
     b_ub = None if cap is None else [cap]
+    group_a, group_b = group_rows(groups, 2 * n)
+    if group_a is not None:
+        a_ub = group_a if a_ub is None else np.vstack([a_ub, group_a])
+        b_ub = group_b if b_ub is None else np.concatenate([b_ub, group_b])
     box = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(0, None)] * (2 * n)
     tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
     result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=b_eq, bounds=box, method="highs", options=tight)
@@ -1067,7 +1116,7 @@ def highest_net_return(current: np.ndarray, mu: np.ndarray, costs: np.ndarray, l
     return -result.fun
 
 
-def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.ndarray, upper: np.ndarray) -> float:
+def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.ndarray, upper: np.ndarray, groups=None) -> float:
     """The least Σᵢ|wᵢ − currentᵢ| over portfolios summing to 1 with μᵀw = ρ within the bounds,
     from scipy.optimize.linprog over w and the purchases and sales w − current = p − s."""
     n = len(current)
@@ -1080,7 +1129,8 @@ def least_turnover(current: np.ndarray, mu: np.ndarray, rho: float, lower: np.nd
     b_eq = np.concatenate([current, [1.0, rho]])
     box = [(None if np.isinf(l) else l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(0, None)] * (2 * n)
     tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
-    result = linprog(c, A_eq=a_eq, b_eq=b_eq, bounds=box, method="highs", options=tight)
+    a_ub, b_ub = group_rows(groups, 2 * n)
+    result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=b_eq, bounds=box, method="highs", options=tight)
     if result.status != 0:
         raise ValueError(f"least turnover: {result.message}")
     return result.fun
@@ -1754,6 +1804,48 @@ def cases(datasets: dict) -> list[dict]:
         ("rebalance_min_variance", "orthogonal3", {"current_weights": [0.6, 0.3, 0.1], "turnover_penalty": 1e-4, "groups": [[[0, 1], 0.7, 1.0], [[1, 2], 0.7, 1.0], [[0, 2], 0.7, 1.0]]}),
     ]:
         out.append({"dataset": name, "method": method, "params": params, "tolerance": solver})
+
+    # Groups with a target: target returns inside the range, at each end, where the last two
+    # assets tie, so the top's face leaves the split between them to the solver, and past it;
+    # target volatilities inside, above the top's and below the floor; frontier points; and
+    # rebalancing to a target with a cap, a penalty and costs. Groups no portfolio meets at
+    # once are an error before any target.
+    tied5 = [0.0012, 0.0004, 0.0009, 0.0007, 0.0007]
+    capped = {"bounds": [0.0, 1.0], "expected_returns": tied5, "groups": [[[0, 2], 0.0, 0.4]]}
+    # Tighter, so that the group binds inside the range too, which then runs to 0.000825.
+    tight = {**capped, "groups": [[[0, 2], 0.0, 0.25]]}
+    near = {"bounds": [0.0, 1.0], "groups": [[[1, 2], 0.0, 0.3], [[0, 1], 0.4, 1.0]]}
+    pairs = {"bounds": [0.0, 1.0], "groups": [[[0, 1], 0.7, 1.0], [[1, 2], 0.7, 1.0], [[0, 2], 0.7, 1.0]]}
+    for name, params in [
+        ("two_blocks5", {**tight, "target_return": 0.0008}),
+        ("two_blocks5", {**capped, "target_return": 0.0009}),
+        ("two_blocks5", {**capped, "target_return": 0.0004}),
+        ("two_blocks5", {**capped, "target_return": 0.001}),
+        ("near_singular4", {**near, "target_return": 0.001}),
+        ("orthogonal3", {**pairs, "target_return": 0.0}),
+        ("two_blocks5", {**capped, "target_volatility": 0.0068}),
+        ("two_blocks5", {**capped, "target_volatility": 0.0075}),
+        ("two_blocks5", {**capped, "target_volatility": 0.0065}),
+        ("near_singular4", {**near, "target_volatility": 0.0093}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_mean_variance", "params": params, "tolerance": solver})
+    for name, params in [
+        ("two_blocks5", {**tight, "points": 4, "point": 1}),
+        ("two_blocks5", {**tight, "points": 4, "point": 2}),
+        ("two_blocks5", {**tight, "points": 4, "point": 3}),
+        ("near_singular4", {**near, "points": 3, "point": 1}),
+    ]:
+        out.append({"dataset": name, "method": "long_only_frontier", "params": params, "tolerance": solver})
+    rebalanced = {**tight, "current_weights": [0.2] * 5}
+    for params in [
+        {**rebalanced, "target_return": 0.0008, "max_turnover": 1.0},
+        {**rebalanced, "target_return": 0.0008, "max_turnover": 0.65},
+        {**rebalanced, "target_return": 0.0008, "max_turnover": 0.0},
+        {**rebalanced, "target_return": 0.0008, "turnover_penalty": 1e-4},
+        {**rebalanced, "target_return": 0.00065, "transaction_costs": 0.0002},
+        {**rebalanced, "target_return": 0.00065, "transaction_costs": 0.0002, "max_turnover": 0.5},
+    ]:
+        out.append({"dataset": "two_blocks5", "method": "rebalance_mean_variance", "params": params, "tolerance": solver})
     return out
 
 

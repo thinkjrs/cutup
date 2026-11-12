@@ -5026,6 +5026,324 @@
       "tolerance": 1e-09,
       "error": "InfeasibleGroups",
       "condition_number": 1.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "target_return": 0.0008
+      },
+      "tolerance": 1e-09,
+      "weights": [0.16666666666666652, 0.0, 0.0833333333333338, 0.4103321672601572, 0.3396678327398429],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_return": 0.0009
+      },
+      "tolerance": 1e-09,
+      "weights": [0.3999999999999995, 0.0, 0.0, 0.394517239218031, 0.2054827607819687],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_return": 0.0004
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.9999999999999841, 0.0, 0.0, 1.9860400428837262e-14],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_return": 0.001
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "groups": [
+          [[1, 2], 0.0, 0.3],
+          [[0, 1], 0.4, 1.0]
+        ],
+        "target_return": 0.001
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.5439580360748622, 0.18810097027297829, 0.11189902983765129, 0.1560419638129369],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "groups": [
+          [[0, 1], 0.7, 1.0],
+          [[1, 2], 0.7, 1.0],
+          [[0, 2], 0.7, 1.0]
+        ],
+        "target_return": 0.0
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleGroups",
+      "condition_number": 1.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_volatility": 0.0068
+      },
+      "tolerance": 1e-09,
+      "weights": [0.22998103055326452, 0.0, 0.170018969446736, 0.4023858888168056, 0.1976141111831942],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_volatility": 0.0075
+      },
+      "tolerance": 1e-09,
+      "weights": [0.3999999999999995, 0.0, 0.0, 0.394517239218031, 0.2054827607819687],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.4]
+        ],
+        "target_volatility": 0.0065
+      },
+      "tolerance": 1e-09,
+      "error": "TargetVolatilityOutOfRange",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "groups": [
+          [[1, 2], 0.0, 0.3],
+          [[0, 1], 0.4, 1.0]
+        ],
+        "target_volatility": 0.0093
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.19707205455030408, 0.29999999999999777, 0.0, 0.5029279454496998],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "points": 4,
+        "point": 1
+      },
+      "tolerance": 1e-09,
+      "weights": [0.0, 0.0, 0.19178924230632594, 0.4199922466291452, 0.38821851106452904],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "points": 4,
+        "point": 2
+      },
+      "tolerance": 1e-09,
+      "weights": [0.1055964141021083, 0.0, 0.14440358589789207, 0.4131585602203245, 0.3368414397796757],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "points": 4,
+        "point": 3
+      },
+      "tolerance": 1e-09,
+      "weights": [0.24999999999999983, 0.0, 0.0, 0.40647541643975327, 0.3435245835602463],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "long_only_frontier",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "groups": [
+          [[1, 2], 0.0, 0.3],
+          [[0, 1], 0.4, 1.0]
+        ],
+        "points": 3,
+        "point": 1
+      },
+      "tolerance": 8.2e-08,
+      "weights": [0.25299299121378366, 0.2999999999999989, 0.0, 0.44700700878621924],
+      "condition_number": 8216000.0
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.0008,
+        "max_turnover": 1.0
+      },
+      "tolerance": 1e-09,
+      "weights": [0.16666666666666555, 0.0, 0.08333333333333494, 0.4103321672601592, 0.3396678327398411],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.0008,
+        "max_turnover": 0.65
+      },
+      "tolerance": 1e-09,
+      "weights": [0.19166666666672755, 0.02499999999999996, 0.0583333333332725, 0.3848097885780061, 0.34019021142199346],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.0008,
+        "max_turnover": 0.0
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleTurnover",
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.0008,
+        "turnover_penalty": 0.0001
+      },
+      "tolerance": 1e-09,
+      "weights": [0.23313377601239693, 0.06646710934577969, 0.01686622398760308, 0.34218513614331986, 0.3413477545109003],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.00065,
+        "transaction_costs": 0.0002
+      },
+      "tolerance": 1e-09,
+      "weights": [0.06666666666667533, 0.2, 0.18333333333332455, 0.22003744075978074, 0.3299625592402192],
+      "condition_number": 82.05
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "rebalance_mean_variance",
+      "params": {
+        "bounds": [0.0, 1.0],
+        "expected_returns": [0.0012, 0.0004, 0.0009, 0.0007, 0.0007],
+        "groups": [
+          [[0, 2], 0.0, 0.25]
+        ],
+        "current_weights": [0.2, 0.2, 0.2, 0.2, 0.2],
+        "target_return": 0.00065,
+        "transaction_costs": 0.0002,
+        "max_turnover": 0.5
+      },
+      "tolerance": 1e-09,
+      "weights": [0.06666666666667533, 0.2, 0.18333333333332455, 0.22003744075978074, 0.3299625592402192],
+      "condition_number": 82.05
     }
   ]
 }
