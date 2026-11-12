@@ -398,6 +398,15 @@ def weight_bounds(params: dict, n: int) -> tuple[np.ndarray, np.ndarray] | None:
     return None
 
 
+def weight_bounds_or_default(params: dict, n: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """weight_bounds, but with groups and no bounds the default long-only bounds, as cutup puts
+    groups alone on WeightBounds::default()."""
+    bounds = weight_bounds(params, n)
+    if bounds is None and "groups" in params:
+        return np.zeros(n), np.ones(n)
+    return bounds
+
+
 def infeasible(bounds: tuple[np.ndarray, np.ndarray]) -> bool:
     lower, upper = bounds
     return lower.sum() > 1.0 + 1e-12 or upper.sum() < 1.0 - 1e-12
@@ -452,7 +461,7 @@ def out_of_range(ends: tuple[float, float, float, float], target: float) -> bool
 
 def long_only_min_variance(cov: np.ndarray, params: dict) -> np.ndarray | str:
     n = cov.shape[0]
-    bounds = weight_bounds(params, n)
+    bounds = weight_bounds_or_default(params, n)
     if bounds is None:
         return long_only(cov, np.zeros(n), np.ones((n, 1)), np.array([1.0]))
     if infeasible(bounds):
@@ -467,7 +476,7 @@ def long_only_min_variance(cov: np.ndarray, params: dict) -> np.ndarray | str:
 
 def long_only_mean_variance(cov: np.ndarray, mu: np.ndarray, params: dict) -> np.ndarray | str:
     n = cov.shape[0]
-    bounds = weight_bounds(params, n)
+    bounds = weight_bounds_or_default(params, n)
     if bounds is not None and infeasible(bounds):
         return "InfeasibleBounds"
     bounds_or_none = bounds or (None, None)
