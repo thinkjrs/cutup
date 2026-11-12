@@ -155,6 +155,13 @@ pub enum CutupError {
         /// The sum of the upper bounds.
         upper_sum: f64,
     },
+    /// No portfolio summing to 1 within the weight bounds satisfies the
+    /// [groups](crate::WeightBounds::group).
+    InfeasibleGroups {
+        /// The group that can't be met even on its own, by its members' labels joined with
+        /// `" + "`, or `None` if each can but not all at once.
+        group: Option<String>,
+    },
     /// A weight is NaN or infinite: one an [`Allocation`](crate::Allocation) returned, or one
     /// given to [`Weights::clean`](crate::Weights::clean).
     NonFiniteWeight {
@@ -371,6 +378,15 @@ impl fmt::Display for CutupError {
                 f,
                 "weight bounds can't sum to 1: lower bounds sum to {lower_sum} and upper \
                  bounds to {upper_sum}"
+            ),
+            CutupError::InfeasibleGroups { group: Some(group) } => write!(
+                f,
+                "group `{group}` can't be met by any portfolio summing to 1 within the weight \
+                 bounds"
+            ),
+            CutupError::InfeasibleGroups { group: None } => write!(
+                f,
+                "no portfolio summing to 1 within the weight bounds meets every group at once"
             ),
             CutupError::NonFiniteWeight { column, asset } => {
                 write!(
@@ -598,6 +614,17 @@ mod tests {
             }
             .to_string(),
             "weight bounds can't sum to 1: lower bounds sum to 0 and upper bounds to 0.9"
+        );
+        assert_eq!(
+            CutupError::InfeasibleGroups {
+                group: Some("A + B".into())
+            }
+            .to_string(),
+            "group `A + B` can't be met by any portfolio summing to 1 within the weight bounds"
+        );
+        assert_eq!(
+            CutupError::InfeasibleGroups { group: None }.to_string(),
+            "no portfolio summing to 1 within the weight bounds meets every group at once"
         );
     }
 }
