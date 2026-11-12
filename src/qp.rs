@@ -602,8 +602,16 @@ pub(crate) fn solve_piecewise(
         start,
         n,
     )?;
-    let x = checked(units.original(&u), &e, &b, &units.column_scales)?;
-    Ok(x.rows(0, n).into_owned())
+    // Against the problem's own constraints, not the slacks' rows, which only measure each
+    // row's sum: the slacks don't come back. A row whose variables all end at 0 leaves its slack
+    // at rounding of 0, which, against no other term, is all residual.
+    let m = e.ncols() - rows.a.ncols();
+    checked(
+        units.original(&u).rows(0, n).into_owned(),
+        &e.view((0, 0), (n, m)).into_owned(),
+        &b.rows(0, m).into_owned(),
+        &units.column_scales[..m],
+    )
 }
 
 /// The problem `(Q, c, E, b)` with a slack variable `sⱼ = aⱼᵀx` for each column `aⱼ` of `a`,
