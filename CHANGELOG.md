@@ -11,9 +11,9 @@ All notable changes to this project are documented here. The format follows
 - `WeightBounds::group(members, lower, upper)` limits the total weight of several assets at
   once, such as every ad channel on one platform or every signal from one source, by label
   or by column. Groups may overlap, an asset listed twice in a group counts once, and an
-  upper limit of `f64::INFINITY` means no cap. `MinVariance` and `MeanVariance::risk_aversion`
-  take them, with or without rebalancing. Target returns, target volatilities, the frontier
-  and `MinCvar` return `NotSupported` with groups for now.
+  upper limit of `f64::INFINITY` means no cap. `MinVariance`, every `MeanVariance`
+  objective, with or without rebalancing, and `Returns::frontier` take them. `MinCvar`
+  returns `NotSupported` with groups for now.
 - `CutupError::InfeasibleGroups { group }`: `group` names a group no portfolio summing to 1
   within the bounds can meet, by its members' labels joined with `" + "`, and is `None` when
   each group can be met but not all at once, which the simplex solver finds. A group's
@@ -28,6 +28,12 @@ All notable changes to this project are documented here. The format follows
 - With groups, the solver starts from a vertex the simplex solver finds, and the least
   turnover into the bounds for a turnover cap comes from the simplex solver too, since
   clipping each weight into its own bounds can break a group.
+- With groups, the range of target returns comes from the simplex solver, since filling the
+  bounds in order of expected return can break a group. At an end, the portfolios that
+  reach it are the linear program's optimal face, read off its reduced costs, so the target
+  needs no constraint of its own there, as without groups. Each end's rounding counts the
+  asset at its lower bound with room whose reduced cost is least as the next a target moves
+  into, the asset the fill would move into next.
 
 ## [0.3.7] - 2026-11-11
 
