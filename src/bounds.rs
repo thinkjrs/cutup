@@ -318,11 +318,33 @@ pub(crate) fn feasible_start(bounds: &qp::Bounds) -> Result<DVector<f64>, CutupE
         both(&bounds.lower, &rows.lower),
         both(&bounds.upper, &rows.upper),
     );
-    match lp::solve(&DVector::zeros(n + r), &a, &b, &lower, &upper)? {
-        lp::Outcome::Optimal(solution) => Ok(solution.x.rows(0, n).into_owned()),
+    let infeasible = CutupError::InfeasibleGroups { group: None };
+    let w = match lp::solve(&DVector::zeros(n + r), &a, &b, &lower, &upper)? {
+        lp::Outcome::Optimal(solution) => solution.x.rows(0, n).into_owned(),
         // With no objective, nothing is unbounded.
-        _ => Err(CutupError::InfeasibleGroups { group: None }),
+        _ => return Err(infeasible),
+    };
+    // The simplex method accepts rows missed by up to 1e-9 of their terms, far more than the
+    // rounding of a sum of weights, which the bounds and each group are held to. The solver
+    // can't meet groups that only that looser tolerance can, so they can't all be met.
+    if meets(bounds, &w, qp::sum_rounding(n, 1.0)) {
+        Ok(w)
+    } else {
+        Err(infeasible)
     }
+}
+
+/// Whether `w` sums to 1 and meets resolved `bounds`, groups included, each to within
+/// `rounding`.
+fn meets(bounds: &qp::Bounds, w: &DVector<f64>, rounding: f64) -> bool {
+    let within = |x: &DVector<f64>, lower: &DVector<f64>, upper: &DVector<f64>| {
+        (0..x.len()).all(|i| lower[i] - rounding <= x[i] && x[i] <= upper[i] + rounding)
+    };
+    let rows = &bounds.rows;
+    let one = DVector::from_element(1, 1.0);
+    within(&DVector::from_element(1, w.sum()), &one, &one)
+        && within(w, &bounds.lower, &bounds.upper)
+        && within(&rows.a.tr_mul(w), &rows.lower, &rows.upper)
 }
 
 /// A point strictly inside resolved `bounds` with weights summing to 1, where they allow one:
@@ -1201,6 +1223,48 @@ mod tests {
             feasible_start(&pairs),
             Err(CutupError::InfeasibleGroups { group: None })
         );
+        // Caps that leave the budget 1e-10 short, which the simplex method's tolerance takes
+        // as met, can't all be met.
+        let short = WeightBounds::default()
+            .group(["A"], 0.0, 0.3)
+            .group(["B"], 0.0, 0.3)
+            .group(["C"], 0.0, 0.4 - 1e-10)
+            .resolve(&three())
+            .unwrap();
+        assert_eq!(
+            feasible_start(&short),
+            Err(CutupError::InfeasibleGroups { group: None })
+        );
+    }
+
+    #[test]
+    fn test_a_start_meets_the_bounds_and_groups_to_within_rounding() {
+        // Rounding of 0.25, so every value is exact: bounds of 0 to 0.5, and the first two
+        // from 0.25 to 0.75 together.
+        let bounds = qp::Bounds {
+            lower: DVector::zeros(3),
+            upper: DVector::from_element(3, 0.5),
+            rows: qp::Rows {
+                a: DMatrix::from_column_slice(3, 1, &[1.0, 1.0, 0.0]),
+                lower: dvector![0.25],
+                upper: dvector![0.75],
+            },
+        };
+        let meets = |w: [f64; 3]| meets(&bounds, &DVector::from_row_slice(&w), 0.25);
+        assert!(meets([0.25, 0.25, 0.5]));
+        // At each limit's rounding, and past it.
+        assert!(meets([-0.25, 0.75, 0.5]));
+        assert!(!meets([-0.375, 0.875, 0.5]));
+        assert!(meets([0.5, 0.5, 0.25]));
+        assert!(!meets([0.625, 0.5, 0.25]));
+        // Only the group missed.
+        assert!(!meets([0.75, 0.375, -0.125]));
+        assert!(meets([0.0, 0.0, 0.75]));
+        assert!(!meets([0.0, -0.125, 0.75]));
+        assert!(meets([0.25, 0.25, 0.75]));
+        assert!(!meets([0.25, 0.25, 0.875]));
+        assert!(meets([0.25, 0.25, 0.25]));
+        assert!(!meets([0.25, 0.25, 0.125]));
     }
 
     #[test]
