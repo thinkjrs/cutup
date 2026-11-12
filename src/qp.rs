@@ -673,6 +673,12 @@ fn slack_scale(scales: &[f64], a: impl IntoIterator<Item = f64>) -> f64 {
     }
 }
 
+/// The free `indices`, in order, split into the variables before `originals` and the slacks
+/// from it on.
+fn split_slacks(indices: &[usize], originals: usize) -> (&[usize], &[usize]) {
+    indices.split_at(indices.partition_point(|&i| i < originals))
+}
+
 /// [`solve_piecewise`] for a problem already in [`Units`], whose variables after the first
 /// `originals` are [`with_slacks`]' slacks, one for each of the last columns of `E`.
 fn solve_piecewise_in_units(
@@ -727,8 +733,7 @@ fn solve_piecewise_in_units(
         let indices: Vec<usize> = (0..n)
             .filter(|&i| matches!(state[i], State::Free(_)))
             .collect();
-        // The free variables come first, then the free slacks.
-        let (solved, slacks) = indices.split_at(indices.partition_point(|&i| i < originals));
+        let (solved, slacks) = split_slacks(&indices, originals);
         // Every variable is held, as when starting from a vertex. Freeing all of them lets the
         // steps below block back the ones that belong where they are, one per step; at an
         // optimal vertex they block back onto it without x moving. Steps never block the last
@@ -2265,6 +2270,13 @@ mod tests {
         assert_eq!(slack_scale(&scales, [0.0, 0.0, 0.0]), 1.0);
         // A scale that underflows to 0 can't be divided by.
         assert_eq!(slack_scale(&[1e-300], [1e300]), 1.0);
+    }
+
+    #[test]
+    fn the_free_slacks_come_after_the_free_variables() {
+        let indices = [0, 2, 3, 5];
+        assert_eq!(split_slacks(&indices, 3), (&[0, 2][..], &[3, 5][..]));
+        assert_eq!(split_slacks(&indices, 6), (&indices[..], &[][..]));
     }
 
     #[test]
