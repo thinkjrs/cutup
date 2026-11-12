@@ -2,7 +2,7 @@
 //! mean-variance.
 
 use crate::asset::check_values;
-use crate::bounds::{ReturnRange, TargetProblem, feasible_start, interior_start, without_groups};
+use crate::bounds::{ReturnRange, TargetProblem, feasible_start};
 use crate::methods::normalized;
 use crate::{CutupError, PerAsset, Returns, WeightBounds, Weights, lp, qp};
 use nalgebra::{DMatrix, DVector};
@@ -188,8 +188,7 @@ pub(crate) fn rebalance_to_target(
         },
     ) = match bounds {
         Some(bounds) => {
-            let bounds = without_groups(bounds.resolve(labels)?, "a target return")?;
-            let problem = ReturnRange::target_problem(&mu, bounds, target)?;
+            let problem = ReturnRange::target_problem(&mu, bounds.resolve(labels)?, target)?;
             (cov()?, problem)
         }
         None => {
@@ -283,7 +282,13 @@ pub(crate) fn rebalance_to_net_target(
     }
     let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
     let costs = checked.costs;
-    let bounds = without_groups(resolve_bounds(bounds, labels)?, "a target return")?;
+    let bounds = resolve_bounds(bounds, labels)?;
+    // First, so that groups that can't all be met say so before the linear programs below.
+    let start = if bounds.lower.iter().all(|l| l.is_finite()) {
+        feasible_start(&bounds)?
+    } else {
+        current.clone()
+    };
     let cap = cap.max(check_cap(&current, &bounds, cap)?);
     let (highest, rounding) = highest_net_return(&current, (&mu, &costs), &bounds, cap)?;
     if target > highest + rounding {
@@ -319,11 +324,6 @@ pub(crate) fn rebalance_to_net_target(
     };
     // The net return is a sum over the assets, which rounds by a few ulps of its terms.
     let slack = |w: &DVector<f64>| qp::sum_rounding(n, net_terms(&mu, &costs, &current, w));
-    let start = if bounds.lower.iter().all(|l| l.is_finite()) {
-        interior_start(&bounds)
-    } else {
-        current.clone()
-    };
     // The search doubles λ from 1 until it nets the target, then narrows it down, so it finds
     // λ from any start.
     let weights = qp::search_multiplier(solve, (-target, slack), 1.0, start)?;
