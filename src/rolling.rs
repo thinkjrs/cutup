@@ -4,6 +4,9 @@ use crate::{Allocation, CutupError, Returns, Weights};
 use std::ops::Range;
 use std::sync::Arc;
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Rolling windows of [`Returns`], from [`Returns::rolling`]: the same number of periods each,
 /// moving forward `step` periods at a time, 1 by default. The last window ends at the last period,
 /// so with a step over 1 it's the first windows that leave periods out, not the most recent.
