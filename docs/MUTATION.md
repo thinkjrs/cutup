@@ -23,7 +23,10 @@ constructors are tested too, and sets a test timeout of at least 60 s.
 The whole crate has 3,213 mutants and takes about 2 hours at four jobs. A
 mutant that makes a solver loop forever times out, which counts as caught.
 Run it on an otherwise idle machine: on a busy one, caught and missed mutants
-alike run past the timeout, and some mutants allocate without bound.
+alike run past the timeout, and some mutants allocate without bound. On Linux,
+`ulimit -v 8388608` first caps each process at 8 GiB of address space, so that
+such a mutant fails its allocation, which counts as caught, rather than taking
+the machine down. macOS doesn't enforce that limit.
 
 ## CI
 
