@@ -129,19 +129,22 @@ mod tests {
         .unwrap()
         .labeled(["SPY", "TLT", "GLD"])
         .unwrap();
+        // The README's example, which is `ignore`d there since it needs the feature.
         let built = MeanVariance::risk_aversion(50.0)
             .bounds(WeightBounds::uniform(0.0, 0.6).group(["SPY", "TLT"], 0.0, 0.7))
             .shrinkage(0.1);
-        let read: MeanVariance = serde_json::from_value(json!({
-            "risk_aversion": 50.0,
-            "bounds": {
-                "lower": 0.0,
-                "upper": 0.6,
-                "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.7}]
-            },
-            "covariance": {"shrinkage": 0.1}
-        }))
+        let read: MeanVariance = serde_json::from_str(
+            r#"{
+    "risk_aversion": 50.0,
+    "bounds": {
+        "upper": 0.6,
+        "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.7}]
+    },
+    "covariance": {"shrinkage": 0.1}
+}"#,
+        )
         .unwrap();
+        assert_eq!(read, built);
         assert_eq!(data.allocate(&read), data.allocate(&built));
         let capped: MinVariance = serde_json::from_value(
             json!({"bounds": {"assets": [{"asset": "GLD", "lower": 0.0, "upper": 0.1}]}}),
