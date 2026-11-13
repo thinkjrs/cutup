@@ -10,6 +10,11 @@
 //! estimate may fail only for its parameters, a riskless market, a covariance Bayes-Stein
 //! can't invert, or one whose eigenvalues a Stein mean can't compute, and is otherwise one value
 //! per asset, never NaN, and finite but for a CAPM return past `f64::MAX`.
+//!
+//! Every method, written to JSON with no `null` in it, reads back equal, and so do its
+//! weights. Rolling windows of an arbitrary length and step either fail at once for a window or
+//! step out of range, or are as many as fit, each as long as asked, `step` apart and ending at
+//! the last period, and the windows that allocate have weights as above.
 
 #![no_main]
 
@@ -18,8 +23,12 @@ use cutup::{
     Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
     MinCvar, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
+    Weights,
 };
 use libfuzzer_sys::fuzz_target;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use std::fmt::Debug;
 
 /// The most assets: enough for clusters and binding bounds, few enough to stay fast.
 const MAX_ASSETS: usize = 8;
@@ -373,6 +382,8 @@ struct Input {
     method: Method,
     /// The covariance for `Returns::stats_with`.
     stats_covariance: Covariance,
+    /// Rolling windows to allocate over too: their length and step.
+    rolling: Option<(u8, u8)>,
 }
 
 /// The covariance config `covariance` sets, for `Returns::stats_with` and, through the
@@ -401,16 +412,18 @@ fn config(covariance: Covariance) -> CovarianceConfig {
     config
 }
 
-fn returns(data: Data) -> Option<Returns> {
+/// The returns `data` builds, and how many periods they have.
+fn returns(data: Data) -> Option<(Returns, usize)> {
     let assets = usize::from(data.assets) % MAX_ASSETS + 1;
     let scale = 10f64.powi(i32::from(data.exponent % 330));
     let values: Vec<f64> = data.values.iter().map(|&v| f64::from(v) * scale).collect();
     let periods = values.len() / assets;
     let returns = Returns::new_flat(&values[..periods * assets], assets).ok()?;
-    match data.labels {
-        Some(labels) => returns.labeled(labels).ok(),
-        None => Some(returns),
-    }
+    let returns = match data.labels {
+        Some(labels) => returns.labeled(labels).ok()?,
+        None => returns,
+    };
+    Some((returns, periods))
 }
 
 fn linkage(choice: u8) -> Linkage {
@@ -473,6 +486,82 @@ fn black_litterman(spec: BlackLittermanSpec) -> BlackLitterman {
     covariance!(model, spec.covariance)
 }
 
+/// `method`, boxed, after checking it reads back from its JSON equal to itself. A `null` in
+/// the JSON stands for an infinite or NaN value, which reads back as infinite or unset, so
+/// methods with one are only written.
+fn boxed<M>(method: M) -> Box<dyn Allocation>
+where
+    M: Allocation + Serialize + DeserializeOwned + PartialEq + Debug + 'static,
+{
+    let json = serde_json::to_string(&method).expect("a method serializes");
+    if !json.contains("null") {
+        let back: M = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        assert_eq!(back, method, "{json}");
+    }
+    Box::new(method)
+}
+
+/// Checks that `weights` are finite, one per asset of `data` with its labels, and sum to 1.
+fn check_weights(data: &Returns, weights: &Weights) {
+    assert_eq!(weights.labels(), data.labels());
+    assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
+    // Divided by the largest magnitude, so that huge weights can't overflow the gross sum and
+    // make the tolerance infinite.
+    let largest = weights.iter().fold(1.0, |m: f64, w| m.max(w.abs()));
+    let sum: f64 = weights.iter().map(|w| w / largest).sum();
+    let gross: f64 = weights.iter().map(|w| (w / largest).abs()).sum();
+    assert!(
+        (sum - 1.0 / largest).abs() <= 1e-6 * gross.max(1.0 / largest),
+        "weights sum to {}: {weights:?}",
+        sum * largest
+    );
+}
+
+/// Checks rolling windows of `window` periods, `step` apart, over `data`: an error at once if
+/// either is out of range, and otherwise as many windows as fit, the last ending at the last
+/// period. Checks the first, second and last, so that a long run of windows doesn't allocate
+/// each one.
+fn check_rolling(
+    data: &Returns,
+    periods: usize,
+    method: &dyn Allocation,
+    window: usize,
+    step: usize,
+) {
+    let windows = match data.rolling(window).step(step).allocate(method) {
+        Ok(windows) => windows,
+        Err(e) => {
+            assert!(window < 2 || window > periods || step == 0, "{e:?}");
+            assert!(matches!(e, CutupError::InvalidConfig { .. }), "{e:?}");
+            return;
+        }
+    };
+    assert!(window >= 2 && window <= periods && step >= 1);
+    let count = (periods - window) / step + 1;
+    assert_eq!(windows.len(), count);
+    let mut windows = windows;
+    // The first two in order, and the last, without allocating the ones between.
+    let (first, second) = (windows.next(), windows.next());
+    let last = windows.last();
+    let start = periods - window - (count - 1) * step;
+    let reached = [(0, first), (1, second), (count - 1, last)];
+    let reached: Vec<_> = reached
+        .into_iter()
+        .filter_map(|(k, w)| w.map(|w| (k, w)))
+        .collect();
+    assert_eq!(reached.len(), count.min(3));
+    for (k, reached) in reached {
+        assert_eq!(
+            reached.periods(),
+            start + k * step..start + k * step + window
+        );
+        if let Ok(weights) = reached.weights() {
+            check_weights(data, weights);
+        }
+        serde_json::to_string(&reached).expect("a window serializes");
+    }
+}
+
 /// Checks that `method`'s efficient frontier, if it has one, is `points` finite portfolios, or
 /// one, each with a return that isn't NaN and a volatility that isn't negative.
 fn check_frontier(data: &Returns, method: &MeanVariance, points: usize) {
@@ -494,9 +583,9 @@ fn check_frontier(data: &Returns, method: &MeanVariance, points: usize) {
 
 fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
     Some(match method {
-        Method::EqualWeight => Box::new(EqualWeight),
-        Method::InverseVolatility => Box::new(InverseVolatility),
-        Method::InverseVariance => Box::new(InverseVariance),
+        Method::EqualWeight => boxed(EqualWeight),
+        Method::InverseVolatility => boxed(InverseVolatility),
+        Method::InverseVariance => boxed(InverseVariance),
         Method::MinVariance {
             allow_short,
             bounds,
@@ -510,7 +599,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             if let Some(bounds) = bounds {
                 m = m.bounds(bounds.into());
             }
-            Box::new(covariance!(trading!(m, trading), covariance))
+            boxed(covariance!(trading!(m, trading), covariance))
         }
         Method::MeanVariance {
             objective,
@@ -546,7 +635,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                 // Up to 15 points: each is a solve, and more only repeat the same work.
                 check_frontier(data, &m, usize::from(points % 16));
             }
-            Box::new(m)
+            boxed(m)
         }
         Method::MaxSharpe {
             risk_free_rate,
@@ -564,10 +653,10 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             if allow_short {
                 m = m.allow_short();
             }
-            Box::new(covariance!(m, covariance))
+            boxed(covariance!(m, covariance))
         }
         Method::MaxDiversification { covariance } => {
-            Box::new(covariance!(MaxDiversification::default(), covariance))
+            boxed(covariance!(MaxDiversification::default(), covariance))
         }
         Method::RiskParity {
             risk_budgets,
@@ -577,12 +666,12 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             if let Some(budgets) = risk_budgets {
                 m = m.risk_budgets(budgets);
             }
-            Box::new(covariance!(m, covariance))
+            boxed(covariance!(m, covariance))
         }
         Method::Hrp {
             linkage: choice,
             covariance,
-        } => Box::new(covariance!(
+        } => boxed(covariance!(
             Hrp::default().linkage(linkage(choice)),
             covariance
         )),
@@ -599,7 +688,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             if let Some(k) = max_clusters {
                 m = m.max_clusters(usize::from(k));
             }
-            Box::new(covariance!(m, covariance))
+            boxed(covariance!(m, covariance))
         }
         Method::MinCvar {
             confidence,
@@ -616,7 +705,7 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             if let Some(target) = target_return {
                 m = m.target_return(target);
             }
-            Box::new(m)
+            boxed(m)
         }
         Method::Estimated {
             estimate,
@@ -651,12 +740,12 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                 "{mu:?}"
             );
             if max_sharpe {
-                Box::new(covariance!(
+                boxed(covariance!(
                     MaxSharpe::default().expected_returns(mu),
                     covariance
                 ))
             } else {
-                Box::new(covariance!(
+                boxed(covariance!(
                     MeanVariance::risk_aversion(1.0).expected_returns(mu),
                     covariance
                 ))
@@ -683,13 +772,13 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
                 CovarianceConfig::default()
             };
             if max_sharpe {
-                Box::new(
+                boxed(
                     MaxSharpe::default()
                         .expected_returns(mu)
                         .covariance(covariance),
                 )
             } else {
-                Box::new(
+                boxed(
                     MeanVariance::risk_aversion(1.0)
                         .expected_returns(mu)
                         .covariance(covariance),
@@ -700,29 +789,25 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
 }
 
 fuzz_target!(|input: Input| {
-    let Some(data) = returns(input.data) else {
+    let Some((data, periods)) = returns(input.data) else {
         return;
     };
     let groups = groups(&input.method);
     let Some(method) = method(input.method, &data) else {
         return;
     };
+    if let Some((window, step)) = input.rolling {
+        let (window, step) = (usize::from(window), usize::from(step) % 8);
+        check_rolling(&data, periods, method.as_ref(), window, step);
+    }
     let Ok(weights) = data.allocate(method.as_ref()) else {
         return;
     };
-    assert_eq!(weights.len(), data.labels().len());
-    assert!(weights.iter().all(|w| w.is_finite()), "{weights:?}");
-    // Divided by the largest magnitude, so that huge weights can't overflow the gross sum and
-    // make the tolerance infinite.
-    let largest = weights.iter().fold(1.0, |m: f64, w| m.max(w.abs()));
-    let sum: f64 = weights.iter().map(|w| w / largest).sum();
-    let gross: f64 = weights.iter().map(|w| (w / largest).abs()).sum();
-    assert!(
-        (sum - 1.0 / largest).abs() <= 1e-6 * gross.max(1.0 / largest),
-        "weights sum to {}: {weights:?}",
-        sum * largest
-    );
+    check_weights(&data, &weights);
     check_groups(&data, weights.as_slice(), &groups);
+    let json = serde_json::to_string(&weights).expect("weights serialize");
+    let back: Weights = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}"));
+    assert_eq!(back, weights);
 
     let stats = data
         .stats(&weights)

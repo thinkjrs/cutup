@@ -11,10 +11,12 @@ cargo-fuzz = true
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 nalgebra = "0.33"
+serde = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [dependencies.cutup]
 path = ".."
-features = ["nalgebra"]
+features = ["nalgebra", "serde"]
 
 # Its own workspace, so the crate's cargo test, clippy and fmt don't build it: it needs nightly.
 [workspace]
