@@ -1,6 +1,7 @@
 //! Every allocation method, with arbitrary settings, on returns built from arbitrary data. Any
 //! of them may return an error, but none may panic, and weights they return must be finite, one
-//! per asset, and sum to 1. Their statistics must not be NaN, and their ratios and risk
+//! per asset, and sum to 1, and with groups each group's total must be within its limits, to
+//! 1e-9. Their statistics must not be NaN, and their ratios and risk
 //! contributions must be finite, with the contributions summing to 1. The expected return,
 //! volatility and CVaR can overflow, when the weights times returns near `f64::MAX` do. Their
 //! statistics under an arbitrary covariance config, if it's valid for the data, must keep the
@@ -33,7 +34,7 @@ struct Data {
     labels: Option<Vec<String>>,
 }
 
-#[derive(Arbitrary, Debug)]
+#[derive(Arbitrary, Clone, Debug)]
 enum Key {
     Column(u8),
     Label(String),
@@ -86,6 +87,70 @@ impl From<Bounds> for WeightBounds {
                 WeightBounds::uniform(lower, upper).asset(key, l, u)
             }
         }
+    }
+}
+
+/// Limits on the total weight of `members`.
+#[derive(Arbitrary, Clone, Debug)]
+struct Group {
+    members: Vec<Key>,
+    lower: f64,
+    upper: f64,
+}
+
+/// Bounds, or the default ones, with groups on top.
+#[derive(Arbitrary, Debug)]
+struct Grouped {
+    bounds: Option<Bounds>,
+    groups: Vec<Group>,
+}
+
+impl From<Grouped> for WeightBounds {
+    fn from(grouped: Grouped) -> Self {
+        let bounds = grouped
+            .bounds
+            .map_or_else(WeightBounds::default, Into::into);
+        grouped.groups.into_iter().fold(bounds, |bounds, g| {
+            bounds.group(g.members, g.lower, g.upper)
+        })
+    }
+}
+
+/// The groups `method`'s bounds have, if any, to check its weights against.
+fn groups(method: &Method) -> Vec<Group> {
+    match method {
+        Method::MinVariance { bounds, .. }
+        | Method::MeanVariance { bounds, .. }
+        | Method::MinCvar { bounds, .. } => bounds
+            .as_ref()
+            .map_or_else(Vec::new, |grouped| grouped.groups.clone()),
+        _ => Vec::new(),
+    }
+}
+
+/// Checks that each group's members, by column or by label and each counted once, hold a
+/// total within its limits, to 1e-9.
+fn check_groups(data: &Returns, weights: &[f64], groups: &[Group]) {
+    for group in groups {
+        let mut members: Vec<usize> = group
+            .members
+            .iter()
+            .map(|key| match key {
+                Key::Column(column) => usize::from(*column),
+                Key::Label(label) => data
+                    .labels()
+                    .iter()
+                    .position(|l| l == label)
+                    .expect("weights from allocate have every member"),
+            })
+            .collect();
+        members.sort_unstable();
+        members.dedup();
+        let total: f64 = members.iter().map(|&i| weights[i]).sum();
+        assert!(
+            group.lower - 1e-9 <= total && total <= group.upper + 1e-9,
+            "{group:?} holds {total}: {weights:?}"
+        );
     }
 }
 
@@ -244,7 +309,7 @@ enum Method {
     InverseVariance,
     MinVariance {
         allow_short: bool,
-        bounds: Option<Bounds>,
+        bounds: Option<Grouped>,
         trading: Trading,
         covariance: Covariance,
     },
@@ -252,7 +317,7 @@ enum Method {
         objective: Objective,
         expected_returns: Option<Values>,
         allow_short: bool,
-        bounds: Option<Bounds>,
+        bounds: Option<Grouped>,
         trading: Trading,
         costs: Option<Costs>,
         covariance: Covariance,
@@ -284,7 +349,7 @@ enum Method {
     },
     MinCvar {
         confidence: Option<f64>,
-        bounds: Option<Bounds>,
+        bounds: Option<Grouped>,
         target_return: Option<f64>,
     },
     /// Black-Litterman expected returns, into mean-variance or max Sharpe, with its posterior
@@ -638,6 +703,7 @@ fuzz_target!(|input: Input| {
     let Some(data) = returns(input.data) else {
         return;
     };
+    let groups = groups(&input.method);
     let Some(method) = method(input.method, &data) else {
         return;
     };
@@ -656,6 +722,7 @@ fuzz_target!(|input: Input| {
         "weights sum to {}: {weights:?}",
         sum * largest
     );
+    check_groups(&data, weights.as_slice(), &groups);
 
     let stats = data
         .stats(&weights)
