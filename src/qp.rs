@@ -554,7 +554,8 @@ pub(crate) fn solve_bounded(
 ///
 /// * [`CutupError::Unbounded`] if the objective decreases without limit.
 /// * [`CutupError::SingularCovariance`] if the linear algebra fails, or the solution misses
-///   `Eᵀx = b` in the original units, as [`solve_kkt`]'s can.
+///   `Eᵀx = b` in the original units, as [`solve_kkt`]'s can, or a row's limits, as
+///   [`meets_rows`] measures them.
 /// * [`CutupError::NotConverged`] if the iteration cap is reached, or a variable that would
 ///   lower the objective can't enter without the solver cycling. Only rounding trouble on
 ///   extreme inputs should cause either.
@@ -604,14 +605,40 @@ pub(crate) fn solve_piecewise(
     )?;
     // Against the problem's own constraints, not the slacks' rows, which only measure each
     // row's sum: the slacks don't come back. A row whose variables all end at 0 leaves its slack
-    // at rounding of 0, which, against no other term, is all residual.
+    // at rounding of 0, which, against no other term, is all residual. The rows' limits are
+    // checked on x itself.
     let m = e.ncols() - rows.a.ncols();
-    checked(
+    let x = checked(
         units.original(&u).rows(0, n).into_owned(),
         &e.view((0, 0), (n, m)).into_owned(),
         &b.rows(0, m).into_owned(),
         &units.column_scales[..m],
-    )
+    )?;
+    meets_rows(x, rows)
+}
+
+/// `x`, or [`CutupError::SingularCovariance`] if some row's sum `aⱼᵀx` misses its limits by
+/// more than `1e-8` of the size of its terms `Σᵢ|aᵢⱼxᵢ|` and the limit, as [`checked`] measures
+/// an equality.
+///
+/// A slack held at a limit is solved for exactly, and the ratio test keeps a free one within
+/// its limits, but only to the solver's rounding in [`Units`]. A variable whose curvature is
+/// near 0, such as `1e-300`, has a scale near `1e-150` there, and so does the slack of a row
+/// it's in. Its whole range is then within that rounding, and the row can be missed by as
+/// much as its variables can hold. Clamping a variable to its bounds at the end catches that
+/// for the bounds, but not for a row.
+fn meets_rows(x: DVector<f64>, rows: &Rows) -> Result<DVector<f64>, CutupError> {
+    for (j, a) in rows.a.column_iter().enumerate() {
+        let sum = a.dot(&x);
+        let terms: f64 = a.iter().zip(x.iter()).map(|(a, x)| (a * x).abs()).sum();
+        let (lower, upper) = (rows.lower[j], rows.upper[j]);
+        let within = lower - 1e-8 * (terms + lower.abs()) <= sum
+            && sum <= upper + 1e-8 * (terms + upper.abs());
+        if !within {
+            return Err(CutupError::SingularCovariance);
+        }
+    }
+    Ok(x)
 }
 
 /// The problem `(Q, c, E, b)` with a slack variable `sⱼ = aⱼᵀx` for each column `aⱼ` of `a`,
