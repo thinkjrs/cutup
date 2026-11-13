@@ -73,6 +73,8 @@ mod lp;
 mod methods;
 mod qp;
 mod returns;
+#[cfg(feature = "serde")]
+mod serde_support;
 mod stats;
 #[cfg(test)]
 mod test_support;

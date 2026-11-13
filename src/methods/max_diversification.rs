@@ -3,6 +3,9 @@
 use super::long_only_max_ratio;
 use crate::{Allocation, CovarianceConfig, CutupError, Returns, Weights};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The maximum diversification portfolio (Choueifaty and Coignard, 2008): maximize the
 /// diversification ratio `σᵀw / sqrt(wᵀΣw)` subject to `1ᵀw = 1` and `w ≥ 0`, where `σ` holds
 /// the assets' volatilities.

@@ -10,6 +10,9 @@ use crate::{
 };
 use nalgebra::{DMatrix, DVector};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Markowitz mean-variance optimization, with the budget constraint `1ᵀw = 1`. Long-only by
 /// default.
 ///

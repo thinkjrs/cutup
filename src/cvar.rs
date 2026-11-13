@@ -5,6 +5,9 @@ use crate::methods::normalized;
 use crate::{Allocation, CutupError, Returns, WeightBounds, Weights, lp};
 use nalgebra::{DMatrix, DVector};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The long-only portfolio with the lowest conditional value at risk (CVaR, or expected
 /// shortfall): the average loss over the worst `1 − β` of the return scenarios, for a
 /// confidence `β`, 0.95 by default (Rockafellar and Uryasev, 2000).

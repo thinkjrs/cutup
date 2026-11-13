@@ -9,6 +9,9 @@ use crate::{
 };
 use nalgebra::{DMatrix, DVector};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The minimum variance portfolio: minimize `wᵀΣw` subject to `1ᵀw = 1`. Long-only by
 /// default.
 ///

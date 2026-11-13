@@ -3,6 +3,9 @@
 use super::{cluster_variance, inverse_variance_weights};
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The most clusters [`Herc`]'s gap statistic may choose, unless set.
 const HERC_MAX_CLUSTERS: usize = 10;
 

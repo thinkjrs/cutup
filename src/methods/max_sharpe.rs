@@ -6,6 +6,9 @@ use crate::qp::norm;
 use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights};
 use nalgebra::DVector;
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The maximum Sharpe ratio (tangency) portfolio: maximize `(μᵀw − r_f) / sqrt(wᵀΣw)` subject
 /// to `1ᵀw = 1`. Long-only by default.
 ///
