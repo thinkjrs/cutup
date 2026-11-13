@@ -10,8 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - `Returns::rolling(window)` allocates over rolling windows of the data, giving weights over
   time: `data.rolling(60).step(5).allocate(method)` takes any `Allocation`, by value or by
-  reference, and returns a `RollingAllocation`, an `ExactSizeIterator` of `Window`s, oldest
-  first. Each window is the method on its own rows alone, with the data's labels. Each
+  reference, and returns a `RollingAllocation`, an `ExactSizeIterator` and
+  `DoubleEndedIterator` of `Window`s, oldest first. Skipping windows, as with `nth`, `skip`,
+  `last` or `rev`, allocates only those reached. Each window is the method on its own rows
+  alone, with the data's labels. Each
   `Window` has its `periods()`, a range of return rows, and its own `weights()` result, so
   one that fails, such as with `ZeroVariance` over a quiet stretch, doesn't stop the others.
   The last window ends at the last period. A window under 2 periods or longer than the data,
