@@ -4,6 +4,9 @@ use crate::asset::check_values;
 use crate::{Asset, CovarianceConfig, CutupError, PerAsset, Returns};
 use nalgebra::{Cholesky, DMatrix, DVector, Dyn};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Expected returns from the Black-Litterman model (Black and Litterman, 1992): the returns
 /// the market portfolio implies, blended with your views on some assets.
 ///

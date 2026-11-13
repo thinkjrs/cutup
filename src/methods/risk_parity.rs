@@ -4,6 +4,9 @@ use super::{correlation, in_null_space};
 use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights, asset};
 use nalgebra::{DMatrix, DVector};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The risk parity (equal risk contribution) portfolio, or risk budgeting with
 /// [`RiskParity::risk_budgets`]: long-only weights where asset `i` contributes the share `bᵢ`
 /// of the portfolio's variance, `wᵢ (Σw)ᵢ / wᵀΣw = bᵢ / Σⱼ bⱼ`. With equal budgets, the default,

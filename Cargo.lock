@@ -189,6 +189,7 @@ dependencies = [
  "criterion",
  "nalgebra",
  "proptest",
+ "serde",
  "serde_json",
  "wasm-bindgen-test",
 ]

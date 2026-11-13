@@ -74,6 +74,8 @@ mod methods;
 mod qp;
 mod returns;
 mod rolling;
+#[cfg(feature = "serde")]
+mod serde_support;
 mod stats;
 #[cfg(test)]
 mod test_support;

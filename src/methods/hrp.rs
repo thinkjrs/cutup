@@ -3,6 +3,9 @@
 use super::cluster_variance;
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Hierarchical Risk Parity (López de Prado, 2016).
 ///
 /// 1. **Cluster.** Assets are clustered on the correlation distance `sqrt((1 − ρ) / 2)` with

@@ -4,7 +4,15 @@ use crate::Asset;
 use std::fmt;
 
 /// Errors returned when building a `Returns` or computing an allocation.
+///
+/// With the `serde` feature, an error serializes as its variant in snake case: a variant
+/// without fields as a string, such as `"no_assets"`, and one with fields as an object, such as
+/// `{"invalid_config": {"field": "risk_aversion", "value": -1.0}}`. An infinite value, such as
+/// an end of a range with no limit, is `null` in JSON. Errors don't deserialize: their field
+/// names are `&'static str`s.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum CutupError {
     /// The input has no assets to allocate to: no rows, empty rows, or zero assets.
