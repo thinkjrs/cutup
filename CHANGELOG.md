@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   each group can be met but not all at once, which the simplex solver finds. A group's
   limits within `1e-12` of what its members can hold are rounding, as for the bounds.
 - A `MinVarianceGroups` benchmark, with two binding groups that overlap.
+- `examples/groups.rs` splits a budget across five ad channels with caps and floors on two
+  platforms' channels, and puts each method's portfolio next to the one without groups. The
+  README has a section on groups.
 
 ### Changed
 
