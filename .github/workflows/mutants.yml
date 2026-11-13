@@ -48,9 +48,13 @@ jobs:
 
       # A mutant that makes the tests time out, as one that loops forever does, counts as
       # caught: cargo-mutants exits 3 for those, and 2 for missed ones, which fail the job.
-      # With both, it exits 3, so missed mutants are also read from missed.txt.
+      # With both, it exits 3, so missed mutants are also read from missed.txt. Each process
+      # gets at most 8 GiB of address space, so that a mutant that allocates without bound
+      # fails its allocation, which counts as caught, before the runner, with 16 GB, runs out
+      # and is shut down.
       - name: Mutate the changed lines
         run: |
+          ulimit -v 8388608
           status=0
           cargo mutants --cargo-arg=--locked --no-shuffle -j 2 --in-diff pr.diff || status=$?
           if [ -s mutants.out/missed.txt ]; then
@@ -96,8 +100,11 @@ jobs:
       # Report-only: some mutants no test can catch, such as `<` for `<=` on a tolerance, and
       # docs/MUTATION.md lists them. cargo-mutants exits 2 for missed mutants and 3 for timeouts,
       # which are reported here rather than failing the job; anything else is an error.
+      # At most 8 GiB of address space a process, as for the diff job above: on 2026-11-13,
+      # shard 1 lost its runner to a mutant in `hierarchy` that allocates without bound.
       - name: Mutate shard ${{ matrix.shard }} of 8
         run: |
+          ulimit -v 8388608
           status=0
           cargo mutants --cargo-arg=--locked --no-shuffle -j 2 --shard ${{ matrix.shard }}/8 || status=$?
           for outcome in missed timeout; do
