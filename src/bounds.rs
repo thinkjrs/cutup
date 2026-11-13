@@ -419,9 +419,12 @@ impl Program {
         // The asset a target just inside the end moves weight into: of those at their lower
         // bound with room above them, the one whose reduced cost is least, as the greedy
         // fill's next in order. Not only those held: at a degenerate end, one can sit in the
-        // basis at its bound, with a reduced cost of 0.
+        // basis at its bound, with a reduced cost of 0, and a basic variable comes back only
+        // within rounding of its bound, so within 1e-12 of it counts, as the reference counts.
         let next = (0..n)
-            .filter(|&j| weights[j] == bounds.lower[j] && weights[j] < bounds.upper[j])
+            .filter(|&j| {
+                (weights[j] - bounds.lower[j]).abs() <= 1e-12 && weights[j] < bounds.upper[j]
+            })
             .min_by(|&i, &j| reduced[i].abs().total_cmp(&reduced[j].abs()))
             .map_or(0.0, |j| mu[j].abs());
         Ok(End {
