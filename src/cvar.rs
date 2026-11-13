@@ -117,10 +117,8 @@ impl Allocation for MinCvar {
         let cap = tail_weight(self.confidence, t)?;
         let bounds = self.bounds.resolve(data.labels())?;
         // Groups that can't all be met leave the dual unbounded rather than infeasible, so
-        // they're found first, from the portfolios themselves.
-        if bounds.rows.a.ncols() > 0 {
-            feasible_start(&bounds)?;
-        }
+        // they're found first, from the portfolios themselves. Without groups, this can't fail.
+        feasible_start(&bounds)?;
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
                 return Err(CutupError::InvalidConfig {
@@ -140,7 +138,6 @@ impl Allocation for MinCvar {
         let eta = t + 1;
         let floors = eta + usize::from(target.is_some());
         let ceilings = floors + n;
-        let groups = ceilings + n;
         let rows = &bounds.rows;
         // Each finite limit: its group, the sign of its multiplier in the asset rows, and the
         // limit, which the objective weighs it by, signed as the bounds' are.
@@ -148,7 +145,9 @@ impl Allocation for MinCvar {
             .flat_map(|k| [(k, -1.0, -rows.lower[k]), (k, 1.0, rows.upper[k])])
             .filter(|&(_, _, cost)| cost.is_finite())
             .collect();
-        let columns = groups + limits.len();
+        let columns = ceilings + n + limits.len();
+        // The γ come last.
+        let groups = columns - limits.len();
         let mut a = DMatrix::zeros(n + 1, columns);
         for i in 0..n {
             for s in 0..t {
