@@ -3,6 +3,9 @@
 use crate::{Asset, CutupError, PerAsset, asset, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Lower and upper limits on each asset's weight, for
 /// [`MinVariance::bounds`](crate::MinVariance::bounds),
 /// [`MeanVariance::bounds`](crate::MeanVariance::bounds) and
