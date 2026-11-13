@@ -6,6 +6,7 @@ for the methods that run a solver or a clustering step:
 | Method | What it measures |
 | --- | --- |
 | `MinVariance` | The active-set QP solver, long-only |
+| `MinVarianceGroups` | The same with two overlapping groups that bind: the first half of the assets at most 30% together, and every third asset at least 40% |
 | `MinCvar` | The two-phase simplex LP |
 | `Hrp` | Single-linkage clustering and recursive bisection |
 | `Herc` | Single-linkage clustering, the gap statistic and equal risk contribution across clusters |
@@ -58,6 +59,21 @@ where the equal-weight portfolio loses most at their cap.
 | --- | --- | --- | --- |
 | 0.3.1 | 54 µs | 0.96 s | Not run |
 | Now | 47 µs | 28 ms | 11 s |
+
+### Groups
+
+Measured on 2026-11-12, on the same machine, when `MinVarianceGroups` was added.
+`MinVariance` is the same benchmark as above, after the solver work of 0.3.2 to
+0.3.7.
+
+| Method | 10 assets | 100 assets | 500 assets |
+| --- | --- | --- | --- |
+| `MinVariance` | 12 µs | 2.4 ms | 0.23 s |
+| `MinVarianceGroups` | 20 µs | 0.32 ms | 7.1 ms |
+
+From 100 assets it's faster than without groups: the binding groups leave the
+solver fewer free weights to factor. A group that doesn't bind costs a slack
+variable, which the solver leaves out of its factored solves.
 
 ## Running time
 
