@@ -376,7 +376,9 @@ impl Program {
 
     /// The lowest expected return `μᵀw` within resolved `bounds`, from this program without a
     /// target, or with `highest` the highest, and the bounds of every portfolio that reaches
-    /// it. [`CutupError::InfeasibleGroups`] if the program has no solution.
+    /// it. [`CutupError::InfeasibleGroups`] if the program has no solution, or only one that
+    /// misses the bounds or a group by more than the rounding of a sum, as [`feasible_start`]
+    /// finds.
     ///
     /// Those portfolios are the program's optimal face: at an optimum with multipliers `y`,
     /// each variable whose reduced cost `cⱼ − aⱼᵀy` isn't 0 is held where the optimum has it,
@@ -398,8 +400,13 @@ impl Program {
             return Err(CutupError::InfeasibleGroups { group: None });
         };
         let x = &solution.x;
-        let (reduced, held) = reduced_costs(&cost, &self.a, &solution.y);
         let weights = x.rows(0, n).into_owned();
+        // As for feasible_start: the simplex method accepts rows missed by up to 1e-9 of
+        // their terms, so groups only that looser tolerance meets can't all be met.
+        if !meets(bounds, &weights, qp::sum_rounding(n, 1.0)) {
+            return Err(CutupError::InfeasibleGroups { group: None });
+        }
+        let (reduced, held) = reduced_costs(&cost, &self.a, &solution.y);
         let mut face = bounds.clone();
         for j in (0..n).filter(|&j| held[j]) {
             face.lower[j] = weights[j];
@@ -1673,6 +1680,25 @@ mod tests {
         // At the top, the face, with only the budget.
         let top = ReturnRange::target_problem(&mu, bounds, 2.6).unwrap();
         assert_eq!(top.e.ncols(), 1);
+    }
+
+    #[test]
+    fn test_a_range_with_groups_only_the_simplex_tolerance_meets_is_infeasible() {
+        // A and B at least 0.6, and C and D at least 0.4 + 1e-10: the simplex method accepts
+        // both, but no portfolio summing to 1 meets them, as feasible_start finds.
+        let four: Vec<String> = ["A", "B", "C", "D"].map(String::from).to_vec();
+        let bounds = WeightBounds::default()
+            .group(["A", "B"], 0.6, 1.0)
+            .group(["C", "D"], 0.4 + 1e-10, 1.0)
+            .resolve(&four)
+            .unwrap();
+        let infeasible = CutupError::InfeasibleGroups { group: None };
+        assert_eq!(feasible_start(&bounds).unwrap_err(), infeasible);
+        let mu = dvector![1.0, 2.0, 3.0, 4.0];
+        assert_eq!(
+            ReturnRange::target_problem(&mu, bounds, 2.5).err(),
+            Some(infeasible)
+        );
     }
 
     #[test]
