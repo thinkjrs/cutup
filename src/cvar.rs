@@ -135,6 +135,13 @@ impl Allocation for MinCvar {
                 None
             }
         };
+        // CVaR scales with the returns, and its minimizer doesn't change, so the program is
+        // solved on returns scaled to at most 1 in size: next to the bounds and the budget's
+        // entries, which don't scale, returns near 1e100 or 1e-100 leave the simplex method's
+        // tolerances meaningless. A power of two, so that the scaling is exact.
+        let unit = unit_scale(returns.amax());
+        let returns = &(returns * unit);
+        let target = target.map(|(rho, mu)| (rho * unit, mu * unit));
 
         // The dual's columns, in order: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ
         // for each finite group limit. Resolved bounds are all finite, so every asset has a
@@ -277,6 +284,17 @@ pub(crate) fn tail_loss(mut losses: Vec<f64>, cap: f64) -> f64 {
         }
     }
     total
+}
+
+/// The power of two that scales `largest`, the largest return in size, to between ½ and 1, or
+/// 1 if it's 0. Within the exponents an `f64` can scale by in one step, so that a subnormal
+/// `largest` is scaled up as far as that goes.
+fn unit_scale(largest: f64) -> f64 {
+    if largest > 0.0 {
+        2f64.powi(-(largest.log2().floor() as i32 + 1).clamp(-1022, 1022))
+    } else {
+        1.0
+    }
 }
 
 /// The scenarios whose `zₜ` start at `cap` in [`MinCvar`]'s LP: those where the equal-weight
