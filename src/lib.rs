@@ -73,6 +73,7 @@ mod lp;
 mod methods;
 mod qp;
 mod returns;
+mod rolling;
 mod stats;
 #[cfg(test)]
 mod test_support;
@@ -94,5 +95,6 @@ pub use methods::{
     MaxSharpe, MeanVariance, MinVariance, RiskParity,
 };
 pub use returns::Returns;
+pub use rolling::{Rolling, RollingAllocation, Window};
 pub use stats::PortfolioStats;
 pub use weights::Weights;
