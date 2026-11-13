@@ -40,6 +40,15 @@ All notable changes to this project are documented here. The format follows
   that can't all be met are found first, by the simplex solver's start, since they'd leave
   the dual unbounded rather than infeasible.
 
+### Fixed
+
+- `MinCvar` solves on returns scaled by a power of two to at most 1 in size, which is exact
+  and leaves the answer unchanged. Returns near `1e100` dwarfed the bounds and the budget in
+  its linear program, and the simplex method could stop at a wrong vertex: one asset capped
+  at 0 came back as `NonFiniteWeight`, and with the cap as a group, with that asset's
+  weight at 1. The fuzzer found it once its `allocate` target took groups, and checked that
+  each group's total is within its limits.
+
 ## [0.3.7] - 2026-11-11
 
 ### Added
