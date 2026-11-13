@@ -26,7 +26,11 @@ All notable changes to this project are documented here. The format follows
 
 - The active-set solver takes two-sided limits on sums of weights, each through a slack
   variable for the sum that it holds at a limit and releases as it does a weight. Free
-  slacks are left out of each factored solve, so the Cholesky path still applies.
+  slacks are left out of each factored solve, so the Cholesky path still applies. At the
+  end, each limit is checked on the weights themselves, to `1e-8` of the sum's terms and the
+  limit. Assets with almost no variance, such as constant returns under a shrinkage of
+  `1e-309`, are scaled near `1e-155` in the solver, where a limit on them is within its
+  rounding. That's `SingularCovariance` rather than weights that miss the limit.
 - With groups, the solver starts from a vertex the simplex solver finds, and the least
   turnover into the bounds for a turnover cap comes from the simplex solver too, since
   clipping each weight into its own bounds can break a group.
