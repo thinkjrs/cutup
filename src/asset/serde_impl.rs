@@ -272,6 +272,17 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_type_says_what_was_expected() {
+        /// The error reading `json` as a `T`.
+        fn error<T: for<'de> Deserialize<'de>>(json: serde_json::Value) -> String {
+            serde_json::from_value::<T>(json).err().unwrap().to_string()
+        }
+        assert!(error::<Asset>(json!(true)).ends_with("expected a column number or a label"));
+        assert!(error::<Limit>(json!("high")).ends_with("expected a number, or null for no limit"));
+        assert!(error::<Labeled>(json!([0.5])).ends_with("expected an object from label to value"));
+    }
+
+    #[test]
     fn anything_else_is_rejected() {
         for json in [
             json!(0.5),

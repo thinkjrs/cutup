@@ -80,6 +80,17 @@ mod tests {
     }
 
     #[test]
+    fn anything_but_an_object_says_what_was_expected() {
+        let error = serde_json::from_value::<Weights>(json!([0.5, 0.5])).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("expected an object from each asset's label to its weight"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn a_label_twice_is_rejected() {
         let error = serde_json::from_str::<Weights>(r#"{"SPY": 0.5, "SPY": 0.5}"#).unwrap_err();
         assert!(error.to_string().contains("`SPY` appears twice"), "{error}");
