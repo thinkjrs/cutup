@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-13
+
 ### Added
 
 - `WeightBounds::group(members, lower, upper)` limits the total weight of several assets at
@@ -850,7 +852,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.7...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.8...HEAD
+[0.3.8]: https://github.com/thinkjrs/cutup/compare/0.3.7...0.3.8
 [0.3.7]: https://github.com/thinkjrs/cutup/compare/0.3.6...0.3.7
 [0.3.6]: https://github.com/thinkjrs/cutup/compare/0.3.5...0.3.6
 [0.3.5]: https://github.com/thinkjrs/cutup/compare/0.3.4...0.3.5
