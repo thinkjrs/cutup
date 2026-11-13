@@ -510,12 +510,15 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 
 ## 0.3.9: rolling allocation and `serde`
 
-- **Rolling allocation:** weights recomputed over rolling windows of the
-  data, for example `data.rolling(60).allocate(&method)`, giving weights over
-  time. Pure computation, not backtesting.
-- **An optional `serde` feature** for `Weights`, the method values and
-  `CutupError`. Moved here from the 1.0.0 list, since the sample app's
-  backends pass JSON.
+- **Rolling allocation:** `data.rolling(60).step(5).allocate(method)`
+  recomputes any method's weights over rolling windows of the data, giving
+  weights over time. Each window has its own result, and the last ends at the
+  last period. Pure computation, not backtesting.
+- **An optional `serde` feature** for `Weights`, bounds, covariance configs,
+  every method and Black-Litterman, and `Serialize` for `CutupError` and
+  rolling windows. Each method is an object whose keys are its builders, a
+  format that doesn't follow the internals. Moved here from the 1.0.0 list,
+  since the sample app's backends pass JSON.
 
 ## 0.3.10: sample campaign allocation app
 

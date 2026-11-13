@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Returns::rolling(window)` allocates over rolling windows of the data, giving weights over
+  time: `data.rolling(60).step(5).allocate(method)` takes any `Allocation`, by value or by
+  reference, and returns a `RollingAllocation`, an `ExactSizeIterator` of `Window`s, oldest
+  first. Each window is the method on its own rows alone, with the data's labels. Each
+  `Window` has its `periods()`, a range of return rows, and its own `weights()` result, so
+  one that fails, such as with `ZeroVariance` over a quiet stretch, doesn't stop the others.
+  The last window ends at the last period. A window under 2 periods or longer than the data,
+  or a step of 0, is `InvalidConfig`. It's not a backtest: no window's weights feed the next.
+- An optional `serde` feature: `Serialize` and `Deserialize` for `Weights`, `Asset`,
+  `PerAsset`, `WeightBounds`, `CovarianceConfig`, every method, `BlackLitterman`, `View` and
+  `FrontierPoint`, and `Serialize` for `CutupError` and `Window`. Each method and config is
+  an object whose keys are its builders, each with its argument, such as
+  `{"risk_aversion": 50.0, "bounds": {"upper": 0.6}, "covariance": {"shrinkage": 0.1}}`.
+  - **Defaults:** settings at their defaults are left out, and left out they're the defaults.
+  - **Errors:** unknown keys, keys that exclude each other, and missing required ones.
+  - **No cap:** an upper bound of `f64::INFINITY` is `null`.
+  - **Checks:** a given covariance matrix is checked as `CovarianceConfig::matrix` checks it.
+  - **Formats:** it needs a self-describing format, such as JSON.
+- `examples/rolling.rs` recomputes min variance weights over rolling windows as one asset
+  turns volatile, and the README has sections on rolling allocation and `serde`.
+
 ## [0.3.8] - 2026-11-13
 
 ### Added
