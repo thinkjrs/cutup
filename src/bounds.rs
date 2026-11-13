@@ -1736,6 +1736,25 @@ mod tests {
     }
 
     #[test]
+    fn test_a_group_on_assets_with_almost_no_variance_isnt_missed() {
+        // From the fuzzer: two assets with constant returns, so all their variance is a
+        // shrinkage of 1e-309. The solver's scale for them is near 1e-155, and their whole
+        // range was within its rounding, so it put everything in one of them, past the
+        // group's cap of 0. That's an error now, not weights that miss the group.
+        let returns = vec![
+            vec![-160.0, -513.0, 24056.0, -1.0, -1.0, -1.0, -1.0, -1.0],
+            vec![-1.0; 8],
+            vec![-1.0; 8],
+            vec![-1.0; 8],
+            vec![-1.0, -1.0, -1.0, -1.0, 23901.0, 6749.0, 24250.0, 7680.0],
+        ];
+        let data = Returns::new(&returns).unwrap();
+        let grouped = WeightBounds::default().group([1, 3], 0.0, 0.0);
+        let method = MinVariance::default().bounds(grouped).shrinkage(1.4e-309);
+        assert_eq!(data.allocate(&method), Err(CutupError::SingularCovariance));
+    }
+
+    #[test]
     fn test_a_group_whose_members_end_at_zero_changes_nothing() {
         // From a random search: a target return where a cap that doesn't bind is on assets
         // that end at 0. The solver's slack for the group came back at 4e-33 of rounding,

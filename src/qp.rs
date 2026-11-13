@@ -1545,6 +1545,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_limits_hold_to_rounding_of_its_terms_and_the_limit() {
+        // A sum of 1 against limits of 1: its terms, 1, and the limit, 1, allow 2e-8 past it.
+        let rows = |lower: f64, upper: f64| Rows {
+            a: DMatrix::from_element(2, 1, 1.0),
+            lower: dvector![lower],
+            upper: dvector![upper],
+        };
+        let at = |sum: f64| dvector![sum / 2.0, sum / 2.0];
+        let free = (f64::NEG_INFINITY, f64::INFINITY);
+        for (lower, upper, past) in [(free.0, 1.0, 1.0), (1.0, free.1, -1.0)] {
+            assert!(meets_rows(at(1.0 + past * 1.5e-8), &rows(lower, upper)).is_ok());
+            assert_eq!(
+                meets_rows(at(1.0 + past * 2.5e-8), &rows(lower, upper)),
+                Err(CutupError::SingularCovariance)
+            );
+        }
+        // Exactly that far past, which holds: a sum of 1 against a cap 1e-8 of 1 and of the
+        // cap below it, and of 0.75 against a floor as far above.
+        assert!(meets_rows(at(1.0), &rows(free.0, 0.999_999_980_000_000_2)).is_ok());
+        assert!(meets_rows(at(0.75), &rows(0.750_000_015_000_000_1, free.1)).is_ok());
+    }
+
+    #[test]
     fn negative_weight_is_clamped() {
         // Unconstrained, minimizing ½‖x‖² − 3x₀ over x₀ + x₁ = 1 gives (2, −1).
         let q = DMatrix::identity(2, 2);
