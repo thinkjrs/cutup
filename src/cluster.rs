@@ -10,6 +10,8 @@ use nalgebra::DMatrix;
 /// How the distance between two clusters is measured when HRP or HERC builds its hierarchy.
 /// See [`Hrp::linkage`](crate::Hrp::linkage) and [`Herc::linkage`](crate::Herc::linkage).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum Linkage {
     /// The distance between the two closest members. The default, as in López de Prado (2016)

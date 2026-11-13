@@ -8,6 +8,9 @@ use crate::{CutupError, Returns};
 use nalgebra::DMatrix;
 use std::sync::Arc;
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// The covariance matrix a method uses, set with its `covariance` setter, such as
 /// [`MinVariance::covariance`](crate::MinVariance::covariance): the sample covariance of the
 /// returns, by default, or [one you give](CovarianceConfig::matrix), with adjustments applied
@@ -48,6 +51,8 @@ pub struct CovarianceConfig {
 /// What [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf) shrinks the sample covariance
 /// toward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum ShrinkageTarget {
     /// The average variance times the identity, `μ·I` with `μ = trace(Σ) / n`: every asset
