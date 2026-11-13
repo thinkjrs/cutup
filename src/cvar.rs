@@ -136,63 +136,43 @@ impl Allocation for MinCvar {
             }
         };
 
-        // Variables: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ for each finite
-        // group limit. Resolved bounds are all finite, so every asset has a λ⁻.
-        let eta = t + 1;
-        let floors = eta + usize::from(target.is_some());
-        let ceilings = floors + n;
-        let rows = &bounds.rows;
-        // Each finite limit: its group, the sign of its multiplier in the asset rows, and the
-        // limit, which the objective weighs it by, signed as the bounds' are.
-        let limits: Vec<(usize, f64, f64)> = (0..rows.a.ncols())
-            .flat_map(|k| [(k, -1.0, -rows.lower[k]), (k, 1.0, rows.upper[k])])
-            .filter(|&(_, _, cost)| cost.is_finite())
-            .collect();
-        // The γ come last, counted back from the end.
-        let columns = ceilings + n + limits.len();
-        let groups = columns - limits.len();
-        let mut a = DMatrix::zeros(n + 1, columns);
+        // The dual's columns, in order: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ
+        // for each finite group limit. Resolved bounds are all finite, so every asset has a
+        // λ⁻. Maximizing ν + ρη + lᵀλ⁺ − uᵀλ⁻ + Lᵀγ⁺ − Uᵀγ⁻ is minimizing its negative.
+        let mut dual = Columns::default();
+        for row in returns.row_iter() {
+            dual.push(row.iter().map(|r| -r), 1.0, 0.0, (0.0, cap));
+        }
+        let free = (f64::NEG_INFINITY, f64::INFINITY);
+        dual.push(std::iter::repeat_n(-1.0, n), 0.0, -1.0, free);
+        if let Some((rho, mu)) = &target {
+            dual.push(mu.iter().map(|m| -m), 0.0, -rho, free);
+        }
+        let nonnegative = (0.0, f64::INFINITY);
+        let unit = |i: usize, sign: f64| (0..n).map(move |j| if j == i { sign } else { 0.0 });
         for i in 0..n {
-            for s in 0..t {
-                a[(i, s)] = -returns[(s, i)];
-            }
-            a[(i, t)] = -1.0;
-            if let Some((_, mu)) = &target {
-                a[(i, eta)] = -mu[i];
-            }
-            a[(i, floors + i)] = -1.0;
-            a[(i, ceilings + i)] = 1.0;
-            for (j, &(k, sign, _)) in limits.iter().enumerate() {
-                a[(i, groups + j)] = sign * rows.a[(i, k)];
+            dual.push(unit(i, -1.0), 0.0, -bounds.lower[i], nonnegative);
+        }
+        for i in 0..n {
+            dual.push(unit(i, 1.0), 0.0, bounds.upper[i], nonnegative);
+        }
+        let rows = &bounds.rows;
+        for (k, members) in rows.a.column_iter().enumerate() {
+            // A limit the bounds already meet is infinite, and has no multiplier.
+            for (sign, cost) in [(-1.0, -rows.lower[k]), (1.0, rows.upper[k])] {
+                if cost.is_finite() {
+                    dual.push(members.iter().map(|g| sign * g), 0.0, cost, nonnegative);
+                }
             }
         }
-        for s in 0..t {
-            a[(n, s)] = 1.0;
-        }
+        let a = DMatrix::from_columns(&dual.a);
         let mut b = DVector::zeros(n + 1);
         b[n] = 1.0;
-
-        // Maximizing ν + ρη + lᵀλ⁺ − uᵀλ⁻ + Lᵀγ⁺ − Uᵀγ⁻ is minimizing its negative.
-        let mut c = DVector::zeros(columns);
-        c[t] = -1.0;
-        if let Some((rho, _)) = target {
-            c[eta] = -rho;
-        }
-        for i in 0..n {
-            c[floors + i] = -bounds.lower[i];
-            c[ceilings + i] = bounds.upper[i];
-        }
-        for (j, &(_, _, cost)) in limits.iter().enumerate() {
-            c[groups + j] = cost;
-        }
-        let lower = DVector::from_fn(columns, |j, _| {
-            if j == t || (target.is_some() && j == eta) {
-                f64::NEG_INFINITY
-            } else {
-                0.0
-            }
-        });
-        let upper = DVector::from_fn(columns, |j, _| if j < t { cap } else { f64::INFINITY });
+        let (c, lower, upper) = (
+            DVector::from_vec(dual.cost),
+            DVector::from_vec(dual.lower),
+            DVector::from_vec(dual.upper),
+        );
 
         // The portfolio is feasible and CVaR is bounded below on it, so the dual has an optimum.
         let start = starting_tail(returns, cap);
@@ -204,6 +184,34 @@ impl Allocation for MinCvar {
             solution.y[i].clamp(bounds.lower[i], bounds.upper[i])
         });
         Ok(data.weights(normalized(weights)))
+    }
+}
+
+/// The columns of [`MinCvar`]'s dual linear program, each with its cost and bounds, in the
+/// order they're pushed. Built a column at a time rather than at computed offsets, so that no
+/// column's place depends on arithmetic.
+#[derive(Default)]
+struct Columns {
+    a: Vec<DVector<f64>>,
+    cost: Vec<f64>,
+    lower: Vec<f64>,
+    upper: Vec<f64>,
+}
+
+impl Columns {
+    /// A column with `assets` in the asset rows and `budget` in the budget row `Σzₜ = 1`.
+    fn push(
+        &mut self,
+        assets: impl Iterator<Item = f64>,
+        budget: f64,
+        cost: f64,
+        (lower, upper): (f64, f64),
+    ) {
+        self.a
+            .push(DVector::from_vec(assets.chain([budget]).collect()));
+        self.cost.push(cost);
+        self.lower.push(lower);
+        self.upper.push(upper);
     }
 }
 
