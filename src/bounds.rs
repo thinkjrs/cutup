@@ -641,11 +641,21 @@ impl ReturnRange {
         bounds: qp::Bounds,
         target: f64,
     ) -> Result<TargetProblem, CutupError> {
+        ReturnRange::new(mu, &bounds)?.problem(mu, bounds, target)
+    }
+
+    /// [`ReturnRange::target_problem`] on this range, which `mu` and `bounds` built, so that a
+    /// caller solving at many targets finds the range's ends once.
+    pub(crate) fn problem(
+        &self,
+        mu: &DVector<f64>,
+        bounds: qp::Bounds,
+        target: f64,
+    ) -> Result<TargetProblem, CutupError> {
         let n = mu.len();
-        let range = ReturnRange::new(mu, &bounds)?;
-        let target = range.reachable(target)?;
-        if target == range.lowest || target == range.highest {
-            let bounds = range.face(mu, &bounds, target == range.highest);
+        let target = self.reachable(target)?;
+        if target == self.lowest || target == self.highest {
+            let bounds = self.face(mu, &bounds, target == self.highest);
             return Ok(TargetProblem {
                 e: DMatrix::from_element(n, 1, 1.0),
                 b: DVector::from_element(1, 1.0),
@@ -656,7 +666,7 @@ impl ReturnRange {
         Ok(TargetProblem {
             e: DMatrix::from_columns(&[DVector::from_element(n, 1.0), mu.clone()]),
             b: DVector::from_vec(vec![1.0, target]),
-            start: range.start(mu, &bounds, target)?,
+            start: self.start(mu, &bounds, target)?,
             bounds,
         })
     }

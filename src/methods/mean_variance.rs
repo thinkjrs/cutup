@@ -507,13 +507,16 @@ impl Returns {
         let cov = self.adjusted_covariance(&method.covariance)?;
         // Before any point is solved, so a covariance it can't measure fails first.
         let risk = Risk::new(&cov)?;
-        let (minimum, highest) = match &bounds {
+        let (minimum, range) = match &bounds {
             Some(bounds) => (
                 bounded_min_variance(&cov, bounds)?,
-                ReturnRange::new(&mu, bounds)?.highest(),
+                Some(ReturnRange::new(&mu, bounds)?),
             ),
-            None => (min_variance(&cov)?, mu.max()),
+            None => (min_variance(&cov)?, None),
         };
+        let highest = range
+            .as_ref()
+            .map_or_else(|| mu.max(), ReturnRange::highest);
         let lowest = mu.dot(&minimum);
         let highest = highest.max(lowest);
         let mut portfolios = vec![minimum];
@@ -522,9 +525,11 @@ impl Returns {
                 // A weighted average, which can't overflow where the difference could.
                 let t = k as f64 / (points - 1) as f64;
                 let target = lowest * (1.0 - t) + highest * t;
-                portfolios.push(match &bounds {
-                    Some(bounds) => bounded_target_return(&cov, &mu, bounds, target)?,
-                    None => target_return(&cov, &mu, target)?,
+                portfolios.push(match (&bounds, &range) {
+                    (Some(bounds), Some(range)) => {
+                        bounded_target_return(&cov, &mu, bounds, range, target)?
+                    }
+                    _ => target_return(&cov, &mu, target)?,
                 });
             }
         }
@@ -694,14 +699,16 @@ fn target_return(
     .0)
 }
 
-/// The portfolio within `bounds` with the least variance at expected return `target`.
+/// The portfolio within `bounds` with the least variance at expected return `target`, `range`
+/// being the range of expected returns `mu` and `bounds` build.
 fn bounded_target_return(
     cov: &DMatrix<f64>,
     mu: &DVector<f64>,
     bounds: &qp::Bounds,
+    range: &ReturnRange,
     target: f64,
 ) -> Result<DVector<f64>, CutupError> {
-    let problem = ReturnRange::target_problem(mu, bounds.clone(), target)?;
+    let problem = range.problem(mu, bounds.clone(), target)?;
     Ok(DVector::from_vec(long_only_weights(
         cov,
         &DVector::zeros(cov.ncols()),
@@ -800,11 +807,13 @@ fn bounded_target_volatility(
     let rounding = variance_rounding(&risk.units(&minimum));
     // From here, the target with that rounding.
     let target = (target_variance + rounding).sqrt();
-    let at = |rho: f64| bounded_target_return(cov, mu, bounds, rho);
+    // Once, rather than at every target the search below solves at.
+    let range = ReturnRange::new(mu, bounds)?;
+    let at = |rho: f64| bounded_target_return(cov, mu, bounds, &range, rho);
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
     // there up to some return and above it after.
-    let highest = ReturnRange::new(mu, bounds)?.highest();
+    let highest = range.highest();
     let top = at(highest)?;
     if risk.volatility(&top) <= target {
         return Ok(normalized(top));
