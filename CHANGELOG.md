@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-13
+
 ### Added
 
 - `Returns::rolling(window)` allocates over rolling windows of the data, giving weights over
@@ -877,7 +879,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.8...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.9...HEAD
+[0.3.9]: https://github.com/thinkjrs/cutup/compare/0.3.8...0.3.9
 [0.3.8]: https://github.com/thinkjrs/cutup/compare/0.3.7...0.3.8
 [0.3.7]: https://github.com/thinkjrs/cutup/compare/0.3.6...0.3.7
 [0.3.6]: https://github.com/thinkjrs/cutup/compare/0.3.5...0.3.6
