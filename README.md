@@ -31,9 +31,9 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 ## Features
 
 - **Minimum Variance**: The global minimum variance portfolio, using only the covariance matrix. Optional shrinkage, with a fixed intensity or Ledoit-Wolf's estimate, and regularization via `CovarianceConfig`, which every covariance-based method takes, in place of the sample covariance an exponentially weighted one or a semicovariance, or a covariance of your own with `CovarianceConfig::matrix`.
-- **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`.
+- **Long-Only Minimum Variance**: The lowest-variance portfolio with no short positions, solved exactly by a built-in active-set solver. Cap or floor each asset's weight with `WeightBounds`, and the total weight of groups of assets with `WeightBounds::group`.
 - **Mean-Variance Optimization**: The Markowitz portfolio for a given risk aversion, target return or target volatility, and the efficient frontier, using expected returns (the sample mean by default, an exponentially weighted mean, CAPM returns, or James-Stein and Bayes-Stein shrinkage) and the covariance matrix.
-- **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds`.
+- **Long-Only Mean-Variance**: The same objectives with no short positions, solved exactly by the active-set solver. Also takes `WeightBounds` and their groups.
 - **Maximum Sharpe Ratio**: The tangency portfolio for a given risk-free rate, using expected returns and the covariance matrix.
 - **Long-Only Maximum Sharpe Ratio**: The highest Sharpe ratio with no short positions, solved exactly by the active-set solver.
 - **EW Allocation**: Assigns equal weights to all assets.
@@ -42,7 +42,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **Risk Parity**: Long-only weights where every asset contributes the same share of portfolio variance, accounting for correlations. Set unequal shares with `RiskParity::risk_budgets`.
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `Hrp::linkage`, and inspect the cluster order with `Hrp::cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `Herc::clusters`, then splits risk down the tree and by inverse variance within each group.
-- **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds and a target return, and `cvar` measures any portfolio's CVaR.
+- **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds, groups and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. With a target return, costs make it a floor on the net return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
 - **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
@@ -57,8 +57,8 @@ Each method is a value you pass to `Returns::allocate`. Methods that can short a
 | `EqualWeight` | nothing | ✅ | A baseline that needs no estimates and can't fail. |
 | `InverseVolatility` | volatilities | ✅ | Riskier assets get less; correlations are ignored. |
 | `InverseVariance` | variances | ✅ | A stronger tilt than inverse volatility. Equals min variance when assets are uncorrelated. |
-| `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. From `.current_weights(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` limit trading. |
-| `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds allow; `.bounds(..)` caps or floors each asset. `.transaction_costs(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` rebalance from `.current_weights(..)`; with a target return and costs, the target is a floor on the return net of them. |
+| `MinVariance` | covariance | ✅ by default | The lowest-variance portfolio. Long-only, it usually concentrates in a few low-risk assets and holds none of the rest; `.bounds(..)` caps or floors each asset, or groups of them. Long-short, it's sensitive to estimation error, so consider `.shrinkage(..)`. From `.current_weights(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` limit trading. |
+| `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds and groups allow; `.bounds(..)` caps or floors each asset, or groups of them. `.transaction_costs(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` rebalance from `.current_weights(..)`; with a target return and costs, the target is a floor on the return net of them. |
 | `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
 | `MinCvar` | return scenarios | ✅ | The lowest average loss in the worst `1 − β` of the scenarios, 5% by default. Looks at the losses themselves rather than a covariance, so it reacts to skew and fat tails; needs enough scenarios for a tail, at least 20 at 95%. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
 | `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
@@ -185,6 +185,48 @@ fn main() -> Result<(), CutupError> {
 ```
 
 `println!("{weights}")` prints the same labels and weights as a table, with 4 decimals, or `{weights:.2}` for 2. `weights.iter()`, `weights[i]` and `as_slice()` still go by column. A label that isn't in the data returns `CutupError::UnknownAsset`, and one given twice `CutupError::DuplicateAsset`. Errors about one asset, such as `ZeroVariance`, give both its label and its column.
+
+### Group constraints
+
+`WeightBounds::group(members, lower, upper)` limits the total weight of several assets at once, such as every ad channel on one platform, every signal from one source or every fund in one asset class, on top of each asset's own bounds. Members are labels or columns. Groups can overlap, an asset listed twice in one counts once, and an upper limit of `f64::INFINITY` means no cap. `MinVariance`, `MeanVariance` with any objective, with or without rebalancing, `Returns::frontier` and `MinCvar` take them.
+
+```rust
+use cutup::{CutupError, MinVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.004,  0.002,  0.030, -0.020,  0.015],
+        [-0.002,  0.003, -0.025,  0.030, -0.010],
+        [ 0.003, -0.001,  0.040, -0.015,  0.020],
+        [-0.001,  0.004, -0.030,  0.025, -0.012],
+        [ 0.002, -0.002,  0.020, -0.010,  0.008],
+        [ 0.003,  0.001, -0.015,  0.020, -0.005],
+        [-0.003,  0.002,  0.035, -0.025,  0.018],
+        [ 0.002, -0.001, -0.020,  0.015, -0.008],
+    ];
+    let data = Returns::new(&returns)?
+        .labeled(["search", "shopping", "video", "social", "display"])?;
+
+    // Alone, min variance puts 83% in search and shopping, the two steadiest, and 6% in
+    // video and social.
+    let bounds = WeightBounds::default()
+        // At most 40% in search and shopping together.
+        .group(["search", "shopping"], 0.0, 0.4)
+        // At least 30% in video and social together.
+        .group(["video", "social"], 0.3, 1.0);
+    let weights = data.allocate(&MinVariance::default().bounds(bounds))?;
+    assert!((weights["search"] + weights["shopping"] - 0.4).abs() < 1e-12);
+    assert!((weights["video"] + weights["social"] - 0.3).abs() < 1e-12);
+    println!("{weights}");
+    Ok(())
+}
+```
+
+A group holds to the rounding of its sum, as the weights sum to 1 to theirs, and limits within `1e-12` of what its members can hold together are taken as rounding. An empty group, a floor that isn't finite and nonnegative, or a cap that's NaN or below the floor returns `CutupError::InvalidConfig`, and a member that isn't one of the assets `CutupError::UnknownAsset`. A group no portfolio within the bounds can meet returns `CutupError::InfeasibleGroups`, naming it by its members' labels joined with `" + "`, and groups that can each be met but not all at once return it with no name. With groups, a target return must lie in the range of returns the bounds and groups allow together. For a longer example, with the plain answer, a target return and the error, run:
+
+```bash
+cargo run --example groups
+```
 
 ### Log returns
 
@@ -628,7 +670,7 @@ Seven other changes in 0.3.0:
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, penalties, transaction costs and target returns, gross or net of costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC and for HRP and HERC with shrinkage and regularization. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, and for minimum variance and mean-variance with groups, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR, with and without groups (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, penalties, transaction costs and target returns, gross or net of costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC and for HRP and HERC with shrinkage and regularization. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
 
 `cargo bench` times the solver and clustering methods at 10, 100 and 500 assets. [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the baseline numbers.
 

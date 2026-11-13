@@ -492,14 +492,21 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 
 ## 0.3.8: group constraints
 
-- **Caps and floors on groups of assets**, such as sectors or ad channels:
-  "Search campaigns at most 40%", "Video at least 20%". Groups are given by
-  index, or by label.
-- **Solver work:** the active-set solver handles equality constraints and
-  bounds, but not general inequalities `Aw ≤ b`. Supporting them is the bulk
-  of this release. Moved here from the 1.x candidates.
-- **Which methods:** the QP methods first, `MinVariance` and `MeanVariance`,
-  then `MinCvar` through the LP.
+- **Caps and floors on groups of assets**, such as the ad channels on one
+  platform: "search and shopping at most 40%", "video and social at least
+  30%". `WeightBounds::group` takes the members by label or by column, and
+  groups may overlap.
+- **Solver work:** the bulk of this release. Moved here from the 1.x
+  candidates.
+  - The active-set solver takes two-sided limits on sums of weights, each
+    through a slack variable for the sum that it holds at a limit and releases
+    as it does a weight.
+  - The simplex solver finds a start that meets every group, the least
+    turnover into them, and the range of target returns, with the portfolios
+    at each end read off its reduced costs.
+- **Which methods:** `MinVariance`, every `MeanVariance` objective with or
+  without rebalancing, and `Returns::frontier` through the active-set solver,
+  then `MinCvar` through a multiplier for each group limit in its dual.
 
 ## 0.3.9: rolling allocation and `serde`
 
