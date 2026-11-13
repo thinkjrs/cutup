@@ -574,6 +574,63 @@ mod tests {
     }
 
     #[test]
+    fn the_unit_scale_takes_the_largest_return_to_between_a_half_and_1() {
+        for largest in [0.5, 0.75, 1.0, 3.0, 1e100, 1e-100, f64::MIN_POSITIVE] {
+            let scaled = largest * unit_scale(largest);
+            assert!((0.5..1.0).contains(&scaled), "{largest}: {scaled}");
+        }
+        assert_eq!(unit_scale(1.0), 0.5);
+        // Past what one power of two can reach, as far as it goes.
+        assert_eq!(unit_scale(f64::MAX), 2f64.powi(-1022));
+        assert_eq!(unit_scale(5e-324), 2f64.powi(1022));
+        assert_eq!(unit_scale(0.0), 1.0);
+    }
+
+    #[test]
+    fn the_scale_of_the_returns_changes_nothing() {
+        // From the fuzzer: at 1e96, the program's returns dwarfed its other entries, and the
+        // simplex method's answer put everything on an asset its group capped at 0. Every
+        // portfolio ties here, at the worst scenario's loss, so the answer only has to hold.
+        let rows: [[f64; 5]; 15] = [
+            [-1.0, -5.0, -170.0, -1.0, -1.0],
+            [-1.0; 5],
+            [-1.0; 5],
+            [-1.0; 5],
+            [-1.0; 5],
+            [-1.0; 5],
+            [-1.0; 5],
+            [-1.0, -1.0, -1.0, -1.0, -250.0],
+            [-1.0, -9729.0, -9767.0, -9767.0, -9767.0],
+            [-9767.0; 5],
+            [-1.0, -766.0, -1.0, -1.0, 5397.0],
+            [5397.0; 5],
+            [5397.0; 5],
+            [5397.0, -1.0, -1.0, -17.0, 6143.0],
+            [5911.0, 5911.0, 5911.0, -1.0, 0.0],
+        ];
+        for scale in [1e96, 1e-300] {
+            let returns: Vec<[f64; 5]> = rows.iter().map(|row| row.map(|r| r * scale)).collect();
+            let grouped = MinCvar::default().bounds(WeightBounds::default().group([0], 0.0, 0.0));
+            let weights = Returns::new(&returns).unwrap().allocate(&grouped).unwrap();
+            assert_eq!(weights[0], 0.0, "{scale}: {weights:?}");
+        }
+        // Where the answer is unique, it's the same at any scale.
+        let base = allocator();
+        let method = MinCvar::default().confidence(0.75);
+        let expected = base.allocate(&method).unwrap();
+        for scale in [1e100, 1e-100] {
+            let scaled = Returns::returns_matrix(&base.returns * scale).unwrap();
+            let weights = scaled.allocate(&method).unwrap();
+            for (w, e) in weights.iter().zip(expected.iter()) {
+                assert!(
+                    (w - e).abs() < 1e-12,
+                    "{scale}: {weights:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn lower_bounds_summing_to_one_fix_the_weights() {
         // 1 − 0.9 rounds to just under 0.1, the first asset's room above its floor.
         let allocator = Returns::returns_matrix(dmatrix![
