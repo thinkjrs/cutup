@@ -458,6 +458,67 @@ mod tests {
     }
 
     #[test]
+    fn groups_hold_a_hedge_at_their_limits() {
+        // A and B hedge each other, and C loses 1% in both scenarios, so at 50% the tail is
+        // the worse scenario, and CVaR is 0.02|A − B| + 0.01C: least at A = B, as much of
+        // them as the groups allow.
+        let allocator = Returns::returns_matrix(dmatrix![
+            -0.02,  0.02, -0.01;
+             0.02, -0.02, -0.01
+        ])
+        .unwrap();
+        let method = MinCvar::default().confidence(0.5);
+        for (bounds, expected, cvar) in [
+            (WeightBounds::default(), [0.5, 0.5, 0.0], 0.0),
+            (
+                WeightBounds::default().group(["0"], 0.0, 0.2),
+                [0.2, 0.2, 0.6],
+                0.006,
+            ),
+            (
+                WeightBounds::default().group([2], 0.5, 1.0),
+                [0.25, 0.25, 0.5],
+                0.005,
+            ),
+        ] {
+            let weights = allocator.allocate(&method.clone().bounds(bounds)).unwrap();
+            for (w, e) in weights.iter().zip(expected) {
+                assert!((w - e).abs() < 1e-15, "{weights:?}");
+            }
+            let achieved = allocator.cvar(&weights, 0.5).unwrap();
+            assert!((achieved - cvar).abs() < 1e-15, "{achieved}");
+        }
+    }
+
+    #[test]
+    fn groups_that_cant_all_be_met_are_found_first() {
+        let grouped = WeightBounds::default()
+            .group([0], 0.6, 1.0)
+            .group([1], 0.6, 1.0);
+        assert_eq!(
+            allocator().allocate(&MinCvar::default().bounds(grouped)),
+            Err(CutupError::InfeasibleGroups { group: None })
+        );
+    }
+
+    #[test]
+    fn groups_and_targets_hold() {
+        let allocator = allocator();
+        let mu = allocator.returns.row_mean();
+        // Without the group, A and B hold 0.634 at this target; with it, its cap.
+        let target = 0.0009;
+        let plain = MinCvar::default().target_return(target);
+        let free = allocator.allocate(&plain).unwrap();
+        assert!(free[0] + free[1] > 0.63);
+        let weights = allocator
+            .allocate(&plain.bounds(WeightBounds::default().group([0, 1], 0.0, 0.6)))
+            .unwrap();
+        assert!((weights[0] + weights[1] - 0.6).abs() < 1e-15, "{weights:?}");
+        let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        assert!((achieved - target).abs() < 1e-15, "{achieved} vs {target}");
+    }
+
+    #[test]
     fn lower_bounds_summing_to_one_fix_the_weights() {
         // 1 − 0.9 rounds to just under 0.1, the first asset's room above its floor.
         let allocator = Returns::returns_matrix(dmatrix![
