@@ -108,9 +108,8 @@ impl WeightBounds {
     /// 1 to theirs.
     ///
     /// Groups are supported by [`MinVariance`](crate::MinVariance), by every
-    /// [`MeanVariance`](crate::MeanVariance) objective, with or without rebalancing, and by
-    /// [`Returns::frontier`](crate::Returns::frontier). [`MinCvar`](crate::MinCvar) returns
-    /// [`CutupError::NotSupported`] with groups.
+    /// [`MeanVariance`](crate::MeanVariance) objective, with or without rebalancing, by
+    /// [`Returns::frontier`](crate::Returns::frontier), and by [`MinCvar`](crate::MinCvar).
     ///
     /// # Errors
     ///
@@ -285,22 +284,6 @@ fn group_range(member: &[f64], lower: &DVector<f64>, upper: &DVector<f64>) -> (f
         sum(lower, true).max(1.0 - sum(upper, false)),
         sum(upper, true).min(1.0 - sum(lower, false)),
     )
-}
-
-/// `bounds`, or [`CutupError::NotSupported`] if they have groups, which `with` doesn't take
-/// yet.
-pub(crate) fn without_groups(
-    bounds: qp::Bounds,
-    with: &'static str,
-) -> Result<qp::Bounds, CutupError> {
-    if bounds.rows.a.ncols() == 0 {
-        Ok(bounds)
-    } else {
-        Err(CutupError::NotSupported {
-            setting: "group",
-            with,
-        })
-    }
 }
 
 /// A portfolio summing to 1 within resolved `bounds`, to start the solver from:
@@ -1795,19 +1778,6 @@ mod tests {
             .allocate(&method(plain.group(zeros, 0.0, 0.3)))
             .unwrap();
         assert_weights_close(&grouped, &w, 1e-12);
-    }
-
-    #[test]
-    fn test_min_cvar_without_groups_yet_says_so() {
-        let allocator = Returns::returns_matrix(uncorrelated_returns()).unwrap();
-        let grouped = WeightBounds::default().group([0, 1], 0.0, 0.5);
-        assert_eq!(
-            allocator.allocate(&crate::MinCvar::default().bounds(grouped)),
-            Err(CutupError::NotSupported {
-                setting: "group",
-                with: "MinCvar",
-            })
-        );
     }
 
     #[test]

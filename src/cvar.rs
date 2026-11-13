@@ -1,6 +1,6 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
-use crate::bounds::{ReturnRange, without_groups};
+use crate::bounds::{ReturnRange, feasible_start};
 use crate::methods::normalized;
 use crate::{Allocation, CutupError, Returns, WeightBounds, Weights, lp};
 use nalgebra::{DMatrix, DVector};
@@ -54,6 +54,8 @@ use nalgebra::{DMatrix, DVector};
 /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if a setting names an
 ///   asset that isn't in the data, or names one twice.
 /// * [`CutupError::InfeasibleBounds`] if the bounds can't sum to 1.
+/// * [`CutupError::InfeasibleGroups`] if no portfolio within the bounds meets every
+///   [group](WeightBounds::group).
 /// * [`CutupError::TargetReturnOutOfRange`] if no portfolio within the bounds has the target
 ///   return, by the sample mean of the returns.
 /// * [`CutupError::NotConverged`] if the linear program stops early, which only extreme inputs
@@ -105,14 +107,20 @@ impl Allocation for MinCvar {
     /// `max zᵀ(−Rw)` over `0 ≤ zₜ ≤ 1/((1 − β)T)` with `Σzₜ = 1`, so minimizing it is a
     /// min-max. Swapping the two and writing the minimum over the portfolio as its own dual
     /// gives a maximization over `z` and that dual's multipliers: `ν` for the budget, `η` for
-    /// the target return, and `λ⁺`, `λ⁻` for the bounds, subject to
-    /// `−Rᵀz = ν1 + ημ + λ⁺ − λ⁻`, one row per asset. The weights are those rows'
-    /// multipliers, and CVaR is its optimum.
+    /// the target return, `λ⁺`, `λ⁻` for the bounds, and `γ⁺`, `γ⁻` for the groups' floors and
+    /// caps, subject to `−Rᵀz = ν1 + ημ + λ⁺ − λ⁻ + G(γ⁺ − γ⁻)`, one row per asset, where
+    /// column `k` of `G` marks group `k`'s members. The weights are those rows' multipliers,
+    /// and CVaR is its optimum. A group limit the bounds already meet has no multiplier.
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let returns = &data.returns;
         let (t, n) = returns.shape();
         let cap = tail_weight(self.confidence, t)?;
-        let bounds = without_groups(self.bounds.resolve(data.labels())?, "MinCvar")?;
+        let bounds = self.bounds.resolve(data.labels())?;
+        // Groups that can't all be met leave the dual unbounded rather than infeasible, so
+        // they're found first, from the portfolios themselves.
+        if bounds.rows.a.ncols() > 0 {
+            feasible_start(&bounds)?;
+        }
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
                 return Err(CutupError::InvalidConfig {
@@ -127,12 +135,20 @@ impl Allocation for MinCvar {
             None => None,
         };
 
-        // Variables: z (t), ν, then η with a target, λ⁺ (n) and λ⁻ (n). Resolved bounds are
-        // all finite, so every asset has a λ⁻.
+        // Variables: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ for each finite
+        // group limit. Resolved bounds are all finite, so every asset has a λ⁻.
         let eta = t + 1;
         let floors = eta + usize::from(target.is_some());
         let ceilings = floors + n;
-        let columns = ceilings + n;
+        let groups = ceilings + n;
+        let rows = &bounds.rows;
+        // Each finite limit: its group, the sign of its multiplier in the asset rows, and the
+        // limit, which the objective weighs it by, signed as the bounds' are.
+        let limits: Vec<(usize, f64, f64)> = (0..rows.a.ncols())
+            .flat_map(|k| [(k, -1.0, -rows.lower[k]), (k, 1.0, rows.upper[k])])
+            .filter(|&(_, _, cost)| cost.is_finite())
+            .collect();
+        let columns = groups + limits.len();
         let mut a = DMatrix::zeros(n + 1, columns);
         for i in 0..n {
             for s in 0..t {
@@ -144,6 +160,9 @@ impl Allocation for MinCvar {
             }
             a[(i, floors + i)] = -1.0;
             a[(i, ceilings + i)] = 1.0;
+            for (j, &(k, sign, _)) in limits.iter().enumerate() {
+                a[(i, groups + j)] = sign * rows.a[(i, k)];
+            }
         }
         for s in 0..t {
             a[(n, s)] = 1.0;
@@ -151,7 +170,7 @@ impl Allocation for MinCvar {
         let mut b = DVector::zeros(n + 1);
         b[n] = 1.0;
 
-        // Maximizing ν + ρη + lᵀλ⁺ − uᵀλ⁻ is minimizing its negative.
+        // Maximizing ν + ρη + lᵀλ⁺ − uᵀλ⁻ + Lᵀγ⁺ − Uᵀγ⁻ is minimizing its negative.
         let mut c = DVector::zeros(columns);
         c[t] = -1.0;
         if let Some((rho, _)) = target {
@@ -160,6 +179,9 @@ impl Allocation for MinCvar {
         for i in 0..n {
             c[floors + i] = -bounds.lower[i];
             c[ceilings + i] = bounds.upper[i];
+        }
+        for (j, &(_, _, cost)) in limits.iter().enumerate() {
+            c[groups + j] = cost;
         }
         let lower = DVector::from_fn(columns, |j, _| {
             if j == t || (target.is_some() && j == eta) {
