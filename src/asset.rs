@@ -7,6 +7,9 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
+#[cfg(feature = "serde")]
+pub(crate) mod serde_impl;
+
 /// An asset, by its column in the data, counting from 0, or by its label: anything that takes
 /// an `impl Into<Asset>` takes a `usize` or a string.
 ///

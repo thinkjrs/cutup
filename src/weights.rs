@@ -8,6 +8,9 @@ use std::fmt;
 use std::ops::Index;
 use std::sync::Arc;
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 /// Portfolio weights, one per asset, in the order of the columns of the
 /// [`Returns`](crate::Returns), and labeled with their assets.
 ///

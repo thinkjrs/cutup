@@ -19,10 +19,14 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 nalgebra = "0.33.2"
+serde = { version = "1.0.219", optional = true, features = ["derive"] }
 
 [features]
 # Constructors that take nalgebra's `DMatrix`, and `DVector` conversions for `Weights`.
 nalgebra = []
+# `Serialize` and `Deserialize` for weights, assets, bounds, covariance configs and every method,
+# and `Serialize` for `CutupError`.
+serde = ["dep:serde"]
 
 [package.metadata.docs.rs]
 all-features = true
