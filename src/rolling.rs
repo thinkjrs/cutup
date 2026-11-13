@@ -129,21 +129,51 @@ pub struct RollingAllocation<'a, A> {
     windows: Range<usize>,
 }
 
-impl<A: Allocation> Iterator for RollingAllocation<'_, A> {
-    type Item = Window;
-
-    fn next(&mut self) -> Option<Window> {
-        let start = self.first + self.windows.next()? * self.step;
+impl<A: Allocation> RollingAllocation<'_, A> {
+    /// The window `k`th in order, allocated.
+    fn window(&self, k: usize) -> Window {
+        let start = self.first + k * self.step;
         let periods = start..start + self.window;
         let weights = self
             .data
             .window(periods.clone())
             .and_then(|data| data.allocate(&self.method));
-        Some(Window { periods, weights })
+        Window { periods, weights }
+    }
+}
+
+/// Skipping windows, with `nth`, `skip`, `last` or from the back, allocates only those reached.
+impl<A: Allocation> Iterator for RollingAllocation<'_, A> {
+    type Item = Window;
+
+    fn next(&mut self) -> Option<Window> {
+        let k = self.windows.next()?;
+        Some(self.window(k))
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Window> {
+        let k = self.windows.nth(n)?;
+        Some(self.window(k))
+    }
+
+    fn last(mut self) -> Option<Window> {
+        self.next_back()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.windows.size_hint()
+    }
+}
+
+impl<A: Allocation> DoubleEndedIterator for RollingAllocation<'_, A> {
+    fn next_back(&mut self) -> Option<Window> {
+        let k = self.windows.next_back()?;
+        Some(self.window(k))
+    }
+
+    fn nth_back(&mut self, n: usize) -> Option<Window> {
+        let k = self.windows.nth_back(n)?;
+        Some(self.window(k))
     }
 }
 
@@ -260,6 +290,41 @@ mod tests {
             format!("{windows:?}"),
             "RollingAllocation { window: 4, step: 3, remaining: 2, .. }"
         );
+    }
+
+    #[test]
+    fn skipping_windows_allocates_only_those_reached() {
+        /// Equal weights, counting how many windows it's asked for.
+        struct Counting(std::cell::Cell<usize>);
+
+        impl Allocation for Counting {
+            fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
+                self.0.set(self.0.get() + 1);
+                crate::EqualWeight.allocate(data)
+            }
+        }
+
+        // 11 windows of 2 over 12 periods: 0..2 up to 10..12.
+        let data = data();
+        let method = Counting(std::cell::Cell::new(0));
+        let mut windows = data.rolling(2).allocate(&method).unwrap();
+        assert_eq!(windows.nth(5).unwrap().periods(), 5..7);
+        assert_eq!(windows.next_back().unwrap().periods(), 10..12);
+        assert_eq!(windows.nth_back(1).unwrap().periods(), 8..10);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(method.0.get(), 3);
+        let all = data.rolling(2).allocate(&method).unwrap();
+        assert_eq!(all.last().unwrap().periods(), 10..12);
+        assert_eq!(method.0.get(), 4);
+        let backward: Vec<_> = data
+            .rolling(5)
+            .step(4)
+            .allocate(&method)
+            .unwrap()
+            .rev()
+            .map(|w| w.periods())
+            .collect();
+        assert_eq!(backward, [7..12, 3..8]);
     }
 
     #[test]
