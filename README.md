@@ -46,6 +46,8 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. With a target return, costs make it a floor on the net return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
 - **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
+- **Rolling Allocation**: `data.rolling(60).allocate(method)` recomputes any method's weights over rolling windows of the data, giving weights over time, with each window's own result.
+- **JSON**: With the `serde` feature, weights, bounds, covariance configs and every method serialize and deserialize, each method as an object of its builders' settings.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
 
 ## Choosing a method
@@ -88,6 +90,13 @@ To pass nalgebra matrices in and get `DVector` weights out, turn on the `nalgebr
 ```toml
 [dependencies]
 cutup = { version = "0.3.8", features = ["nalgebra"] }
+```
+
+To read methods from JSON and write weights to it, turn on the `serde` feature: see [JSON with `serde`](#json-with-serde).
+
+```toml
+[dependencies]
+cutup = { version = "0.3.8", features = ["serde"] }
 ```
 
 ## Usage
@@ -305,6 +314,46 @@ fn main() -> Result<(), CutupError> {
     }
     Ok(())
 }
+```
+
+### Rolling allocation
+
+`data.rolling(window)` gives windows of `window` periods each, and `.step(k)` moves each one `k` periods past the one before, 1 by default. `.allocate(method)` then allocates with any method, by value or by reference, over each window, oldest first. The result is weights over time. A period is a row of returns: from prices, period `t` is the return from row `t` to row `t + 1`.
+
+The last window ends at the last period, so with a step over 1 the first periods are the ones left out, not the latest. Each window is the method on its own rows alone, with its own covariance and expected returns and the data's labels. It's pure computation, not a backtest: no window's weights feed the next's current weights.
+
+```rust
+use cutup::{CutupError, MinVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+        [ 0.004, -0.008,  0.003],
+        [-0.006,  0.011, -0.002],
+        [ 0.001,  0.002, -0.004],
+    ];
+    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+
+    // Windows of 4 periods, 2 apart: 0..4, 2..6 and 4..8.
+    let method = MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.6));
+    for window in data.rolling(4).step(2).allocate(method)? {
+        match window.weights() {
+            Ok(weights) => println!("{:?}: {weights:.2}", window.periods()),
+            Err(error) => println!("{:?}: {error}", window.periods()),
+        }
+    }
+    Ok(())
+}
+```
+
+Each window has its own `Result`, so a window the method can't allocate doesn't stop the others. An example is `ZeroVariance`, where an asset's returns don't move over a stretch. To stop at the first window that fails instead, collect into a `Result`, as in `let weights: Result<Vec<_>, _> = windows.map(Window::into_weights).collect();`. A window under 2 periods or longer than the data, or a step of 0, is `CutupError::InvalidConfig` from `allocate`, before any window runs. For a longer example, run:
+
+```bash
+cargo run --example rolling
 ```
 
 ### Rebalancing
@@ -615,6 +664,59 @@ fn main() -> Result<(), CutupError> {
     Ok(())
 }
 ```
+
+### JSON with `serde`
+
+With the `serde` feature, these all serialize and deserialize:
+- `Weights`, `Asset` and `PerAsset`;
+- `WeightBounds` and `CovarianceConfig`;
+- every method, plus `BlackLitterman` and `View`;
+- `FrontierPoint`.
+
+`CutupError` and rolling windows serialize, but don't deserialize. The format follows the API rather than cutup's internals: **each method or config is an object whose keys are its builders**, each with its argument. A builder without one, such as `allow_short` or `semicovariance`, takes `true`.
+
+```rust,ignore
+use cutup::{MeanVariance, Returns, Weights};
+
+let method: MeanVariance = serde_json::from_str(r#"{
+    "risk_aversion": 50.0,
+    "bounds": {
+        "upper": 0.6,
+        "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.7}]
+    },
+    "covariance": {"shrinkage": 0.1}
+}"#)?;
+// The same as MeanVariance::risk_aversion(50.0)
+//     .bounds(WeightBounds::uniform(0.0, 0.6).group(["SPY", "TLT"], 0.0, 0.7))
+//     .shrinkage(0.1)
+let weights = data.allocate(&method)?;
+let json = serde_json::to_string(&weights)?; // {"SPY":…,"TLT":…,"GLD":…}
+let back: Weights = serde_json::from_str(&json)?;
+```
+
+The forms:
+
+| Type | JSON |
+| --- | --- |
+| `Asset` | its column, `2`, or its label, `"SPY"` |
+| `PerAsset` | `[0.6, 0.4]` in column order, `{"SPY": 0.6, "TLT": 0.4}` by label, or `[[0, 0.6], ["TLT", 0.4]]` pairs |
+| `Weights` | `{"SPY": 0.6, "TLT": 0.4}`, in column order |
+| `WeightBounds` | `{"lower": 0.0, "upper": 0.3, "assets": [{"asset": "GLD", "lower": 0.0, "upper": 0.1}], "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.4}]}` |
+| `CovarianceConfig` | `{"exponentially_weighted": 11.2, "shrinkage": 0.1}`, or `{"matrix": [[1e-4, 0.0], [0.0, 4e-4]]}`, `{"semicovariance": true}`, `{"ledoit_wolf": "constant_correlation"}` |
+| A method | `{"target_return": 0.001, "expected_returns": {"SPY": 0.0012, "TLT": 0.0004}, "allow_short": true}`; `{}` for `EqualWeight` or a method's defaults |
+| `View` | `{"absolute": "SPY", "q": 0.001}`, `{"relative": ["SPY", "TLT"], "q": 0.0005, "confidence": 0.5}` or `{"portfolio": [0.5, -0.5], "q": 0.0002, "variance": 1e-6}` |
+| A rolling window | `{"start": 0, "end": 60, "weights": {…}}`, or `"error"` in place of `"weights"` |
+| `CutupError` | `"no_assets"`, or `{"invalid_config": {"field": "risk_aversion", "value": -1.0}}` |
+
+**Rules:**
+- **Defaults:** a setting that's left out is the default, and a setting at its default is left out when writing.
+- **Errors:**
+  - An unknown key, such as `"uper"`.
+  - Keys that exclude each other, such as `bounds` with `allow_short`, or two objectives.
+  - A missing required key, such as mean-variance's objective.
+- **No cap is `null`:** an upper bound of `f64::INFINITY` is written as `null`, which JSON can carry. Only an explicit `null` reads back as infinity, so an asset's or a group's missing `upper` is still an error.
+- **Checks:** a given covariance matrix is checked as `CovarianceConfig::matrix` checks it. Everything else is checked when a method uses it, as for the builders.
+- **Formats:** values per asset take several forms and limits can be `null`, so this needs a self-describing format such as JSON, not one like bincode.
 
 ### Upgrading from 0.2
 
