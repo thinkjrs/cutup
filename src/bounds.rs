@@ -382,7 +382,9 @@ impl Program {
     /// each variable whose reduced cost `cⱼ − aⱼᵀy` isn't 0 is held where the optimum has it,
     /// at a bound, by every optimum. So the face holds those weights and groups' totals there,
     /// and keeps the others' bounds. A reduced cost counts as 0 within the simplex method's own
-    /// rounding of it. A group whose members are all held needs no limit of its own.
+    /// rounding of it. A group's total is never held with all of its members: its row has a
+    /// basic variable, a member, the total or the row's artificial variable, and either of the
+    /// last two leaves the total a reduced cost of 0.
     fn end(
         &self,
         mu: &DVector<f64>,
@@ -403,13 +405,9 @@ impl Program {
             face.lower[j] = weights[j];
             face.upper[j] = weights[j];
         }
-        let rows = &bounds.rows;
-        for k in 0..rows.a.ncols() {
-            let open = (0..n).any(|i| rows.a[(i, k)] != 0.0 && !held[i]);
-            if held[n + k] && open {
-                face.rows.lower[k] = x[n + k];
-                face.rows.upper[k] = x[n + k];
-            }
+        for k in (0..bounds.rows.a.ncols()).filter(|&k| held[n + k]) {
+            face.rows.lower[k] = x[n + k];
+            face.rows.upper[k] = x[n + k];
         }
         // The asset a target just inside the end moves weight into: of those at their lower
         // bound with room above them, the one whose reduced cost is least, as the greedy
@@ -1608,8 +1606,8 @@ mod tests {
         assert_eq!((top.lower[0], top.upper[0]), (0.0, 0.0));
         assert_eq!((top.lower[1], top.upper[1]), (0.0, 1.0));
         assert_eq!((top.rows.lower[0], top.rows.upper[0]), (0.5, 0.5));
-        // The bottom is all of A, whichever multipliers the end has. C is held, so the group,
-        // with no other member, keeps its limits.
+        // The bottom is all of A, whichever multipliers the end has. C is held, so the group's
+        // total isn't, and the group keeps its limits.
         let bottom = range.face(&mu, &bounds, false);
         assert_eq!(feasible_start(&bottom).unwrap(), dvector![1.0, 0.0, 0.0]);
         assert_eq!((bottom.lower[2], bottom.upper[2]), (0.0, 0.0));
