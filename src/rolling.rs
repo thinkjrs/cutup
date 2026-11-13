@@ -180,3 +180,130 @@ impl Window {
         self.weights
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MeanVariance, MinVariance};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    /// 12 periods of 3 assets' returns, varied enough for every window to have a covariance.
+    fn returns() -> Vec<[f64; 3]> {
+        (0..12)
+            .map(|t| {
+                let t = t as f64;
+                [
+                    0.01 * (0.7 * t).sin(),
+                    0.02 * (1.3 * t + 1.0).cos(),
+                    0.015 * (0.4 * t + 2.0).sin(),
+                ]
+            })
+            .collect()
+    }
+
+    fn data() -> Returns {
+        Returns::new(&returns())
+            .unwrap()
+            .labeled(["A", "B", "C"])
+            .unwrap()
+    }
+
+    #[test]
+    fn each_window_is_the_method_on_its_own_periods() {
+        // 12 periods in windows of 5, 2 apart, ending at the last: 1..6, 3..8, 5..10 and 7..12.
+        let data = data();
+        let methods: [&dyn Allocation; 2] =
+            [&MinVariance::default(), &MeanVariance::risk_aversion(10.0)];
+        for method in methods {
+            let windows: Vec<Window> = data.rolling(5).step(2).allocate(method).unwrap().collect();
+            let periods: Vec<Range<usize>> = windows.iter().map(Window::periods).collect();
+            assert_eq!(periods, [1..6, 3..8, 5..10, 7..12]);
+            for window in windows {
+                let alone = Returns::new(&returns()[window.periods()])
+                    .unwrap()
+                    .labeled(["A", "B", "C"])
+                    .unwrap();
+                assert_eq!(window.into_weights(), alone.allocate(method));
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_as_long_as_the_data_is_one_window() {
+        let data = data();
+        let method = MinVariance::default();
+        let mut windows = data.rolling(12).step(3).allocate(&method).unwrap();
+        assert_eq!(windows.len(), 1);
+        let only = windows.next().unwrap();
+        assert_eq!(only.periods(), 0..12);
+        assert_eq!(only.into_weights(), data.allocate(&method));
+        assert!(windows.next().is_none());
+    }
+
+    #[test]
+    fn the_count_and_size_are_known_up_front() {
+        // (12 − 4) / 3 + 1 = 3 windows, the first starting at 12 − 4 − 2·3 = 2.
+        let data = data();
+        let mut windows = data
+            .rolling(4)
+            .step(3)
+            .allocate(MinVariance::default())
+            .unwrap();
+        assert_eq!(windows.size_hint(), (3, Some(3)));
+        assert_eq!(windows.next().unwrap().periods(), 2..6);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            format!("{windows:?}"),
+            "RollingAllocation { window: 4, step: 3, remaining: 2, .. }"
+        );
+    }
+
+    #[test]
+    fn a_window_or_step_out_of_range_is_rejected() {
+        let data = data();
+        let method = MinVariance::default();
+        for (window, step, field, value) in [
+            (1, 1, "window", 1.0),
+            (13, 1, "window", 13.0),
+            (4, 0, "step", 0.0),
+        ] {
+            assert_eq!(
+                data.rolling(window).step(step).allocate(&method).err(),
+                Some(CutupError::InvalidConfig { field, value })
+            );
+        }
+        assert!(data.rolling(2).allocate(&method).is_ok());
+    }
+
+    #[test]
+    fn a_window_that_fails_leaves_the_others() {
+        // A's returns are constant over the first 4 periods, so the first window of 4 has no
+        // variance for it, and the later ones do.
+        let mut returns = returns();
+        for row in &mut returns[..4] {
+            row[0] = 0.001;
+        }
+        let data = Returns::new(&returns)
+            .unwrap()
+            .labeled(["A", "B", "C"])
+            .unwrap();
+        let windows: Vec<Window> = data
+            .rolling(4)
+            .allocate(&MinVariance::default())
+            .unwrap()
+            .collect();
+        assert_eq!(windows.len(), 9);
+        assert_eq!(
+            windows[0].weights(),
+            &Err(CutupError::ZeroVariance {
+                column: 0,
+                asset: "A".to_string()
+            })
+        );
+        for window in &windows[1..] {
+            let weights = window.weights().as_ref().unwrap();
+            assert_eq!(weights.labels(), ["A", "B", "C"]);
+        }
+    }
+}
