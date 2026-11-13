@@ -1684,6 +1684,24 @@ mod tests {
     }
 
     #[test]
+    fn test_the_next_asset_from_an_end_with_groups_can_be_on_a_floor_above_zero() {
+        // A at least 0.1, and C at most 0.5: the top holds C at 0.5, B at 0.4 and A at its
+        // floor, 2.4, and a target inside moves into A, the only asset at its floor.
+        let bounds = WeightBounds::per_asset(vec![0.1, 0.0, 0.0], vec![1.0; 3])
+            .group(["C"], 0.0, 0.5)
+            .resolve(&three())
+            .unwrap();
+        let mu = dvector![1.0, 2.0, 3.0];
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        assert!((range.highest - 2.4).abs() < 1e-15);
+        assert!(
+            (range.tolerances.1 - 3.4e-12).abs() < 1e-24,
+            "{}",
+            range.tolerances.1
+        );
+    }
+
+    #[test]
     fn test_a_start_inside_the_range_with_groups_reaches_the_target() {
         let bounds = WeightBounds::uniform(0.0, 0.6)
             .group(["A", "B"], 0.0, 0.7)
