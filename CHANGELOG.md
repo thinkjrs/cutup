@@ -12,8 +12,7 @@ All notable changes to this project are documented here. The format follows
   once, such as every ad channel on one platform or every signal from one source, by label
   or by column. Groups may overlap, an asset listed twice in a group counts once, and an
   upper limit of `f64::INFINITY` means no cap. `MinVariance`, every `MeanVariance`
-  objective, with or without rebalancing, and `Returns::frontier` take them. `MinCvar`
-  returns `NotSupported` with groups for now.
+  objective, with or without rebalancing, `Returns::frontier` and `MinCvar` take them.
 - `CutupError::InfeasibleGroups { group }`: `group` names a group no portfolio summing to 1
   within the bounds can meet, by its members' labels joined with `" + "`, and is `None` when
   each group can be met but not all at once, which the simplex solver finds. A group's
@@ -34,6 +33,9 @@ All notable changes to this project are documented here. The format follows
   needs no constraint of its own there, as without groups. Each end's rounding counts the
   asset at its lower bound with room whose reduced cost is least as the next a target moves
   into, the asset the fill would move into next.
+- `MinCvar`'s dual gets a multiplier for each finite group limit, as for each bound. Groups
+  that can't all be met are found first, by the simplex solver's start, since they'd leave
+  the dual unbounded rather than infeasible.
 
 ## [0.3.7] - 2026-11-11
 
