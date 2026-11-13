@@ -1184,55 +1184,64 @@ def cvar(returns: np.ndarray, weights: np.ndarray, beta: float) -> float:
 
 def min_cvar(returns: np.ndarray, params: dict) -> tuple[np.ndarray, float] | str:
     """minimize α + Σuₜ / ((1 − β)T) subject to uₜ ≥ −rₜᵀw − α, u ≥ 0, 1ᵀw = 1, the bounds,
-    and μᵀw = ρ for a target, over x = (w, α, u)."""
+    the groups, and μᵀw = ρ for a target, over x = (w, α, u). The primal, where cutup solves
+    the dual."""
     t, n = returns.shape
     beta = params.get("confidence", 0.95)
-    bounds = weight_bounds(params, n)
+    bounds = weight_bounds_or_default(params, n)
     lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
     if infeasible((lower, upper)):
         return "InfeasibleBounds"
     upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(lower, upper, groups):
+        return "InfeasibleGroups"
     mu = returns.mean(axis=0)
     a_eq, b_eq = [np.concatenate([np.ones(n), [0.0], np.zeros(t)])], [1.0]
     if "target_return" in params:
-        ends = range_ends(mu, (lower, upper))
+        ends = range_ends(mu, (lower, upper), groups)
         target = params["target_return"]
         if out_of_range(ends, target):
             return "TargetReturnOutOfRange"
         lowest, highest = ends[:2]
         a_eq.append(np.concatenate([mu, [0.0], np.zeros(t)]))
         b_eq.append(min(max(target, lowest), highest))
-    # −rₜᵀw − α − uₜ ≤ 0.
+    # −rₜᵀw − α − uₜ ≤ 0, then the groups' limits.
     a_ub = np.hstack([-returns, -np.ones((t, 1)), -np.eye(t)])
+    b_ub = np.zeros(t)
+    group_a, group_b = group_rows(groups, 1 + t)
+    if group_a is not None:
+        a_ub, b_ub = np.vstack([a_ub, group_a]), np.concatenate([b_ub, group_b])
     c = np.concatenate([np.zeros(n), [1.0], np.full(t, 1.0 / ((1.0 - beta) * t))])
     box = [(l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(None, None)] + [(0, None)] * t
     tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
-    result = linprog(c, A_ub=a_ub, b_ub=np.zeros(t), A_eq=np.array(a_eq), b_eq=b_eq, bounds=box, method="highs", options=tight)
+    result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=np.array(a_eq), b_eq=b_eq, bounds=box, method="highs", options=tight)
     weights = result.x[:n]
     value = cvar(returns, weights, beta)
     # HiGHS solves to about 1e-10 of the returns' scale, so its weights' CVaR is that close to
     # the optimum, and never below it.
     if abs(value - result.fun) > 1e-8 * np.abs(returns).max():
         raise ValueError(f"CVaR of the weights {value} differs from the program's {result.fun}")
-    cross_check_cvar(returns, beta, lower, upper, "target_return" in params, value)
+    cross_check_cvar(returns, beta, lower, upper, "target_return" in params, value, groups)
     return weights, value
 
 
-def cross_check_cvar(returns, beta, lower, upper, targeted, value) -> None:
-    """Checks the optimal CVaR against PyPortfolioOpt's EfficientCVaR and riskfolio-lib, both
-    on cvxpy, to 1e-6 of it. Targets are skipped: both ask for a return of at least the
-    target, not exactly it."""
+def cross_check_cvar(returns, beta, lower, upper, targeted, value, groups=None) -> None:
+    """Checks the optimal CVaR against PyPortfolioOpt's EfficientCVaR, with the groups, and
+    without them riskfolio-lib, both on cvxpy, to 1e-6 of it. Targets are skipped: both ask
+    for a return of at least the target, not exactly it."""
     if targeted:
         return
     n = returns.shape[1]
     bounds = [(l, None if np.isinf(u) else u) for l, u in zip(lower, upper)]
     tight = {"tol_gap_abs": 1e-12, "tol_gap_rel": 1e-12, "tol_feas": 1e-12, "max_iter": 500}
     frontier = EfficientCVaR(np.zeros(n), pd.DataFrame(returns), beta=beta, weight_bounds=bounds, solver="CLARABEL", solver_options=tight)
+    add_groups(frontier, groups)
     frontier.min_cvar()
     theirs = cvar(returns, np.asarray(frontier.weights, dtype=float), beta)
     if abs(theirs - value) > 1e-6 * max(abs(value), 1e-3):
         raise ValueError(f"PyPortfolioOpt's CVaR {theirs} differs from {value}")
-    if np.all(lower == 0) and np.all(np.isinf(upper) | (upper >= 1)):
+    if groups is None and np.all(lower == 0) and np.all(np.isinf(upper) | (upper >= 1)):
         portfolio = riskfolio.Portfolio(returns=pd.DataFrame(returns))
         portfolio.assets_stats(method_mu="hist", method_cov="hist")
         portfolio.alpha = 1.0 - beta
@@ -1728,6 +1737,24 @@ def cases(datasets: dict) -> list[dict]:
         ("two_blocks5", {"confidence": 0.8, "target_return": 0.002, "bounds": [0.0, 0.5]}),
         ("prices10x60", {"target_return": 0.05}),
         ("prices10x60", {"bounds": [0.0, 0.05]}),
+    ]:
+        out.append({"dataset": name, "method": "min_cvar", "params": params, "tolerance": solver})
+
+    # Min CVaR with groups, each holding a group at its floor or cap: alone, overlapping, on
+    # bounds, and with targets, one past the top the groups leave though not the bounds'.
+    # Then groups that can't all be met.
+    blocks_bounds = {"lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0], "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]}
+    for name, params in [
+        ("prices10x60", {"groups": [[[4, 5, 6], 0.0, 0.5]]}),
+        ("prices10x60", {"confidence": 0.9, "groups": [[[0, 2, 3], 0.2, 1.0]]}),
+        ("prices10x60", {"confidence": 0.8, "groups": [[[5, 6], 0.0, 0.4], [[4, 5], 0.0, 0.35]]}),
+        ("prices10x60", {"confidence": 0.9, "bounds": [0.0, 0.3], "groups": [[[1, 8], 0.35, 1.0]]}),
+        ("prices10x60", {"confidence": 0.9, "target_return": 0.0006, "groups": [[[4, 5, 6], 0.0, 0.3]]}),
+        ("prices10x60", {"confidence": 0.9, "target_return": 0.004, "groups": [[[5, 8], 0.0, 0.5]]}),
+        ("prices10x60", {"confidence": 0.9, "target_return": 0.0045, "groups": [[[5, 8], 0.0, 0.5]]}),
+        ("two_blocks5", {"groups": [[[1, 4], 0.0, 0.6]]}),
+        ("two_blocks5", {"confidence": 0.8, **blocks_bounds, "target_return": -0.0004, "groups": [[[1, 3], 0.0, 0.35]]}),
+        ("prices10x60", {"groups": [[[0, 1], 0.6, 1.0], [[2, 3], 0.6, 1.0]]}),
     ]:
         out.append({"dataset": name, "method": "min_cvar", "params": params, "tolerance": solver})
 
