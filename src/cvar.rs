@@ -56,8 +56,8 @@ use nalgebra::{DMatrix, DVector};
 /// * [`CutupError::InfeasibleBounds`] if the bounds can't sum to 1.
 /// * [`CutupError::InfeasibleGroups`] if no portfolio within the bounds meets every
 ///   [group](WeightBounds::group).
-/// * [`CutupError::TargetReturnOutOfRange`] if no portfolio within the bounds has the target
-///   return, by the sample mean of the returns.
+/// * [`CutupError::TargetReturnOutOfRange`] if no portfolio within the bounds and groups has
+///   the target return, by the sample mean of the returns.
 /// * [`CutupError::NotConverged`] if the linear program stops early, which only extreme inputs
 ///   should cause.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,8 +117,8 @@ impl Allocation for MinCvar {
         let cap = tail_weight(self.confidence, t)?;
         let bounds = self.bounds.resolve(data.labels())?;
         // Groups that can't all be met leave the dual unbounded rather than infeasible, so
-        // they're found first, from the portfolios themselves. Without groups, this can't fail.
-        feasible_start(&bounds)?;
+        // they're found first, from the portfolios themselves: by the range's ends with a
+        // target, otherwise by the simplex solver's start. Without groups, neither can fail.
         let target = match self.target_return {
             Some(target) if !target.is_finite() => {
                 return Err(CutupError::InvalidConfig {
@@ -130,7 +130,10 @@ impl Allocation for MinCvar {
                 let mu = returns.row_mean().transpose();
                 Some((ReturnRange::new(&mu, &bounds)?.reachable(target)?, mu))
             }
-            None => None,
+            None => {
+                feasible_start(&bounds)?;
+                None
+            }
         };
 
         // Variables: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ for each finite
@@ -145,8 +148,8 @@ impl Allocation for MinCvar {
             .flat_map(|k| [(k, -1.0, -rows.lower[k]), (k, 1.0, rows.upper[k])])
             .filter(|&(_, _, cost)| cost.is_finite())
             .collect();
+        // The γ come last, counted back from the end.
         let columns = ceilings + n + limits.len();
-        // The γ come last.
         let groups = columns - limits.len();
         let mut a = DMatrix::zeros(n + 1, columns);
         for i in 0..n {
@@ -496,6 +499,33 @@ mod tests {
             .group([1], 0.6, 1.0);
         assert_eq!(
             allocator().allocate(&MinCvar::default().bounds(grouped)),
+            Err(CutupError::InfeasibleGroups { group: None })
+        );
+    }
+
+    #[test]
+    fn a_target_that_isnt_finite_is_found_before_the_groups() {
+        let grouped = WeightBounds::default()
+            .group([0], 0.6, 1.0)
+            .group([1], 0.6, 1.0);
+        let method = MinCvar::default().target_return(f64::INFINITY);
+        assert_eq!(
+            allocator().allocate(&method.bounds(grouped)),
+            Err(CutupError::InvalidConfig {
+                field: "target_return",
+                value: f64::INFINITY,
+            })
+        );
+    }
+
+    #[test]
+    fn groups_that_cant_all_be_met_are_found_with_a_target() {
+        let grouped = WeightBounds::default()
+            .group([0], 0.6, 1.0)
+            .group([1], 0.6, 1.0);
+        let method = MinCvar::default().target_return(0.001);
+        assert_eq!(
+            allocator().allocate(&method.bounds(grouped)),
             Err(CutupError::InfeasibleGroups { group: None })
         );
     }
