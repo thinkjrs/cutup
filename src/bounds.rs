@@ -317,11 +317,8 @@ pub(crate) fn feasible_start(bounds: &qp::Bounds) -> Result<DVector<f64>, CutupE
         return Ok(interior_start(bounds));
     }
     let infeasible = CutupError::InfeasibleGroups { group: None };
-    let program = Program::new(bounds, None);
-    let w = match program.solve(&DVector::zeros(n + r))? {
-        lp::Outcome::Optimal(solution) => solution.x.rows(0, n).into_owned(),
-        // With no objective, nothing is unbounded.
-        _ => return Err(infeasible),
+    let Some(w) = Program::new(bounds, None).vertex(n)? else {
+        return Err(infeasible);
     };
     // The simplex method accepts rows missed by up to 1e-9 of their terms, far more than the
     // rounding of a sum of weights, which the bounds and each group are held to. The solver
@@ -372,6 +369,15 @@ impl Program {
 
     fn solve(&self, cost: &DVector<f64>) -> Result<lp::Outcome, CutupError> {
         lp::solve(cost, &self.a, &self.b, &self.lower, &self.upper)
+    }
+
+    /// The `n` weights of a vertex of this program, from the simplex method with no objective,
+    /// or `None` if it has none. With no objective, nothing is unbounded.
+    fn vertex(&self, n: usize) -> Result<Option<DVector<f64>>, CutupError> {
+        Ok(match self.solve(&DVector::zeros(self.a.ncols()))? {
+            lp::Outcome::Optimal(solution) => Some(solution.x.rows(0, n).into_owned()),
+            _ => None,
+        })
     }
 
     /// The lowest expected return `μᵀw` within resolved `bounds`, from this program without a
@@ -694,13 +700,10 @@ impl ReturnRange {
             ..
         } = &self.ends
         else {
-            let program = Program::new(bounds, Some((mu, target)));
-            let columns = program.a.ncols();
-            return match program.solve(&DVector::zeros(columns))? {
-                lp::Outcome::Optimal(solution) => Ok(solution.x.rows(0, mu.len()).into_owned()),
-                // The target is inside the range, so some portfolio reaches it.
-                _ => Err(CutupError::NotConverged),
-            };
+            // The target is inside the range, so some portfolio reaches it.
+            return Program::new(bounds, Some((mu, target)))
+                .vertex(mu.len())?
+                .ok_or(CutupError::NotConverged);
         };
         // Divided by the largest in magnitude, so that no sum below can overflow. The target
         // is strictly inside the range, so some expected return isn't 0.
