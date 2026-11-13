@@ -80,7 +80,7 @@ Add `cutup` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cutup = "0.3.8"
+cutup = "0.3.9"
 ```
 
 cutup 0.3 needs Rust 1.85 or newer. cutup 0.2 needs 1.78.
@@ -89,14 +89,14 @@ To pass nalgebra matrices in and get `DVector` weights out, turn on the `nalgebr
 
 ```toml
 [dependencies]
-cutup = { version = "0.3.8", features = ["nalgebra"] }
+cutup = { version = "0.3.9", features = ["nalgebra"] }
 ```
 
 To read methods from JSON and write weights to it, turn on the `serde` feature: see [JSON with `serde`](#json-with-serde).
 
 ```toml
 [dependencies]
-cutup = { version = "0.3.8", features = ["serde"] }
+cutup = { version = "0.3.9", features = ["serde"] }
 ```
 
 ## Usage
