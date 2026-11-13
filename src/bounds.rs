@@ -430,7 +430,6 @@ impl Program {
         Ok(End {
             value: mu.dot(&weights),
             rounding: (mu.component_mul(&weights).abs() * 1e-12).sum() + next * 1e-12,
-            weights,
             face,
         })
     }
@@ -455,12 +454,10 @@ fn reduced_costs(
 }
 
 /// An end of the range of expected returns within the bounds, from [`Program::end`]: its
-/// expected return, the rounding of that, a portfolio that reaches it, and the bounds of
-/// every one that does.
+/// expected return, the rounding of that, and the bounds of every portfolio that reaches it.
 struct End {
     value: f64,
     rounding: f64,
-    weights: DVector<f64>,
     face: qp::Bounds,
 }
 
@@ -503,8 +500,6 @@ pub(crate) struct TargetProblem {
 pub(crate) struct ReturnRange {
     lowest: f64,
     highest: f64,
-    lowest_weights: DVector<f64>,
-    highest_weights: DVector<f64>,
     /// How far from the lowest and the highest a target is within rounding of them.
     tolerances: (f64, f64),
     ends: Ends,
@@ -514,6 +509,8 @@ pub(crate) struct ReturnRange {
 enum Ends {
     /// Filled in order of expected return.
     Filled {
+        /// The portfolios with the lowest and the highest expected return.
+        weights: Box<(DVector<f64>, DVector<f64>)>,
         /// The expected return of the last asset raised above its lower bound, for the lowest
         /// and the highest, or `None` if the lower bounds already sum to 1.
         margins: (Option<f64>, Option<f64>),
@@ -538,8 +535,6 @@ impl ReturnRange {
         Ok(ReturnRange {
             lowest: low.value,
             highest: high.value,
-            lowest_weights: low.weights,
-            highest_weights: high.weights,
             tolerances: (low.rounding, high.rounding),
             ends: Ends::Faces(Box::new((low.face, high.face))),
         })
@@ -589,9 +584,8 @@ impl ReturnRange {
                 rounding(&lowest_weights, &ascending, low_margin),
                 rounding(&highest_weights, &descending, high_margin),
             ),
-            lowest_weights,
-            highest_weights,
             ends: Ends::Filled {
+                weights: Box::new((lowest_weights, highest_weights)),
                 margins: (low_margin, high_margin),
                 descending,
             },
@@ -684,7 +678,12 @@ impl ReturnRange {
         bounds: &qp::Bounds,
         target: f64,
     ) -> Result<DVector<f64>, CutupError> {
-        let Ends::Filled { descending, .. } = &self.ends else {
+        let Ends::Filled {
+            descending,
+            weights,
+            ..
+        } = &self.ends
+        else {
             let program = Program::new(bounds, Some((mu, target)));
             let columns = program.a.ncols();
             return match program.solve(&DVector::zeros(columns))? {
@@ -739,7 +738,7 @@ impl ReturnRange {
             }
             high = low;
         }
-        Ok(self.lowest_weights.clone())
+        Ok(weights.0.clone())
     }
 
     /// The bounds of the portfolios with the highest expected return, or the lowest. Without
@@ -748,8 +747,10 @@ impl ReturnRange {
     /// assets tied with the margin keep their bounds. With groups, the face the simplex method
     /// found.
     fn face(&self, mu: &DVector<f64>, bounds: &qp::Bounds, highest: bool) -> qp::Bounds {
-        let margins = match &self.ends {
-            Ends::Filled { margins, .. } => margins,
+        let (weights, margins) = match &self.ends {
+            Ends::Filled {
+                weights, margins, ..
+            } => (weights, margins),
             Ends::Faces(faces) => {
                 return if highest {
                     faces.1.clone()
@@ -759,9 +760,9 @@ impl ReturnRange {
             }
         };
         let (weights, margin) = if highest {
-            (&self.highest_weights, margins.1)
+            (&weights.1, margins.1)
         } else {
-            (&self.lowest_weights, margins.0)
+            (&weights.0, margins.0)
         };
         let mut face = bounds.clone();
         for i in (0..mu.len()).filter(|&i| margin != Some(mu[i])) {
