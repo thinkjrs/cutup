@@ -8,8 +8,9 @@ use crate::{
     MinCvar, MinVariance, PerAsset, RiskParity, ShrinkageTarget, View, WeightBounds, Weights,
     Window,
 };
-use std::collections::BTreeSet;
 use ts_rs::{Config, TS};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 fn decl<T: TS + ?Sized>() -> String {
     T::decl(&Config::new())
@@ -138,43 +139,102 @@ fn results_and_errors_are_their_json() {
     assert!(error.contains("row: number,"), "{error}");
 }
 
-#[test]
-fn exporting_writes_every_type_a_method_needs() {
-    let dir = std::env::temp_dir().join(format!("cutup-ts-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let cfg = Config::new().with_out_dir(&dir);
-    MeanVariance::export_all(&cfg).unwrap();
-    BlackLitterman::export_all(&cfg).unwrap();
-    Window::export_all(&cfg).unwrap();
-    let files: BTreeSet<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    for name in [
-        "MeanVariance.ts",
-        "WeightBounds.ts",
-        "BoundsSide.ts",
-        "AssetBounds.ts",
-        "GroupLimits.ts",
-        "PerAsset.ts",
-        "CovarianceConfig.ts",
-        "ShrinkageTarget.ts",
-        "BlackLitterman.ts",
-        "View.ts",
-        "Asset.ts",
-        "Window.ts",
-        "Weights.ts",
-        "CutupError.ts",
-    ] {
-        assert!(files.contains(name), "{name} in {files:?}");
-    }
-    // Every import names a file that was written.
-    for file in &files {
-        let text = std::fs::read_to_string(dir.join(file)).unwrap();
-        for line in text.lines().filter(|l| l.starts_with("import type")) {
-            let target = line.rsplit('"').nth(1).unwrap().trim_start_matches("./");
-            assert!(files.contains(&format!("{target}.ts")), "{file}: {line}");
+// Natively only: exporting writes files, which wasm32-unknown-unknown can't.
+#[cfg(not(target_arch = "wasm32"))]
+mod export {
+    use crate::{
+        BlackLitterman, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility,
+        MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance, RiskParity, Window,
+    };
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use ts_rs::{Config, TS};
+
+    /// A directory that's removed when dropped, so a failed assertion doesn't leave it behind.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn read(&self, file: &str) -> String {
+            std::fs::read_to_string(self.0.join(file)).unwrap()
         }
     }
-    std::fs::remove_dir_all(&dir).unwrap();
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn exporting_writes_every_type_a_method_needs() {
+        let dir = TempDir(std::env::temp_dir().join(format!("cutup-ts-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir.0);
+        let cfg = Config::new().with_out_dir(&dir.0);
+        MeanVariance::export_all(&cfg).unwrap();
+        MinVariance::export_all(&cfg).unwrap();
+        MaxSharpe::export_all(&cfg).unwrap();
+        MaxDiversification::export_all(&cfg).unwrap();
+        RiskParity::export_all(&cfg).unwrap();
+        Hrp::export_all(&cfg).unwrap();
+        Herc::export_all(&cfg).unwrap();
+        MinCvar::export_all(&cfg).unwrap();
+        EqualWeight::export_all(&cfg).unwrap();
+        InverseVolatility::export_all(&cfg).unwrap();
+        InverseVariance::export_all(&cfg).unwrap();
+        BlackLitterman::export_all(&cfg).unwrap();
+        Window::export_all(&cfg).unwrap();
+        let files: BTreeSet<String> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        for name in [
+            "MeanVariance.ts",
+            "WeightBounds.ts",
+            "BoundsSide.ts",
+            "AssetBounds.ts",
+            "GroupLimits.ts",
+            "PerAsset.ts",
+            "CovarianceConfig.ts",
+            "ShrinkageTarget.ts",
+            "Linkage.ts",
+            "BlackLitterman.ts",
+            "View.ts",
+            "Asset.ts",
+            "Window.ts",
+            "Weights.ts",
+            "CutupError.ts",
+        ] {
+            assert!(files.contains(name), "{name} in {files:?}");
+        }
+        // A limit is spelled out where it's used, not exported as a type of its own.
+        assert!(!files.contains("Limit.ts"), "{files:?}");
+        // A side of the bounds, or an asset's or a group's cap, may be null, for no cap. An
+        // asset's or a group's floor may not.
+        for (file, decl) in [
+            (
+                "BoundsSide.ts",
+                "export type BoundsSide = number | null | PerAsset;",
+            ),
+            (
+                "AssetBounds.ts",
+                "export type AssetBounds = { asset: Asset, lower: number, upper: number | null, };",
+            ),
+            (
+                "GroupLimits.ts",
+                "export type GroupLimits = { members: Array<Asset>, lower: number, \
+                 upper: number | null, };",
+            ),
+        ] {
+            let text = dir.read(file);
+            assert!(text.contains(decl), "{file}: {text}");
+        }
+        // Every import names a file that was written.
+        for file in &files {
+            let text = dir.read(file);
+            for line in text.lines().filter(|l| l.starts_with("import type")) {
+                let target = line.rsplit('"').nth(1).unwrap().trim_start_matches("./");
+                assert!(files.contains(&format!("{target}.ts")), "{file}: {line}");
+            }
+        }
+    }
 }
