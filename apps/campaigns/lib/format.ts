@@ -1,17 +1,10 @@
 // Numbers and names as the page shows them.
 
 import type { Metric } from "./bindings/Metric";
-import { DEFAULT_PLATFORMS } from "./request";
-
-const METRIC_LABELS: Record<Metric, string> = {
-  impressions: "Impressions",
-  clicks: "Clicks",
-  link_clicks: "Link clicks",
-  views: "Views",
-};
+import { DEFAULT_PLATFORMS, METRICS } from "./request";
 
 export function metricLabel(metric: Metric): string {
-  return METRIC_LABELS[metric];
+  return METRICS.find((m) => m.metric === metric)?.label ?? metric;
 }
 
 /** A share, such as a weight: 0.4567 is 45.7%. A solver's -1e-17 is 0.0%, not -0.0%. */

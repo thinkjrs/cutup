@@ -2,6 +2,7 @@
 // the server when the page builds; the engines read the same CSV for themselves.
 
 import type { Metric } from "./bindings/Metric";
+import { METRICS } from "./request";
 
 /** Each platform's yield of each metric, per unit of spend, by week, from Monday. A week a
  * platform didn't spend in is null. */
@@ -10,8 +11,6 @@ export type WeeklyYields = {
   platforms: string[];
   yields: Record<Metric, Record<string, (number | null)[]>>;
 };
-
-const METRICS: Metric[] = ["impressions", "clicks", "link_clicks", "views"];
 
 /** The Monday on or before an ISO date, as an ISO date. */
 export function weekOf(date: string): string {
@@ -23,7 +22,7 @@ export function weekOf(date: string): string {
 
 /** Weekly yields from the sample's CSV, `date,platform,spend,impressions,clicks,link_clicks,
  * views`: each week's total of a metric over its total spend, so a big day weighs more than a
- * small one. */
+ * small one. The metrics' columns follow spend in the order of `METRICS`. */
 export function weeklyYields(csv: string): WeeklyYields {
   const totals = new Map<string, Map<string, number[]>>();
   const platforms = new Set<string>();
@@ -41,7 +40,7 @@ export function weeklyYields(csv: string): WeeklyYields {
   const weeks = [...totals.keys()].sort();
   const names = [...platforms].sort();
   const yields = Object.fromEntries(
-    METRICS.map((metric, m) => [
+    METRICS.map(({ metric }, m) => [
       metric,
       Object.fromEntries(
         names.map((platform) => [
