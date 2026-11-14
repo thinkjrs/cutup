@@ -499,6 +499,8 @@ fn stats(stats: &cutup::PortfolioStats) -> Result<Stats, CutupError> {
     })
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bindings;
 #[cfg(test)]
 mod parity;
 #[cfg(test)]
