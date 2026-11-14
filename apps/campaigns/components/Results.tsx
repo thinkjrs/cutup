@@ -33,7 +33,8 @@ function download(name: string, type: string, text: string) {
   link.href = url;
   link.download = name;
   link.click();
-  URL.revokeObjectURL(url);
+  // Revoked once the download has read it: some browsers cancel it if it's revoked at once.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function Results({ result, all }: { result: Result; all: string[] }) {
