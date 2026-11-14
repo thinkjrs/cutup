@@ -25,7 +25,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "BoundsSide"))]
 #[serde(untagged)]
 enum Side {
-    Uniform(Value),
+    Uniform(#[cfg_attr(feature = "ts-rs", ts(inline))] Value),
     PerAsset(PerAsset),
 }
 
@@ -35,6 +35,7 @@ enum Side {
 struct AssetBounds {
     asset: Asset,
     lower: f64,
+    #[cfg_attr(feature = "ts-rs", ts(inline))]
     upper: Value,
 }
 
@@ -44,6 +45,7 @@ struct AssetBounds {
 struct GroupLimits {
     members: Vec<Asset>,
     lower: f64,
+    #[cfg_attr(feature = "ts-rs", ts(inline))]
     upper: Value,
 }
 
