@@ -474,4 +474,6 @@ fn stats(stats: &cutup::PortfolioStats) -> Result<Stats, CutupError> {
 }
 
 #[cfg(test)]
+mod parity;
+#[cfg(test)]
 mod tests;

@@ -1,0 +1,55 @@
+{
+  "equal_weight_reddit_since_january": {
+    "platforms": ["Meta", "Reddit"],
+    "from": "2026-01-01",
+    "metrics": ["clicks"],
+    "method": {"name": "equal_weight"}
+  },
+  "herc": {
+    "method": {"name": "herc"}
+  },
+  "hrp_ward": {
+    "method": {"name": "hrp", "linkage": "ward"}
+  },
+  "inverse_volatility": {
+    "method": {"name": "inverse_volatility"}
+  },
+  "max_diversification": {
+    "method": {"name": "max_diversification", "covariance": {"shrinkage": 0.1}}
+  },
+  "max_sharpe_views": {
+    "metrics": ["views"],
+    "method": {"name": "max_sharpe"}
+  },
+  "mean_variance_grouped_frontier": {
+    "metrics": ["clicks", "link_clicks"],
+    "method": {
+      "name": "mean_variance",
+      "risk_aversion": 5.0,
+      "bounds": {
+        "upper": 0.7,
+        "groups": [{"members": ["Meta", "Google"], "lower": 0.0, "upper": 0.8}]
+      }
+    },
+    "frontier": 5
+  },
+  "min_cvar_rolling": {
+    "metrics": ["clicks"],
+    "method": {"name": "min_cvar", "confidence": 0.9},
+    "rolling": {"window": 90, "step": 45}
+  },
+  "min_variance": {
+    "method": {"name": "min_variance"}
+  },
+  "risk_parity": {
+    "method": {"name": "risk_parity"}
+  },
+  "error_not_json": "{\"method\": ",
+  "error_unknown_key": {
+    "method": {"name": "min_variance", "uper": 0.6}
+  },
+  "error_unknown_platform": {
+    "platforms": ["Meta", "Myspace"],
+    "method": {"name": "min_variance"}
+  }
+}
