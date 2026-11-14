@@ -2,7 +2,7 @@
 //! methods.
 //!
 //! ```bash
-//! cargo run --manifest-path apps/campaigns/Cargo.toml --example sample
+//! cargo run --manifest-path apps/campaigns/Cargo.toml -p campaign-engine --example sample
 //! ```
 
 use campaign_engine::{Request, allocate};
