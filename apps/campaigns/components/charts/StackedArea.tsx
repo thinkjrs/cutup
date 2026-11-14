@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { percent } from "@/lib/format";
 import { linear, nearest } from "@/lib/scale";
-import { TooltipRows, useWidth } from "./parts";
+import { hasShorts, TooltipRows, useWidth } from "./parts";
 
 const MARGIN = { top: 6, right: 12, bottom: 24, left: 40 };
 
@@ -31,6 +31,13 @@ export function StackedArea({
   const [hover, setHover] = useState<{ px: number; py: number } | null>(null);
   const plotWidth = Math.max(0, width - MARGIN.left - MARGIN.right);
   const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  if (values.some((value) => value && hasShorts(value))) {
+    return (
+      <div ref={ref} className="text-xs text-ink-2">
+        Short positions don&apos;t stack to a whole: see the table.
+      </div>
+    );
+  }
   if (width === 0 || values.length === 0)
     return <div ref={ref} style={{ height }} />;
 

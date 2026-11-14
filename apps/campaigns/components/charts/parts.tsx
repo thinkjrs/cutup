@@ -24,6 +24,12 @@ export function useWidth<T extends HTMLElement>(): [
   return [ref, width];
 }
 
+/** Whether any share is short, beyond a solver's rounding below zero. Shares of a whole can't
+ * show one, so a chart of them points to its table instead. */
+export function hasShorts(shares: number[]): boolean {
+  return shares.some((share) => share < -1e-9);
+}
+
 /** A chart with its title, legend, and a switch to a table of the same values. */
 export function ChartCard({
   title,

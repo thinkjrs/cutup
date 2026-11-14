@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { percent } from "@/lib/format";
-import { TooltipRows, useWidth } from "./parts";
+import { hasShorts, TooltipRows, useWidth } from "./parts";
 
 export type Bar = { label: string; parts: number[] | null; error?: string };
 
@@ -38,7 +38,11 @@ export function SegmentedBars({
           className="grid grid-cols-[7rem_1fr] items-center gap-3"
         >
           <div className="text-xs text-ink-2">{bar.label}</div>
-          {bar.parts ? (
+          {bar.parts && hasShorts(bar.parts) ? (
+            <div className="text-xs text-ink-2">
+              Short positions don&apos;t fit a bar of shares: see the table.
+            </div>
+          ) : bar.parts ? (
             <div
               className="flex h-7 gap-0.5"
               role="img"
@@ -100,7 +104,7 @@ export function SegmentedBars({
               {bar.error ?? "No allocation"}
             </div>
           )}
-          {hover?.bar === b && bar.parts ? (
+          {hover?.bar === b && bar.parts && !hasShorts(bar.parts) ? (
             <div
               className="absolute z-10"
               style={{
