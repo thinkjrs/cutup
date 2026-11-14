@@ -136,14 +136,16 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - name: Cache cargo dependencies
+      # .tools holds the wasm-bindgen CLI and binaryen that scripts/build-wasm.sh fetches.
+      - name: Cache cargo dependencies and the wasm tools
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             apps/campaigns/target
-          key: campaigns-app-${{ runner.os }}-${{ hashFiles('apps/campaigns/Cargo.lock') }}
+            apps/campaigns/.tools
+          key: campaigns-app-${{ runner.os }}-${{ hashFiles('apps/campaigns/Cargo.lock', 'apps/campaigns/scripts/build-wasm.sh') }}
           restore-keys: |
             campaigns-app-${{ runner.os }}-
 
