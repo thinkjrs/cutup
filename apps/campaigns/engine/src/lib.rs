@@ -1,6 +1,7 @@
 //! The campaign allocation app's engine: everything the native handler and the wasm wrapper
-//! share, so they can't diverge. Its one entry point is [`allocate`]: a [`Request`] in, a
-//! [`Response`] out, both JSON through serde, with TypeScript types through ts-rs.
+//! share, so they can't diverge. Both send [`respond`]'s reply: a JSON [`Request`] in, and a
+//! [`Response`] or an error out with its HTTP status. [`allocate`] does the work. The types are
+//! JSON through serde, with TypeScript types through ts-rs.
 //!
 //! Each ad platform is an asset, and the weights are shares of the budget. For each metric,
 //! each platform's return on a day is what a unit of spend bought there: impressions, clicks,
@@ -21,6 +22,7 @@ use cutup::{
     RiskParity, Weights, Window,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use ts_rs::TS;
 
 /// The platforms a request allocates across when it names none: the three with spend on every
@@ -271,8 +273,9 @@ impl std::error::Error for EngineError {}
 /// a [`Response`] or `{"error": EngineError}`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reply {
-    /// 200 for a response, 400 for a request that isn't JSON for a [`Request`], and 422 for one
-    /// that is but can't be allocated.
+    /// 200 for a response, 400 for a request that isn't JSON for a [`Request`] or a body that
+    /// isn't UTF-8, 405 for the wrong HTTP method, and 422 for a request that can't be
+    /// allocated.
     pub status: u16,
     pub body: String,
 }
@@ -286,25 +289,16 @@ pub struct ErrorBody {
 /// The JSON reply to a JSON request, over the bundled sample: what both backends send, so
 /// they can't diverge.
 pub fn respond(request: &str) -> Reply {
-    let result = serde_json::from_str::<Request>(request)
-        .map_err(|e| EngineError::Request {
-            message: e.to_string(),
-        })
-        .and_then(|request| allocate(&request));
-    let (status, body) = match result {
-        Ok(response) => (200, serde_json::to_string(&response)),
-        Err(error) => {
-            let status = if matches!(error, EngineError::Request { .. }) {
-                400
-            } else {
-                422
-            };
-            (status, serde_json::to_string(&ErrorBody { error }))
-        }
+    let request = match serde_json::from_str::<Request>(request) {
+        Ok(request) => request,
+        Err(e) => return reject(400, &e.to_string()),
     };
-    Reply {
-        status,
-        body: body.expect("responses and errors serialize"),
+    match allocate(&request) {
+        Ok(response) => Reply {
+            status: 200,
+            body: serde_json::to_string(&response).expect("responses serialize"),
+        },
+        Err(error) => error_reply(422, error),
     }
 }
 
@@ -315,15 +309,26 @@ pub fn reject(status: u16, message: &str) -> Reply {
     let error = EngineError::Request {
         message: message.to_owned(),
     };
+    error_reply(status, error)
+}
+
+/// `status`, with `{"error": error}`.
+fn error_reply(status: u16, error: EngineError) -> Reply {
     Reply {
         status,
         body: serde_json::to_string(&ErrorBody { error }).expect("errors serialize"),
     }
 }
 
-/// The bundled sample's platforms, as JSON: a [`PlatformSummary`] for each, by name.
+/// The bundled sample's platforms, as JSON: a [`PlatformSummary`] for each, by name. Built
+/// once, since the sample doesn't change.
 pub fn platforms() -> String {
-    serde_json::to_string(&Sample::bundled().platforms()).expect("summaries serialize")
+    static PLATFORMS: OnceLock<String> = OnceLock::new();
+    PLATFORMS
+        .get_or_init(|| {
+            serde_json::to_string(&Sample::bundled().platforms()).expect("summaries serialize")
+        })
+        .clone()
 }
 
 /// Allocates `request` over the bundled sample.
@@ -365,16 +370,6 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
     if days.len() < 2 {
         return Err(EngineError::TooFewDays { days: days.len() });
     }
-    // Windows that fit are counted up front, so too many are refused before any is solved.
-    // Windows that don't fit are cutup's error, from the first metric.
-    if let Some(RollingRequest { window, step }) = request.rolling {
-        if step > 0 && (2..=days.len()).contains(&window) {
-            let windows = (days.len() - window) / step + 1;
-            if windows > MAX_ROLLING_WINDOWS {
-                return Err(EngineError::RollingWindows { windows });
-            }
-        }
-    }
     let method = request.method.allocation();
     let mut results = Vec::with_capacity(request.metrics.len());
     for &metric in &request.metrics {
@@ -403,7 +398,8 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
 }
 
 /// Fills in `result` from one metric's returns. The rolling windows are checked first, since
-/// they're lazy, so a request whose windows don't fit fails before anything is solved.
+/// they're lazy, so a request whose windows don't fit, or are more than
+/// [`MAX_ROLLING_WINDOWS`], fails before anything is solved.
 fn allocate_metric(
     result: &mut MetricResult,
     data: &Returns,
@@ -412,12 +408,19 @@ fn allocate_metric(
     mean_variance: Option<&MeanVariance>,
 ) -> Result<(), EngineError> {
     let rolling = match request.rolling {
-        Some(rolling) => Some(
-            data.rolling(rolling.window)
+        Some(rolling) => {
+            let windows = data
+                .rolling(rolling.window)
                 .step(rolling.step)
                 .allocate(method)
-                .map_err(|error| EngineError::Rolling { error })?,
-        ),
+                .map_err(|error| EngineError::Rolling { error })?;
+            if windows.len() > MAX_ROLLING_WINDOWS {
+                return Err(EngineError::RollingWindows {
+                    windows: windows.len(),
+                });
+            }
+            Some(windows)
+        }
         None => None,
     };
     match data.allocate(method) {
