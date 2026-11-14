@@ -89,7 +89,7 @@ impl<'a> Rolling<'a> {
         self,
         method: A,
     ) -> Result<RollingAllocation<'a, A>, CutupError> {
-        let periods = self.data.returns.nrows();
+        let periods = self.data.period_count();
         if self.window < 2 || self.window > periods {
             return Err(CutupError::InvalidConfig {
                 field: "window",
