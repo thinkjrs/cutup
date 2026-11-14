@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An optional `ts-rs` feature: TypeScript types, with ts-rs 12, for the JSON the `serde`
+  feature reads and writes, which it turns on too. Every type that serializes implements
+  `TS`, each generated from the private shape its JSON is written from rather than its fields,
+  so a method is an object of its builders' settings. A key that's left out is optional, a
+  value JSON writes as `null`, such as no cap or an infinite end of a range in an error, is
+  `number | null`, and the methods with no settings are `Record<string, never>`. Golden tests
+  pin each type, and an export test checks every import resolves.
+- `Returns::period_count()`: the number of periods, rows of returns, so a rolling window can be
+  chosen to fit.
+
 ## [0.3.9] - 2026-11-13
 
 ### Added

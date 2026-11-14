@@ -99,6 +99,13 @@ To read methods from JSON and write weights to it, turn on the `serde` feature: 
 cutup = { version = "0.3.9", features = ["serde"] }
 ```
 
+For TypeScript types that match that JSON, turn on the `ts-rs` feature, which turns on `serde` too. Every type that serializes then implements [ts-rs](https://docs.rs/ts-rs)' `TS`. Export them, with the types they use, from a build script or a test, with `MeanVariance::export_all(&ts_rs::Config::new().with_out_dir("bindings"))`. A key that's left out is optional in TypeScript, and a value JSON writes as `null`, such as no cap, is `number | null`.
+
+```toml
+[dependencies]
+cutup = { version = "0.3.9", features = ["ts-rs"] }
+```
+
 ## Usage
 
 Pass prices to `Returns::from_prices`, one row per period and one value per asset in each row. Rows can be arrays, `Vec`s or slices. Prices are converted to simple returns, and every covariance-based method works on the covariance of those returns. If you already have returns, use `Returns::new` instead. For log returns, convert either with `data.log_returns()`: see [Log returns](#log-returns).
