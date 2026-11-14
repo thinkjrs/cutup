@@ -1,0 +1,9 @@
+# Generated: ts-rs's bindings, the wasm build, the fixtures and Next's output.
+lib/bindings
+public/wasm
+fixtures
+.next
+.tools
+target
+# Markdown keeps its own style.
+*.md
