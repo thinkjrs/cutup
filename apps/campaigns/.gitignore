@@ -1,2 +1,11 @@
 /target
-/wasm/pkg
+# The browser engine, from scripts/build-wasm.sh, and the tools it fetches
+/public/wasm
+/.tools
+# The frontend's dependencies and Next's output
+/node_modules
+/.next
+/next-env.d.ts
+*.tsbuildinfo
+# Vercel's local settings, from `vercel link` and `vercel dev`
+/.vercel
