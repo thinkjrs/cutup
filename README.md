@@ -783,6 +783,13 @@ Seven other changes in 0.3.0:
 | `Hrp` and `Herc` are `Copy` and `Eq` | They're `Clone` and `PartialEq`, since they now take `.covariance(..)`, `.shrinkage(λ)` and `.regularization(ε)`. Clone a value to reuse it. |
 | Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 
+## Sample app
+
+[`apps/campaigns`](https://github.com/thinkjrs/cutup/tree/main/apps/campaigns) is a Next.js app that splits an ad budget across six ad platforms with cutup. Each platform is an asset, and its return on a day is what a unit of spend bought there: impressions, clicks, link clicks or views.
+- **Two engines:** the same Rust runs on Vercel as native serverless functions or in the browser as WebAssembly, and a switch picks which. Each result says which engine answered and how long it took.
+- **The features it uses:** requests and replies are JSON through the `serde` feature, and the frontend's TypeScript types come from the `ts-rs` feature.
+- **Packaging:** it isn't part of the published crate.
+
 ## Testing
 
 ```bash
