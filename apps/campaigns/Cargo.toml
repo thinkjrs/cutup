@@ -1,0 +1,6 @@
+# The campaign allocation app's Rust crates: the engine both backends share, and later the
+# native handler and the wasm wrapper. Its own workspace, so the cutup crate's builds and tests
+# don't reach it, and none of it is published: cutup's `include` list leaves `apps/` out.
+[workspace]
+members = ["engine"]
+resolver = "3"
