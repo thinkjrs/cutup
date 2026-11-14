@@ -354,3 +354,6 @@ fn stats(stats: &cutup::PortfolioStats) -> Stats {
         cvar: stats.cvar(CVAR_CONFIDENCE).unwrap_or(f64::NAN),
     }
 }
+
+#[cfg(test)]
+mod tests;
