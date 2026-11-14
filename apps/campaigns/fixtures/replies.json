@@ -260,6 +260,16 @@
     },
     "status": 400
   },
+  "error_too_many_windows": {
+    "body": {
+      "error": {
+        "rolling_windows": {
+          "windows": 386
+        }
+      }
+    },
+    "status": 422
+  },
   "error_unknown_key": {
     "body": {
       "error": {

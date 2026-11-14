@@ -332,16 +332,45 @@ fn a_reply_is_a_response_or_an_error_with_its_status() {
         let body: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert!(body["error"][kind].is_object(), "{request}: {body}");
     }
-    let not_allowed = not_allowed();
-    assert_eq!(not_allowed.status, 405);
+    let rejected = reject(405, "use POST, with a JSON request");
+    assert_eq!(rejected.status, 405);
     assert_eq!(
-        not_allowed.body,
+        rejected.body,
         r#"{"error":{"request":{"message":"use POST, with a JSON request"}}}"#
     );
     let platforms: Vec<serde_json::Value> = serde_json::from_str(&platforms()).unwrap();
     assert_eq!(platforms.len(), 6);
     assert_eq!(platforms[1]["platform"], "Meta");
     assert_eq!(platforms[1]["days_with_spend"], 395);
+}
+
+#[test]
+fn too_many_rolling_windows_are_refused_before_any_is_solved() {
+    // 395 days in windows of 2, 1 apart, are 394 windows; 14 apart, (395 − 2) / 14 + 1 = 29.
+    let many = request(json!({"rolling": {"window": 2}, "method": {"name": "min_cvar"}}));
+    assert_eq!(
+        allocate(&many),
+        Err(EngineError::RollingWindows { windows: 394 })
+    );
+    let spaced = request(json!({
+        "metrics": ["clicks"],
+        "rolling": {"window": 2, "step": 14},
+        "method": {"name": "equal_weight"}
+    }));
+    let response = allocate(&spaced).unwrap();
+    assert_eq!(response.results[0].rolling.as_ref().unwrap().len(), 29);
+    // Exactly the most is allowed: 395 days in windows of 98, 3 apart, are 100.
+    let most = request(json!({
+        "metrics": ["clicks"],
+        "rolling": {"window": 98, "step": 3},
+        "method": {"name": "equal_weight"}
+    }));
+    let windows = allocate(&most).unwrap().results[0]
+        .rolling
+        .as_ref()
+        .unwrap()
+        .len();
+    assert_eq!(windows, MAX_ROLLING_WINDOWS);
 }
 
 #[test]

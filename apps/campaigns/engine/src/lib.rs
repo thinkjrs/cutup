@@ -33,6 +33,10 @@ pub const CVAR_CONFIDENCE: f64 = 0.95;
 /// The most points a frontier can ask for. Each is a solve, once per metric.
 pub const MAX_FRONTIER_POINTS: usize = 100;
 
+/// The most rolling windows a request can ask for. Each is a solve, once per metric, and the
+/// native function answers within a time limit.
+pub const MAX_ROLLING_WINDOWS: usize = 100;
+
 /// An allocation method, by `"name"`, with its settings as cutup reads them, such as
 /// `{"name": "min_variance", "bounds": {"upper": 0.6}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -221,6 +225,10 @@ pub enum EngineError {
     Rolling {
         error: CutupError,
     },
+    /// More rolling windows than [`MAX_ROLLING_WINDOWS`]: each is a solve, once per metric.
+    RollingWindows {
+        windows: usize,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -249,6 +257,10 @@ impl std::fmt::Display for EngineError {
                 "a frontier of {points} points; it needs from 2 to {MAX_FRONTIER_POINTS}"
             ),
             EngineError::Rolling { error } => write!(f, "rolling windows: {error}"),
+            EngineError::RollingWindows { windows } => write!(
+                f,
+                "{windows} rolling windows; at most {MAX_ROLLING_WINDOWS}, so take a longer step"
+            ),
         }
     }
 }
@@ -296,14 +308,15 @@ pub fn respond(request: &str) -> Reply {
     }
 }
 
-/// The reply to anything but a `POST` with a request: a 405, with an
-/// [`EngineError::Request`].
-pub fn not_allowed() -> Reply {
+/// A reply refusing a request before it's read as one, such as a 405 for the wrong HTTP method
+/// or a 400 for a body that isn't UTF-8: `status`, with an [`EngineError::Request`] saying
+/// `message`.
+pub fn reject(status: u16, message: &str) -> Reply {
     let error = EngineError::Request {
-        message: "use POST, with a JSON request".into(),
+        message: message.to_owned(),
     };
     Reply {
-        status: 405,
+        status,
         body: serde_json::to_string(&ErrorBody { error }).expect("errors serialize"),
     }
 }
@@ -351,6 +364,16 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
         .unzip();
     if days.len() < 2 {
         return Err(EngineError::TooFewDays { days: days.len() });
+    }
+    // Windows that fit are counted up front, so too many are refused before any is solved.
+    // Windows that don't fit are cutup's error, from the first metric.
+    if let Some(RollingRequest { window, step }) = request.rolling {
+        if step > 0 && (2..=days.len()).contains(&window) {
+            let windows = (days.len() - window) / step + 1;
+            if windows > MAX_ROLLING_WINDOWS {
+                return Err(EngineError::RollingWindows { windows });
+            }
+        }
     }
     let method = request.method.allocation();
     let mut results = Vec::with_capacity(request.metrics.len());

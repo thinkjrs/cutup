@@ -45,6 +45,10 @@
     "method": {"name": "risk_parity"}
   },
   "error_not_json": "{\"method\": ",
+  "error_too_many_windows": {
+    "rolling": {"window": 10},
+    "method": {"name": "equal_weight"}
+  },
   "error_unknown_key": {
     "method": {"name": "min_variance", "uper": 0.6}
   },
