@@ -1,8 +1,10 @@
 name: Campaigns
 
 # The campaign allocation app under apps/campaigns: its own workspace, which the crate's jobs
-# don't reach. Formats, lints and tests its Rust on stable and the MSRV, and builds the engine
-# for wasm, where the browser engine runs it.
+# don't reach. Formats, lints and tests its Rust: the whole workspace on stable, and on cutup's
+# MSRV the engine and the wasm wrapper, since the native functions' vercel_runtime takes Rust
+# 1.88. Then runs the engine's tests, with the parity fixtures, and the wrapper's on wasm, as
+# the browser engine runs them.
 
 on:
   pull_request:
@@ -26,7 +28,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [1.85.0, stable]
+        include:
+          - rust: stable
+            packages: --workspace
+          - rust: 1.85.0
+            packages: -p campaign-engine -p campaign-wasm
 
     steps:
       - name: Checkout repository
@@ -36,7 +42,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-          targets: wasm32-unknown-unknown
           components: clippy, rustfmt
 
       # `working-directory` applies to `run` steps only, so these paths are from the repo root.
@@ -56,10 +61,57 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked ${{ matrix.packages }} --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked ${{ matrix.packages }}
 
-      - name: Build the engine for wasm
-        run: cargo build --locked --target wasm32-unknown-unknown -p campaign-engine
+  wasm:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/campaigns/target
+          key: campaigns-wasm-${{ runner.os }}-${{ hashFiles('apps/campaigns/Cargo.lock') }}
+          restore-keys: |
+            campaigns-wasm-${{ runner.os }}-
+
+      # The test runner has to match the wasm-bindgen version in Cargo.lock exactly.
+      # An explicit bash turns on pipefail, so a stale Cargo.lock fails here.
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        shell: bash
+        run: |
+          version=$(cargo metadata --locked --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen-test-runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - name: Run clippy for wasm
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p campaign-engine -p campaign-wasm --all-targets -- -D warnings
+
+      # The engine's tests include the parity fixtures: each request's committed reply, which
+      # the native run checks too.
+      - name: Run the engine's and the wrapper's tests on wasm
+        run: cargo test --locked --target wasm32-unknown-unknown -p campaign-engine -p campaign-wasm
