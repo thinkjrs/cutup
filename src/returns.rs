@@ -319,6 +319,22 @@ impl Returns {
         &self.labels
     }
 
+    /// The number of periods: rows of returns, one fewer than the rows of prices they came
+    /// from. A [rolling window](Returns::rolling) can be at most this long.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// let prices = [[100.0, 50.0], [101.0, 49.5], [102.5, 50.5]];
+    /// assert_eq!(Returns::from_prices(&prices)?.period_count(), 2);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn period_count(&self) -> usize {
+        self.returns.nrows()
+    }
+
     /// Converts simple returns `r` to log returns, `ln(1 + r)`, keeping the labels: a new
     /// `Returns` whose covariance, means and every allocation are those of the log returns.
     /// It's PyPortfolioOpt's `returns_from_prices(prices, log_returns=True)`, computed with
