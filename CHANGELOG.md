@@ -17,6 +17,17 @@ All notable changes to this project are documented here. The format follows
   pin each type, and an export test checks every import resolves.
 - `Returns::period_count()`: the number of periods, rows of returns, so a rolling window can be
   chosen to fit.
+- A sample app in `apps/campaigns`, which isn't part of the published crate. It splits an ad
+  budget across six ad platforms, each an asset whose return on a day is what a unit of spend
+  bought there, once for each of four metrics.
+  - **Two engines:** a shared engine runs as native Vercel functions or as WebAssembly in a
+    Web Worker, behind one Next.js page with a switch between them.
+  - **Parity:** committed fixtures show the two engines give the same replies, to 1e-14.
+  - **Types:** the frontend's TypeScript comes from the engine through the `ts-rs` feature.
+  - **The page:** each metric's weights and statistics, the efficient frontier, weights over
+    rolling windows, and JSON and CSV exports.
+  - **Data:** a year of daily spend and results, with every volume scaled by one constant.
+  - **Caveat:** it models no saturation, which the page says.
 
 ## [0.3.9] - 2026-11-13
 
