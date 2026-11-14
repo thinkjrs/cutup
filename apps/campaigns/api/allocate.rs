@@ -15,7 +15,7 @@ async fn handler(request: Request) -> Result<Response<ResponseBody>, Error> {
     let response = Response::builder().header("content-type", "application/json");
     let (response, reply) = if request.method() == "POST" {
         let body = request.into_body().collect().await?.to_bytes();
-        let reply = match String::from_utf8(body.to_vec()) {
+        let reply = match String::from_utf8(body.into()) {
             // An allocation is CPU-bound, so it runs off the runtime's async workers.
             Ok(text) => {
                 tokio::task::spawn_blocking(move || campaign_engine::respond(&text)).await?

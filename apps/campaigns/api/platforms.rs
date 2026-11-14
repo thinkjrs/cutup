@@ -1,6 +1,8 @@
 //! `GET /api/platforms`: the bundled sample's platforms, each with its first and last dates and
-//! how many days it spent on, as JSON, and a 405 for anything but `GET`.
+//! how many days it spent on, as JSON. `HEAD` gets the same status and headers without the
+//! body, as RFC 9110 asks of a server that answers `GET`, and anything else a 405.
 
+use campaign_engine::Reply;
 use vercel_runtime::{Error, Request, Response, ResponseBody, run, service_fn};
 
 #[tokio::main]
@@ -10,11 +12,21 @@ async fn main() -> Result<(), Error> {
 
 async fn handler(request: Request) -> Result<Response<ResponseBody>, Error> {
     let response = Response::builder().header("content-type", "application/json");
-    let (response, status, body) = if request.method() == "GET" {
-        (response, 200, campaign_engine::platforms())
+    let method = request.method();
+    let (response, reply) = if method == "GET" || method == "HEAD" {
+        let body = if method == "GET" {
+            campaign_engine::platforms()
+        } else {
+            String::new()
+        };
+        (response, Reply { status: 200, body })
     } else {
-        let reply = campaign_engine::reject(405, "use GET");
-        (response.header("allow", "GET"), reply.status, reply.body)
+        (
+            response.header("allow", "GET, HEAD"),
+            campaign_engine::reject(405, "use GET"),
+        )
     };
-    Ok(response.status(status).body(ResponseBody::from(body))?)
+    Ok(response
+        .status(reply.status)
+        .body(ResponseBody::from(reply.body))?)
 }
