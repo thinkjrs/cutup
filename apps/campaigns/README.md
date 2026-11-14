@@ -55,7 +55,7 @@ The sample has six platforms' daily spend, impressions, clicks, link clicks and 
 ## The frontend
 
 One page: a request on the left, its results on the right, and the sample's weekly yields below.
-- **Two engines:** a switch picks the server, which posts to `/api/allocate`, or the browser, which runs the wasm build in a Web Worker. The worker starts on the first browser request, so a visitor who never picks it never downloads the wasm. Both get the same request text, and the results say which answered, how long the round trip took, and how long the engine took. The server's time comes in a `server-timing` header.
+- **Two engines:** a switch picks the server, which posts to `/api/allocate`, or the browser, which runs the wasm build in a Web Worker. The worker starts when the browser engine is picked, so its first run's round trip doesn't include loading the wasm, and a visitor who never picks it never downloads it. Both get the same request text, and the results say which answered, how long the round trip took, and how long the engine took. The server's time comes in a `server-timing` header.
 - **The request:** the form covers the platforms, dates, metrics, method, a cap on each platform's share, a mean-variance risk aversion and frontier, and rolling windows. The JSON it makes can be edited for any of cutup's other settings, and is sent as it's written.
 - **The results:** each metric's weights side by side, their statistics, the efficient frontier and the weights over time when asked for, each with a table view.
 - **Exports:** the whole run as JSON, with the request, the engine and its timing, and every allocation as CSV, one row per metric and window.
