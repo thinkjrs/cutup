@@ -3,7 +3,8 @@
 //!
 //! Basic arithmetic and `sqrt` round the same on both, but `ln`, which risk parity uses, comes
 //! from a different math library on wasm and may differ in the last bit. So numbers are
-//! compared to 1e-14 of their size rather than exactly.
+//! compared to 1e-14 of their size, or of 1 for those smaller, such as a solver's 1e-17 for a
+//! weight of 0, rather than exactly.
 //!
 //! `UPDATE_FIXTURES=1 cargo test` rewrites the replies from a native run.
 
@@ -19,7 +20,7 @@ const REQUESTS: &str = include_str!("../../fixtures/requests.json");
 /// Each fixture's reply: its status, and its body as JSON.
 const REPLIES: &str = include_str!("../../fixtures/replies.json");
 
-/// How close two numbers must be, relative to the larger in size.
+/// How close two numbers must be, relative to the larger in size, or to 1 if both are smaller.
 const TOLERANCE: f64 = 1e-14;
 
 /// The text to send for a fixture's request.
@@ -48,7 +49,7 @@ fn differences(path: &str, got: &Value, want: &Value, out: &mut Vec<String>) {
     match (got, want) {
         (Value::Number(g), Value::Number(w)) => {
             let (g, w) = (g.as_f64().unwrap(), w.as_f64().unwrap());
-            if (g - w).abs() > TOLERANCE * g.abs().max(w.abs()) {
+            if (g - w).abs() > TOLERANCE * g.abs().max(w.abs()).max(1.0) {
                 out.push(format!("{path}: {g:e} vs {w:e}"));
             }
         }
