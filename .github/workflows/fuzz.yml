@@ -5,7 +5,8 @@ name: Fuzz
 # a target, so a new finding never fails an unrelated PR; GitHub runs schedules from main
 # only. Releases merge into main without a PR, so this runs on pushes to release branches
 # too. tgrf pushes only after tagging, so a release branch is checked before its tag only if
-# it's pushed first.
+# it's pushed first. Before a release, run the fuzzer by hand on develop for as long as the
+# campaign needs, such as `gh workflow run fuzz.yml --ref develop -f seconds=1800`.
 
 on:
   pull_request:
@@ -13,6 +14,11 @@ on:
     branches: [main, develop, "release/**"]
   schedule:
     - cron: "0 10 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        default: "300"
 
 permissions:
   contents: read
@@ -88,12 +94,13 @@ jobs:
       - name: Build ${{ matrix.target }}
         run: cargo fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
-      - name: Fuzz ${{ matrix.target }} for five minutes
-        if: github.event_name == 'schedule'
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=300 -max_len=4096
+      # Five minutes on the schedule, and as long as asked by hand.
+      - name: Fuzz ${{ matrix.target }}
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || 300 }} -max_len=4096
 
       - name: Upload the crashing input
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-${{ matrix.target }}-artifacts
