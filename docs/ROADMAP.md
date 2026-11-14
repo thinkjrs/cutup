@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-11-13 · Current release: 0.3.9
+Status: draft · Last updated: 2026-11-14 · Current release: 0.3.9
 
 This plans the releases from 0.3.0 to 1.0.0.
 
@@ -522,115 +522,59 @@ to pass to `.expected_returns(..)`, like `BlackLitterman::expected_returns`.
 
 ## 0.3.10: sample campaign allocation app
 
-A Next.js app that allocates a budget across a basket of ad campaigns. The
-same Rust allocation code runs either on Vercel's servers as a native binary or
-in the visitor's browser as WebAssembly, and the frontend has a toggle to pick
-which one. Its data, and the modeling choices that depend on it, are settled
-when this release starts.
+A Next.js app in `apps/campaigns` that splits an ad budget across ad
+platforms. The same Rust runs on Vercel as native serverless functions or in
+the browser as WebAssembly, and a switch picks which. The crate's `include`
+list keeps `apps/` out of the published package. With the crate, this release
+adds the `ts-rs` feature and `Returns::period_count()`.
 
-### Layout
-
-```
-apps/campaigns/
-  engine/   shared Rust code: JSON request in, JSON response out
-  api/      allocate.rs: the native vercel-rust handler
-  wasm/     the wasm-bindgen wrapper
-  app/      the Next.js frontend
-```
-
-- **`engine/`** holds everything both backends share:
-  - the request and response types;
-  - turning campaign series into a returns matrix;
-  - picking the method and its settings, calling cutup, and computing the
-    statistics.
-
-  Its one entry point is `engine::allocate(request) -> Result<Response, Error>`.
-  Both backends are thin wrappers around it, so they can't diverge.
-- **`api/allocate.rs`:** the same setup as `thinkjrs/vercel-rust-runtime`. A
-  native Rust binary, deployed as a Vercel serverless function by the
-  `vercel-rust` runtime that `vercel.json` names. It parses the JSON body,
-  calls the engine and returns JSON.
-  - The example's `allocate.rs` targets cutup 0.1.4 and its `"mvo"`
-    strategy; this one uses the method values.
-- **`wasm/`:** `#[wasm_bindgen] fn allocate(request: JsValue)` around the
-  same engine, built with `wasm-pack --target web`.
-- **Dependencies:** each crate takes cutup as a path dependency, so the app
-  always builds against the current code. The crate's `include` list already
-  keeps `apps/` out of the published package.
-- **Local development:** run `vercel dev` after `cargo build --release`.
-  `npm run dev` serves only the frontend.
-
-### Frontend engines
-
-- **One interface, two implementations:**
-  `Engine { allocate(request): Promise<Response> }`.
-  - **Server (native Rust):** `fetch('/api/allocate')`. This is the default.
-  - **Browser (WebAssembly):** the wasm module, run in a Web Worker so a large
-    allocation doesn't block the page, and loaded only when it's first
-    selected.
-- **The toggle** has exactly these two choices, with no "auto". The choice is
-  remembered per visitor.
-- **Each result** shows which engine produced it and how long it took. The
-  server time includes the network round trip, and the browser time includes
-  the module's first load.
-- **Shared types:** the TypeScript request and response types are generated
-  from the engine's Rust types with `ts-rs`, so there's one definition.
-
-### Parity between the engines
-
-- A CI test runs the same request fixtures through the native engine and
-  through wasm, with `wasm-pack test --node`, and compares the outputs.
-- Basic arithmetic and `sqrt` give identical results on both. `ln`, which
-  risk parity uses, comes from a different math library on wasm and may differ
-  in the last bit. So the test compares to within about 1e-14 rather than
-  exactly.
-
-### Deployment
-
-- **The risk:** the `vercel-rust` runtime installs Rust for the functions,
-  but not necessarily for the Next.js build step that runs `wasm-pack`.
-- **First try:** install the toolchain in the build command. Builds are
-  slower, but everything is built from source.
-- **Fallback:** build the wasm package in CI and commit it, or publish it as
-  an artifact the build downloads.
-- **When:** a test deploy of both engines early in this release, before the
-  UI is built on top.
-- **Bundle size:** cutup and nalgebra compile to a few hundred KB of wasm.
-  Building with `opt-level = "z"` and `wasm-opt` shrinks it, and lazy loading
-  keeps it off the page for visitors who stay on the server engine.
-
-### Model
-
-- **Assets:** each campaign is an asset, and the weights are shares of the
-  budget, keyed by campaign name.
-- **Series:** each campaign gets a per-period yield series built from its
-  clicks, views and impressions. Which metric, and whether spend is included,
-  is settled when the data arrives.
-- **Data:** an anonymized sample of the campaign data, committed to the repo.
-- **Settings that fit:**
-  - `WeightBounds` for a minimum and maximum share per campaign;
-  - group constraints (0.3.8) for channel caps;
-  - rebalancing from the current budget split, with `max_turnover` limiting
-    how much budget moves at once;
-  - `MinCvar` against the worst periods;
-  - Black-Litterman for a marketer's own views on campaigns;
-  - risk parity, HRP, min variance and max Sharpe compared side by side.
-- **Caveat, stated in the app:** these methods assume results scale linearly
-  with budget, so saturation isn't modeled.
-
-### UI, tests and CI
-
-- **UI:**
-  - load the sample, then pick the metric, method, constraints and engine;
-  - see each campaign's metrics over time, the budget weights with their
-    statistics (0.3.3), the efficient frontier (0.3.6), and the weights over
-    time (0.3.9);
-  - a table compares methods.
-- **Tests:** unit tests for the engine and the handler, the parity test, and
-  a TypeScript typecheck.
-- **CI:** a job that builds the native functions and the wasm package, and
-  runs `next build`.
-- **The crate's README** links to the app.
+- **Model:** each ad platform is an asset, and the weights are shares of the
+  budget.
+  - **Returns:** a platform's return on a day is what a unit of spend bought
+    there, for each of impressions, clicks, link clicks and views. Each is
+    divided by its average over the request's platforms and days, and every
+    method allocates once per metric.
+  - **Days:** only days on which every chosen platform spent count.
+  - **Caveat, stated in the app:** results are taken to grow in proportion to
+    spend, so saturation isn't modeled.
+- **Data:** a year of six platforms' daily spend and results, committed with
+  every volume scaled by one constant, so the yields are real and the totals
+  aren't.
+- **Engine:** `engine/` holds the request and response types, the returns, and
+  the calls to cutup. Its `respond(&str)` gives the JSON reply and its status
+  to a JSON request, and both backends send it as it is.
+  - **Methods:** a request takes any of cutup's methods as its `serde` JSON,
+    with a frontier and rolling windows, each capped at 100 solves per
+    metric.
+- **Backends:**
+  - **Native:** `api/allocate.rs` and `api/platforms.rs`, each a
+    `vercel_runtime` 2 function on the `vercel-rust` runtime. They need Rust
+    1.88, while the engine and the wasm wrapper keep 1.85.
+  - **Browser:** `wasm/` wraps the engine with wasm-bindgen, taking and
+    returning JSON strings rather than `JsValue`s.
+- **Parity:** committed request fixtures and their replies, checked natively
+  and on wasm with `wasm-bindgen-test-runner`, to 1e-14 of each number or of 1.
+- **Frontend:**
+  - **Engines:** one `Engine` interface over the server and a Web Worker
+    running the wasm, which starts when the browser engine is picked.
+  - **Timing:** each result says which engine answered, the round trip, and
+    the engine's own time, from `server-timing` on the server.
+  - **Types:** ts-rs generates the TypeScript types from the engine, committed
+    and checked by an engine test.
+  - **Charts:** each metric's weights and statistics, the efficient frontier,
+    weights over rolling windows and the sample's weekly yields, each with a
+    table view.
+  - **Exports:** JSON and CSV.
+- **Build:** `scripts/build-wasm.sh` builds the wasm with a size-optimized
+  profile, `wasm-bindgen` and `wasm-opt`. It fetches the tools it lacks, so
+  Vercel's build runs it, and `wasm-opt` takes the wasm from 908 KB to 605 KB.
+- **CI:** the native workspace on stable, the engine and wrapper on 1.85 and
+  on wasm, and the frontend's formatting, types, tests and full build.
+- **Left for later:**
+  - remembering each visitor's engine;
+  - a table comparing methods side by side;
+  - form controls for groups, rebalancing and Black-Litterman views, which
+    the request's JSON already takes.
 
 ## Later 0.3.x or 1.x
 
@@ -687,4 +631,4 @@ to 0.3.9.
 
 ## Open decisions
 
-- **The sample app's data and model:** settled when 0.3.10 starts.
+None.
