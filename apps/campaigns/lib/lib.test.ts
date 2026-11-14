@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { Response } from "./bindings/Response";
 import { engineTiming, readPlatforms, readReply } from "./engine";
 import { number, percent, platformColor, platformOrder, tick } from "./format";
-import { DEFAULT_FORM, toRequest } from "./request";
+import { DEFAULT_FORM, lowestCap, toRequest } from "./request";
 import { weekOf, weeklyYields } from "./sample";
 import { extent, linear, nearest, nice } from "./scale";
 import {
@@ -57,6 +57,30 @@ describe("engine", () => {
     });
   });
 
+  it("reads a reply that isn't the engine's JSON as an error with its status", () => {
+    expect(
+      readReply({
+        status: 504,
+        body: "An error occurred with your deployment",
+      }),
+    ).toEqual({
+      ok: false,
+      status: 504,
+      error: {
+        request: {
+          message:
+            "status 504 without the engine's JSON: An error occurred with your deployment",
+        },
+      },
+    });
+    expect(readReply({ status: 500, body: "" })).toEqual({
+      ok: false,
+      status: 500,
+      error: { request: { message: "status 500 without the engine's JSON" } },
+    });
+    expect(readReply({ status: 200, body: "<html>" }).ok).toBe(false);
+  });
+
   it("reads the platforms only from a 200", () => {
     const body =
       '[{"platform":"Meta","first":"2025-09-01","last":"2026-09-30","days_with_spend":395}]';
@@ -66,6 +90,16 @@ describe("engine", () => {
 });
 
 describe("request", () => {
+  it("offers only caps the platforms can meet", () => {
+    expect(lowestCap(2)).toBe(0.5);
+    expect(lowestCap(3)).toBe(0.35);
+    expect(lowestCap(4)).toBe(0.25);
+    expect(lowestCap(5)).toBe(0.2);
+    expect(lowestCap(6)).toBe(0.2);
+    expect(lowestCap(1)).toBe(1);
+    expect(lowestCap(0)).toBe(1);
+  });
+
   it("leaves out what the method doesn't take", () => {
     expect(toRequest(DEFAULT_FORM)).toEqual({
       platforms: ["Meta", "Google", "TikTok"],
