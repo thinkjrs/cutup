@@ -39,6 +39,18 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy, rustfmt
 
+      # `working-directory` applies to `run` steps only, so these paths are from the repo root.
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/campaigns/target
+          key: campaigns-${{ matrix.rust }}-${{ runner.os }}-${{ hashFiles('apps/campaigns/Cargo.lock') }}
+          restore-keys: |
+            campaigns-${{ matrix.rust }}-${{ runner.os }}-
+
       - name: Check formatting
         if: matrix.rust == 'stable'
         run: cargo fmt --all --check
