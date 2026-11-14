@@ -18,12 +18,17 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "no prebuilt tools for $(uname -s) $(uname -m)" >&2 && exit 1 ;;
 esac
 
-# Downloads a .tar.gz into .tools and unpacks it there, once.
+# Downloads a .tar.gz into .tools and unpacks it there, once. It's unpacked aside and moved in
+# whole, so a download that breaks off leaves nothing a later run would take for the tool.
 fetch() {
   local url=$1 dir=$2
   if [ ! -d "$TOOLS/$dir" ]; then
     mkdir -p "$TOOLS"
-    curl --proto '=https' --tlsv1.2 -sSfL "$url" | tar -xz -C "$TOOLS"
+    local partial
+    partial=$(mktemp -d "$TOOLS/.partial.XXXXXX")
+    curl --proto '=https' --tlsv1.2 -sSfL "$url" | tar -xz -C "$partial"
+    mv "$partial/$dir" "$TOOLS/$dir"
+    rm -rf "$partial"
   fi
 }
 
