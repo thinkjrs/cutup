@@ -236,5 +236,9 @@ mod export {
                 assert!(files.contains(&format!("{target}.ts")), "{file}: {line}");
             }
         }
+        // Dropped, the directory is gone, as it would be after a failed assertion.
+        let path = dir.0.clone();
+        drop(dir);
+        assert!(!path.exists(), "{path:?}");
     }
 }
