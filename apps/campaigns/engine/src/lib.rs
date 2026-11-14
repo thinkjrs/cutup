@@ -185,6 +185,11 @@ pub struct Response {
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineError {
+    /// The request isn't JSON for a [`Request`]: malformed, a key unknown or missing, or a value
+    /// of the wrong type. `message` is serde's.
+    Request {
+        message: String,
+    },
     /// The sample's CSV is malformed at `line`, counting from 1.
     Sample {
         line: usize,
@@ -221,6 +226,7 @@ pub enum EngineError {
 impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            EngineError::Request { message } => write!(f, "the request: {message}"),
             EngineError::Sample { line, message } => write!(f, "sample line {line}: {message}"),
             EngineError::NoPlatforms => write!(f, "a request needs at least one platform"),
             EngineError::UnknownPlatform { platform } => {
@@ -248,6 +254,64 @@ impl std::fmt::Display for EngineError {
 }
 
 impl std::error::Error for EngineError {}
+
+/// A reply to a request, for either backend to send as it is: an HTTP status and a JSON body,
+/// a [`Response`] or `{"error": EngineError}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    /// 200 for a response, 400 for a request that isn't JSON for a [`Request`], and 422 for one
+    /// that is but can't be allocated.
+    pub status: u16,
+    pub body: String,
+}
+
+/// A reply's JSON body when it's an error.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct ErrorBody {
+    pub error: EngineError,
+}
+
+/// The JSON reply to a JSON request, over the bundled sample: what both backends send, so
+/// they can't diverge.
+pub fn respond(request: &str) -> Reply {
+    let result = serde_json::from_str::<Request>(request)
+        .map_err(|e| EngineError::Request {
+            message: e.to_string(),
+        })
+        .and_then(|request| allocate(&request));
+    let (status, body) = match result {
+        Ok(response) => (200, serde_json::to_string(&response)),
+        Err(error) => {
+            let status = if matches!(error, EngineError::Request { .. }) {
+                400
+            } else {
+                422
+            };
+            (status, serde_json::to_string(&ErrorBody { error }))
+        }
+    };
+    Reply {
+        status,
+        body: body.expect("responses and errors serialize"),
+    }
+}
+
+/// The reply to anything but a `POST` with a request: a 405, with an
+/// [`EngineError::Request`].
+pub fn not_allowed() -> Reply {
+    let error = EngineError::Request {
+        message: "use POST, with a JSON request".into(),
+    };
+    Reply {
+        status: 405,
+        body: serde_json::to_string(&ErrorBody { error }).expect("errors serialize"),
+    }
+}
+
+/// The bundled sample's platforms, as JSON: a [`PlatformSummary`] for each, by name.
+pub fn platforms() -> String {
+    serde_json::to_string(&Sample::bundled().platforms()).expect("summaries serialize")
+}
 
 /// Allocates `request` over the bundled sample.
 ///

@@ -216,6 +216,8 @@ pub(crate) fn is_date(date: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
 
     const SMALL: &str = "date,platform,spend,impressions,clicks,link_clicks,views
 2025-09-01,A,100,1000,10,5,200

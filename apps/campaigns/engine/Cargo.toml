@@ -9,7 +9,11 @@ description = "The campaign allocation app's engine: a JSON request in, a JSON r
 [dependencies]
 cutup = { path = "../../..", features = ["serde", "ts-rs"] }
 serde = { version = "1.0.219", features = ["derive"] }
+# Exact floats, so that the native and wasm backends write the same JSON.
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 ts-rs = "12.0.1"
 
-[dev-dependencies]
-serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+# The engine's tests, the parity fixtures included, run on wasm too, as the browser engine
+# runs it, with `wasm-bindgen-test-runner`.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -1,6 +1,8 @@
 use super::*;
 use cutup::WeightBounds;
 use serde_json::json;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 /// Two platforms over four days, with nothing spent on A on the second.
 const SMALL: &str = "date,platform,spend,impressions,clicks,link_clicks,views
@@ -308,6 +310,38 @@ fn a_request_that_cant_be_allocated_says_why() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn a_reply_is_a_response_or_an_error_with_its_status() {
+    let ok = respond(r#"{"method": {"name": "equal_weight"}, "metrics": ["views"]}"#);
+    assert_eq!(ok.status, 200);
+    let response: serde_json::Value = serde_json::from_str(&ok.body).unwrap();
+    assert_eq!(response["results"][0]["metric"], "views");
+    for (request, status, kind) in [
+        ("{", 400, "request"),
+        (r#"{"method": {"name": "best"}}"#, 400, "request"),
+        (
+            r#"{"platforms": ["Myspace"], "method": {"name": "equal_weight"}}"#,
+            422,
+            "unknown_platform",
+        ),
+    ] {
+        let reply = respond(request);
+        assert_eq!(reply.status, status, "{request}");
+        let body: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert!(body["error"][kind].is_object(), "{request}: {body}");
+    }
+    let not_allowed = not_allowed();
+    assert_eq!(not_allowed.status, 405);
+    assert_eq!(
+        not_allowed.body,
+        r#"{"error":{"request":{"message":"use POST, with a JSON request"}}}"#
+    );
+    let platforms: Vec<serde_json::Value> = serde_json::from_str(&platforms()).unwrap();
+    assert_eq!(platforms.len(), 6);
+    assert_eq!(platforms[1]["platform"], "Meta");
+    assert_eq!(platforms[1]["days_with_spend"], 395);
 }
 
 #[test]
