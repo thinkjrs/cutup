@@ -1,0 +1,53 @@
+name: Campaigns
+
+# The campaign allocation app under apps/campaigns: its own workspace, which the crate's jobs
+# don't reach. Formats, lints and tests its Rust on stable and the MSRV, and builds the engine
+# for wasm, where the browser engine runs it.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: apps/campaigns
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [1.85.0, stable]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        if: matrix.rust == 'stable'
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build the engine for wasm
+        run: cargo build --locked --target wasm32-unknown-unknown -p campaign-engine
