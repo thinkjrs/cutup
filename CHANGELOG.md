@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-11-14
+
 ### Added
 
 - An optional `ts-rs` feature: TypeScript types, with ts-rs 12, for the JSON the `serde`
@@ -902,7 +904,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.9...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.10...HEAD
+[0.3.10]: https://github.com/thinkjrs/cutup/compare/0.3.9...0.3.10
 [0.3.9]: https://github.com/thinkjrs/cutup/compare/0.3.8...0.3.9
 [0.3.8]: https://github.com/thinkjrs/cutup/compare/0.3.7...0.3.8
 [0.3.7]: https://github.com/thinkjrs/cutup/compare/0.3.6...0.3.7
