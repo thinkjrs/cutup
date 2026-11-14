@@ -4,7 +4,8 @@ name: Campaigns
 # don't reach. Formats, lints and tests its Rust: the whole workspace on stable, and on cutup's
 # MSRV the engine and the wasm wrapper, since the native functions' vercel_runtime takes Rust
 # 1.88. Then runs the engine's tests, with the parity fixtures, and the wrapper's on wasm, as
-# the browser engine runs them.
+# the browser engine runs them. Last, checks the frontend and builds it as Vercel does, with
+# the browser engine.
 
 on:
   pull_request:
@@ -121,3 +122,51 @@ jobs:
       # the native run checks too.
       - name: Run the engine's and the wrapper's tests on wasm
         run: cargo test --locked --target wasm32-unknown-unknown -p campaign-engine -p campaign-wasm
+
+  app:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/campaigns/target
+          key: campaigns-app-${{ runner.os }}-${{ hashFiles('apps/campaigns/Cargo.lock') }}
+          restore-keys: |
+            campaigns-app-${{ runner.os }}-
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: yarn
+          cache-dependency-path: apps/campaigns/yarn.lock
+
+      - name: Install the frontend's dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Check formatting
+        run: yarn format:check
+
+      - name: Check types
+        run: yarn typecheck
+
+      - name: Run the frontend's tests
+        run: yarn test
+
+      # Builds the browser engine first, with scripts/build-wasm.sh, which fetches the
+      # wasm-bindgen CLI and binaryen as Vercel's build does, then the Next app.
+      - name: Build
+        run: yarn build
