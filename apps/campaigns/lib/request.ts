@@ -37,6 +37,12 @@ export const BOUNDED: MethodName[] = [
 
 export const DEFAULT_PLATFORMS = ["Meta", "Google", "TikTok"];
 
+/** The lowest cap on each platform's share the form offers for `count` platforms: the
+ * smallest 5% step from which the shares can still add up to the whole, and never under 20%. */
+export function lowestCap(count: number): number {
+  return Math.max(0.2, Math.ceil(20 / Math.max(1, count) - 1e-9) / 20);
+}
+
 export type Form = {
   platforms: string[];
   from: string;

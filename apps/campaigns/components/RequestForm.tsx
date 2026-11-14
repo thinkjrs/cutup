@@ -7,6 +7,7 @@ import type { PlatformSummary } from "@/lib/bindings/PlatformSummary";
 import { metricLabel, platformColor } from "@/lib/format";
 import {
   BOUNDED,
+  lowestCap,
   METHODS,
   METRICS,
   type Form,
@@ -64,12 +65,22 @@ export function RequestForm({
                 <input
                   type="checkbox"
                   checked={form.platforms.includes(platform)}
-                  onChange={() =>
+                  onChange={() => {
+                    const next = toggle(form.platforms, platform, names);
+                    // A cap the new count can't meet is raised to the lowest it can.
+                    const cap = form.maxWeight;
+                    const lowest = lowestCap(next.length);
                     onForm({
                       ...form,
-                      platforms: toggle(form.platforms, platform, names),
-                    })
-                  }
+                      platforms: next,
+                      maxWeight:
+                        cap === null || cap >= lowest
+                          ? cap
+                          : lowest >= 1
+                            ? null
+                            : lowest,
+                    });
+                  }}
                 />
                 <span
                   aria-hidden
@@ -157,7 +168,7 @@ export function RequestForm({
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="range"
-                min={0.2}
+                min={lowestCap(form.platforms.length)}
                 max={1}
                 step={0.05}
                 value={form.maxWeight ?? 1}
@@ -195,8 +206,9 @@ export function RequestForm({
               Frontier points
               <input
                 type="number"
-                min={0}
+                min={2}
                 max={100}
+                step={1}
                 placeholder="none"
                 value={form.frontier ?? ""}
                 onChange={(event) =>
