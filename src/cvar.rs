@@ -64,6 +64,7 @@ mod serde_impl;
 /// * [`CutupError::NotConverged`] if the linear program stops early, which only extreme inputs
 ///   should cause.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
 pub struct MinCvar {
     confidence: f64,

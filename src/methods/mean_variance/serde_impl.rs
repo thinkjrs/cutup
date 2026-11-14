@@ -18,8 +18,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Not;
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "MeanVariance"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     risk_aversion: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,8 +123,9 @@ impl<'de> Deserialize<'de> for MeanVariance {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "FrontierPoint"))]
 #[serde(deny_unknown_fields)]
-struct PointWire {
+pub(super) struct PointWire {
     expected_return: f64,
     volatility: f64,
     weights: Weights,

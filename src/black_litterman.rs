@@ -53,6 +53,7 @@ mod serde_impl;
 /// too. `δ` is the same whatever the period, since the mean and the variance of returns both
 /// scale with it: 2.5 is a common choice.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
 pub struct BlackLitterman {
     market_weights: PerAsset,
@@ -388,6 +389,7 @@ fn factor_views(a: DMatrix<f64>) -> Result<Cholesky<f64, Dyn>, CutupError> {
 /// let labeled_basket = View::portfolio([("SPY", 0.5), ("QQQ", 0.5), ("TLT", -1.0)], 0.0002);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::ViewWire"))]
 #[non_exhaustive]
 pub struct View {
     assets: Assets,

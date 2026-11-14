@@ -40,6 +40,7 @@ mod serde_impl;
 ///     .group([5, 6], 0.2, 1.0);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 pub struct WeightBounds {
     lower: Limit,
     upper: Limit,

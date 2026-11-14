@@ -24,6 +24,7 @@ pub(crate) mod serde_impl;
 /// let capped = WeightBounds::uniform(0.0, 0.4).asset("GLD", 0.0, 0.1);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(type = "number | string"))]
 pub struct Asset(Key);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -137,6 +138,12 @@ impl Asset {
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(type = "Array<number | null> | Record<string, number | null> \
+               | Array<[number | string, number | null]>")
+)]
 pub struct PerAsset(Values);
 
 #[derive(Debug, Clone, PartialEq)]

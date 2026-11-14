@@ -20,6 +20,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 nalgebra = "0.33.2"
 serde = { version = "1.0.219", optional = true, features = ["derive"] }
+ts-rs = { version = "12.0.1", optional = true }
 
 [features]
 # Constructors that take nalgebra's `DMatrix`, and `DVector` conversions for `Weights`.
@@ -27,6 +28,8 @@ nalgebra = []
 # `Serialize` and `Deserialize` for weights, assets, bounds, covariance configs and every method,
 # and `Serialize` for `CutupError` and rolling windows.
 serde = ["dep:serde"]
+# TypeScript types, with ts-rs, for the JSON the `serde` feature reads and writes.
+ts-rs = ["dep:ts-rs", "serde"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -19,8 +19,9 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "CovarianceConfig"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     matrix: Option<Vec<Vec<f64>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

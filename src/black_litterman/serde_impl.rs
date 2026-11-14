@@ -23,8 +23,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 const TAU: f64 = 0.05;
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "BlackLitterman"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     market_weights: PerAsset,
     risk_aversion: f64,
     #[serde(default, skip_serializing_if = "is_default")]
@@ -74,8 +75,9 @@ impl<'de> Deserialize<'de> for BlackLitterman {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "View"))]
 #[serde(deny_unknown_fields)]
-struct ViewWire {
+pub(super) struct ViewWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     absolute: Option<Asset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

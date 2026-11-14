@@ -45,6 +45,11 @@ mod serde_impl;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(type = "Record<string, number>")
+)]
 pub struct Weights {
     values: Vec<f64>,
     labels: Arc<[String]>,

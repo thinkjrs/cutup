@@ -22,6 +22,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// One side of the bounds: a value for every asset, or values per asset.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "BoundsSide"))]
 #[serde(untagged)]
 enum Side {
     Uniform(Value),
@@ -29,6 +30,7 @@ enum Side {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct AssetBounds {
     asset: Asset,
@@ -37,6 +39,7 @@ struct AssetBounds {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 struct GroupLimits {
     members: Vec<Asset>,
@@ -45,11 +48,14 @@ struct GroupLimits {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "WeightBounds"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default = "no_floor")]
+    #[cfg_attr(feature = "ts-rs", ts(as = "Option<_>", optional))]
     lower: Side,
     #[serde(default = "no_cap")]
+    #[cfg_attr(feature = "ts-rs", ts(as = "Option<_>", optional))]
     upper: Side,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     assets: Vec<AssetBounds>,

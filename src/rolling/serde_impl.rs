@@ -13,12 +13,15 @@ use crate::{CutupError, Weights};
 use serde::{Serialize, Serializer};
 
 #[derive(Serialize)]
-struct Wire<'a> {
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "Window"))]
+pub(super) struct Wire<'a> {
     start: usize,
     end: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
     weights: Option<&'a Weights>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
     error: Option<&'a CutupError>,
 }
 

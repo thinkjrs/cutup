@@ -191,6 +191,11 @@ impl<A> std::fmt::Debug for RollingAllocation<'_, A> {
 
 /// One window's weights, from [`Rolling::allocate`].
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(as = "serde_impl::Wire<'static>")
+)]
 #[non_exhaustive]
 pub struct Window {
     periods: Range<usize>,

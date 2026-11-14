@@ -7,8 +7,9 @@ use crate::{CovarianceConfig, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "RiskParity"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     risk_budgets: Option<PerAsset>,
     #[serde(default, skip_serializing_if = "is_default")]

@@ -42,6 +42,7 @@ mod serde_impl;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 pub struct CovarianceConfig {
     estimate: Estimate,
     regularization: Option<f64>,
@@ -53,6 +54,7 @@ pub struct CovarianceConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[non_exhaustive]
 pub enum ShrinkageTarget {
     /// The average variance times the identity, `μ·I` with `μ = trace(Σ) / n`: every asset

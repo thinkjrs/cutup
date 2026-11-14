@@ -13,6 +13,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[non_exhaustive]
 pub enum CutupError {
     /// The input has no assets to allocate to: no rows, empty rows, or zero assets.
@@ -55,6 +56,7 @@ pub enum CutupError {
         /// Name of the offending field.
         field: &'static str,
         /// The value supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         value: f64,
     },
     /// One asset's value in a per-asset setting is out of range, such as a negative lower
@@ -67,6 +69,7 @@ pub enum CutupError {
         /// The asset's label.
         asset: String,
         /// The value supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         value: f64,
     },
     /// A row of the input has a different number of values from the first row. For flat
@@ -126,8 +129,10 @@ pub enum CutupError {
     /// ratio: it is only approached as positions grow without limit.
     RiskFreeRateTooHigh {
         /// The risk-free rate supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         risk_free_rate: f64,
         /// The minimum variance portfolio's expected return, which the rate must be below.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         min_variance_return: f64,
     },
     /// An iterative solver stopped before reaching a solution, although one exists. This
@@ -139,28 +144,35 @@ pub enum CutupError {
     /// turnover cap nets the target: `lowest` is −∞ and `highest` the highest net return.
     TargetReturnOutOfRange {
         /// The target return supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         target_return: f64,
         /// The lowest expected return of any long-only portfolio within the bounds, or −∞
         /// with transaction costs.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         lowest: f64,
         /// The highest expected return of any long-only portfolio within the bounds, or with
         /// transaction costs the highest return net of them.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         highest: f64,
     },
     /// No asset's expected return is above the risk-free rate by more than rounding, so no
     /// long-only portfolio has a positive Sharpe ratio.
     NoPositiveExcessReturn {
         /// The risk-free rate supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         risk_free_rate: f64,
         /// The highest expected return of any asset, which the rate must be below.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         highest_return: f64,
     },
     /// No portfolio summing to 1 satisfies the weight bounds: the lower bounds sum to more
     /// than 1, or the upper bounds to less.
     InfeasibleBounds {
         /// The sum of the lower bounds.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         lower_sum: f64,
         /// The sum of the upper bounds.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         upper_sum: f64,
     },
     /// A weight is NaN or infinite: one an [`Allocation`](crate::Allocation) returned, or one
@@ -183,8 +195,10 @@ pub enum CutupError {
     /// the turnover cap: moving the current weights into the bounds alone turns over more.
     InfeasibleTurnover {
         /// The least turnover that reaches the bounds.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         minimum: f64,
         /// The turnover cap.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         cap: f64,
     },
     /// A setting isn't supported in combination with another yet.
@@ -207,6 +221,7 @@ pub enum CutupError {
     /// variance.
     IndefiniteCovariance {
         /// The most negative eigenvalue.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         eigenvalue: f64,
     },
     /// The market portfolio given to [`Returns::capm_returns`](crate::Returns::capm_returns) has
@@ -225,8 +240,10 @@ pub enum CutupError {
     /// minimum variance portfolio's, so no portfolio within the bounds is that safe.
     TargetVolatilityOutOfRange {
         /// The target volatility supplied.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         target_volatility: f64,
         /// The minimum variance portfolio's volatility, the lowest of any portfolio.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number | null"))]
         minimum: f64,
     },
     /// No portfolio summing to 1 within the weight bounds satisfies the

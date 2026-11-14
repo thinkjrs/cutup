@@ -67,6 +67,7 @@ pub(crate) fn finite_or_none(value: f64) -> Option<f64> {
 /// infinite: a field left out is still missing, as it wouldn't be through `Option<f64>`. That
 /// takes a self-describing format, such as JSON.
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(type = "number | null"))]
 pub(crate) struct Limit(pub(crate) f64);
 
 impl<'de> Deserialize<'de> for Limit {

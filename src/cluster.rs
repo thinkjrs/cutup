@@ -12,6 +12,7 @@ use nalgebra::DMatrix;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
 #[non_exhaustive]
 pub enum Linkage {
     /// The distance between the two closest members. The default, as in López de Prado (2016)

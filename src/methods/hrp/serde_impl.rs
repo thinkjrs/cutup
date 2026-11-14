@@ -7,8 +7,9 @@ use crate::{CovarianceConfig, Linkage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "Hrp"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "is_default")]
     linkage: Linkage,
     #[serde(default, skip_serializing_if = "is_default")]

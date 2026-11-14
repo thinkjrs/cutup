@@ -8,8 +8,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Not;
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "MaxSharpe"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "is_default")]
     risk_free_rate: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

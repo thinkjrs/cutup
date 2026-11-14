@@ -64,6 +64,7 @@ mod serde_impl;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
 pub struct RiskParity {
     risk_budgets: Option<PerAsset>,

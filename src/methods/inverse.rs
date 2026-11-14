@@ -36,6 +36,11 @@ use crate::{Allocation, CutupError, Returns, Weights};
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(type = "Record<string, never>")
+)]
 pub struct InverseVolatility;
 
 impl Allocation for InverseVolatility {
@@ -76,6 +81,11 @@ impl Allocation for InverseVolatility {
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(type = "Record<string, never>")
+)]
 pub struct InverseVariance;
 
 impl Allocation for InverseVariance {

@@ -168,6 +168,7 @@ mod serde_impl;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
 pub struct MeanVariance {
     objective: Objective,
@@ -558,6 +559,7 @@ impl Returns {
 
 /// A portfolio on the efficient frontier, from [`Returns::frontier`].
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::PointWire"))]
 #[non_exhaustive]
 pub struct FrontierPoint {
     expected_return: f64,

@@ -15,8 +15,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Not;
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "MinVariance"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bounds: Option<WeightBounds>,
     #[serde(default, skip_serializing_if = "Not::not")]

@@ -7,8 +7,13 @@ use crate::serde_support::is_default;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "ts-rs",
+    derive(ts_rs::TS),
+    ts(rename = "MaxDiversification")
+)]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default, skip_serializing_if = "is_default")]
     covariance: CovarianceConfig,
 }

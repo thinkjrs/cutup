@@ -111,6 +111,7 @@ mod serde_impl;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
 pub struct MaxSharpe {
     risk_free_rate: f64,

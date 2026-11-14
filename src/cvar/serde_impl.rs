@@ -10,8 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 const CONFIDENCE: f64 = 0.95;
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "MinCvar"))]
 #[serde(deny_unknown_fields)]
-struct Wire {
+pub(super) struct Wire {
     #[serde(default = "confidence", skip_serializing_if = "is_confidence")]
     confidence: f64,
     #[serde(default, skip_serializing_if = "is_default")]
