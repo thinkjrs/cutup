@@ -319,8 +319,9 @@ impl Returns {
         &self.labels
     }
 
-    /// The number of periods: rows of returns, one fewer than the rows of prices they came
-    /// from. A [rolling window](Returns::rolling) can be at most this long.
+    /// The number of periods: rows of returns, as given to [`Returns::new`], or one fewer than
+    /// the rows of prices given to [`Returns::from_prices`]. A
+    /// [rolling window](Returns::rolling) can be from 2 periods up to this long.
     ///
     /// # Example
     ///
