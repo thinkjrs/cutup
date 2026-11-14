@@ -29,6 +29,8 @@ path = "api/platforms.rs"
 
 [workspace]
 members = [".", "engine", "wasm"]
+# With a package at the root, bare cargo commands here would cover only it.
+default-members = [".", "engine", "wasm"]
 resolver = "3"
 
 # For the browser's wasm, which every visitor who picks it downloads: smaller rather than
