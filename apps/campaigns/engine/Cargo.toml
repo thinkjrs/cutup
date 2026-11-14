@@ -9,7 +9,8 @@ description = "The campaign allocation app's engine: a JSON request in, a JSON r
 [dependencies]
 cutup = { path = "../../..", features = ["serde", "ts-rs"] }
 serde = { version = "1.0.219", features = ["derive"] }
-# Exact floats, so that the native and wasm backends write the same JSON.
+# Exact floats when reading requests, such as a risk aversion or a bound. Writing is exact
+# without it.
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 ts-rs = "12.0.1"
 
