@@ -27,7 +27,7 @@ fn a_request_leaves_out_what_has_defaults() {
     let read = request(json!({"method": {"name": "equal_weight"}}));
     assert_eq!(read.platforms, DEFAULT_PLATFORMS.map(String::from));
     assert_eq!(read.metrics, Metric::ALL);
-    assert_eq!(read.method, Method::EqualWeight);
+    assert_eq!(read.method, Method::EqualWeight(EqualWeight));
     assert_eq!(
         (read.from, read.to, read.frontier, read.rolling),
         (None, None, None, None)
@@ -45,6 +45,8 @@ fn a_request_leaves_out_what_has_defaults() {
     assert_eq!(read.rolling, Some(RollingRequest { window: 3, step: 1 }));
     for bad in [
         json!({"method": {"name": "min_variance", "uper": 0.6}}),
+        // A method with no settings refuses them rather than allocating without them.
+        json!({"method": {"name": "inverse_volatility", "bounds": {"upper": 0.3}}}),
         json!({"method": {"name": "best"}}),
         json!({"method": {"name": "equal_weight"}, "platform": ["A"]}),
         json!({"platforms": ["A"]}),
@@ -168,6 +170,27 @@ fn a_metric_the_method_cant_allocate_has_its_own_error() {
 }
 
 #[test]
+fn a_yield_that_overflows_is_its_metrics_error() {
+    // A spend so small that 1 over it is infinite.
+    let tiny = "date,platform,spend,impressions,clicks,link_clicks,views
+2025-09-01,A,1e-310,1,1,1,1
+2025-09-02,A,1,1,1,1,1
+2025-09-03,A,2,1,1,1,1
+";
+    let sample = Sample::parse(tiny).unwrap();
+    let read = request(json!({
+        "platforms": ["A"],
+        "metrics": ["clicks"],
+        "method": {"name": "equal_weight"}
+    }));
+    let response = allocate_over(&sample, &read).unwrap();
+    assert!(matches!(
+        response.results[0].error,
+        Some(CutupError::NonFiniteValue { .. })
+    ));
+}
+
+#[test]
 fn a_frontier_and_rolling_windows_come_with_each_metric() {
     let read = request(json!({
         "platforms": ["A", "B"],
@@ -183,6 +206,30 @@ fn a_frontier_and_rolling_windows_come_with_each_metric() {
     assert_eq!(
         windows.iter().map(Window::periods).collect::<Vec<_>>(),
         [0..2, 1..3]
+    );
+    assert!(result.frontier_error.is_none());
+
+    // A frontier doesn't take rebalancing settings, which the allocation does: it says so, and
+    // the weights still come.
+    let read = request(json!({
+        "platforms": ["A", "B"],
+        "metrics": ["views"],
+        "method": {
+            "name": "mean_variance",
+            "risk_aversion": 2.0,
+            "current_weights": [0.5, 0.5],
+            "turnover_penalty": 0.1
+        },
+        "frontier": 4
+    }));
+    let result = &allocate_over(&small(), &read).unwrap().results[0];
+    assert!(result.weights.is_some() && result.frontier.is_none());
+    assert_eq!(
+        result.frontier_error,
+        Some(CutupError::NotSupported {
+            setting: "turnover_penalty",
+            with: "a frontier"
+        })
     );
 }
 
@@ -218,12 +265,32 @@ fn a_request_that_cant_be_allocated_says_why() {
             },
         ),
         (
+            json!({"platforms": ["A"], "to": "2026-02-30", "method": method}),
+            EngineError::InvalidDate {
+                date: "2026-02-30".into(),
+            },
+        ),
+        (
             json!({"platforms": ["A", "B"], "from": "2025-09-04", "method": method}),
             EngineError::TooFewDays { days: 1 },
         ),
         (
             json!({"platforms": ["A"], "frontier": 3, "method": method}),
             EngineError::FrontierNeedsMeanVariance,
+        ),
+        (
+            json!({"platforms": ["A"], "frontier": 1, "method": {"name": "mean_variance", "risk_aversion": 1.0}}),
+            EngineError::FrontierPoints { points: 1 },
+        ),
+        (
+            json!({
+                "platforms": ["A"],
+                "frontier": MAX_FRONTIER_POINTS + 1,
+                "method": {"name": "mean_variance", "risk_aversion": 1.0}
+            }),
+            EngineError::FrontierPoints {
+                points: MAX_FRONTIER_POINTS + 1,
+            },
         ),
         (
             json!({"platforms": ["A", "B"], "rolling": {"window": 4}, "method": method}),
@@ -292,11 +359,12 @@ fn the_typescript_types_are_the_json() {
     assert_eq!(
         bare(MetricResult::decl(&cfg)),
         "type MetricResult = { metric: Metric, weights?: Weights, stats?: Stats, \
-         error?: CutupError, frontier?: Array<FrontierPoint>, rolling?: Array<Window>, };"
+         error?: CutupError, frontier?: Array<FrontierPoint>, frontier_error?: CutupError, \
+         rolling?: Array<Window>, };"
     );
     let method = Method::decl(&cfg);
     assert!(
-        method.starts_with("type Method = { \"name\": \"equal_weight\" } | "),
+        method.starts_with("type Method = { \"name\": \"equal_weight\" } & {} | "),
         "{method}"
     );
     assert!(

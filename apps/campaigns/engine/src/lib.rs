@@ -30,14 +30,21 @@ pub const DEFAULT_PLATFORMS: [&str; 3] = ["Meta", "Google", "TikTok"];
 /// The confidence of each result's CVaR.
 pub const CVAR_CONFIDENCE: f64 = 0.95;
 
+/// The most points a frontier can ask for. Each is a solve, once per metric.
+pub const MAX_FRONTIER_POINTS: usize = 100;
+
 /// An allocation method, by `"name"`, with its settings as cutup reads them, such as
 /// `{"name": "min_variance", "bounds": {"upper": 0.6}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "name", rename_all = "snake_case")]
 pub enum Method {
-    EqualWeight,
-    InverseVolatility,
-    InverseVariance,
+    // cutup's methods with no settings, not unit variants: serde ignores any other fields given
+    // with a unit variant, so `{"name": "equal_weight", "bounds": ..}` would allocate without
+    // the bounds, where cutup's own types refuse them. Their TypeScript type is `{}`, since
+    // cutup's `Record<string, never>` would leave no type for `"name"`.
+    EqualWeight(#[ts(type = "{}")] EqualWeight),
+    InverseVolatility(#[ts(type = "{}")] InverseVolatility),
+    InverseVariance(#[ts(type = "{}")] InverseVariance),
     MinVariance(MinVariance),
     MeanVariance(MeanVariance),
     MaxSharpe(MaxSharpe),
@@ -52,9 +59,9 @@ impl Method {
     /// The cutup method, boxed.
     fn allocation(&self) -> Box<dyn Allocation> {
         match self {
-            Method::EqualWeight => Box::new(EqualWeight),
-            Method::InverseVolatility => Box::new(InverseVolatility),
-            Method::InverseVariance => Box::new(InverseVariance),
+            Method::EqualWeight(m) => Box::new(*m),
+            Method::InverseVolatility(m) => Box::new(*m),
+            Method::InverseVariance(m) => Box::new(*m),
             Method::MinVariance(m) => Box::new(m.clone()),
             Method::MeanVariance(m) => Box::new(m.clone()),
             Method::MaxSharpe(m) => Box::new(m.clone()),
@@ -102,7 +109,8 @@ pub struct Request {
     #[ts(as = "Option<Vec<Metric>>", optional)]
     pub metrics: Vec<Metric>,
     pub method: Method,
-    /// Points along the efficient frontier, with a mean-variance method only.
+    /// Points along the efficient frontier, from 2 to [`MAX_FRONTIER_POINTS`], with a
+    /// mean-variance method only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub frontier: Option<usize>,
@@ -153,6 +161,11 @@ pub struct MetricResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub frontier: Option<Vec<FrontierPoint>>,
+    /// Why the frontier couldn't be traced, when one was asked for: a setting it doesn't take,
+    /// such as rebalancing, or one it can't use, such as data it can't allocate on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub frontier_error: Option<CutupError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rolling: Option<Vec<Window>>,
@@ -194,6 +207,11 @@ pub enum EngineError {
     },
     /// A frontier was asked for with a method other than mean-variance.
     FrontierNeedsMeanVariance,
+    /// A frontier was asked for with fewer than 2 points or more than
+    /// [`MAX_FRONTIER_POINTS`].
+    FrontierPoints {
+        points: usize,
+    },
     /// The rolling windows don't fit the days, or a step is 0.
     Rolling {
         error: CutupError,
@@ -220,6 +238,10 @@ impl std::fmt::Display for EngineError {
             EngineError::FrontierNeedsMeanVariance => {
                 write!(f, "a frontier needs a mean-variance method")
             }
+            EngineError::FrontierPoints { points } => write!(
+                f,
+                "a frontier of {points} points; it needs from 2 to {MAX_FRONTIER_POINTS}"
+            ),
             EngineError::Rolling { error } => write!(f, "rolling windows: {error}"),
         }
     }
@@ -253,6 +275,9 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
         }
     }
     let mean_variance = match (&request.method, request.frontier) {
+        (Method::MeanVariance(_), Some(points)) if !(2..=MAX_FRONTIER_POINTS).contains(&points) => {
+            return Err(EngineError::FrontierPoints { points });
+        }
         (Method::MeanVariance(m), _) => Some(m),
         (_, Some(_)) => return Err(EngineError::FrontierNeedsMeanVariance),
         _ => None,
@@ -266,32 +291,20 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
     let method = request.method.allocation();
     let mut results = Vec::with_capacity(request.metrics.len());
     for &metric in &request.metrics {
-        let data = returns(&totals, metric, platforms);
         let mut result = MetricResult {
             metric,
             weights: None,
             stats: None,
             error: None,
             frontier: None,
+            frontier_error: None,
             rolling: None,
         };
-        match data.allocate(method.as_ref()) {
-            Ok(weights) => {
-                result.stats = data.stats(&weights).ok().map(|s| stats(&s));
-                result.weights = Some(weights);
+        match returns(&totals, metric, platforms) {
+            Ok(data) => {
+                allocate_metric(&mut result, &data, method.as_ref(), request, mean_variance)?
             }
             Err(error) => result.error = Some(error),
-        }
-        if let (Some(points), Some(m)) = (request.frontier, mean_variance) {
-            result.frontier = data.frontier(m, points).ok();
-        }
-        if let Some(rolling) = request.rolling {
-            let windows = data
-                .rolling(rolling.window)
-                .step(rolling.step)
-                .allocate(method.as_ref())
-                .map_err(|error| EngineError::Rolling { error })?;
-            result.rolling = Some(windows.collect());
         }
         results.push(result);
     }
@@ -302,14 +315,48 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
     })
 }
 
+/// Fills in `result` from one metric's returns. The rolling windows are checked first, since
+/// they're lazy, so a request whose windows don't fit fails before anything is solved.
+fn allocate_metric(
+    result: &mut MetricResult,
+    data: &Returns,
+    method: &dyn Allocation,
+    request: &Request,
+    mean_variance: Option<&MeanVariance>,
+) -> Result<(), EngineError> {
+    let rolling = match request.rolling {
+        Some(rolling) => Some(
+            data.rolling(rolling.window)
+                .step(rolling.step)
+                .allocate(method)
+                .map_err(|error| EngineError::Rolling { error })?,
+        ),
+        None => None,
+    };
+    match data.allocate(method) {
+        Ok(weights) => {
+            result.stats = data.stats(&weights).and_then(|s| stats(&s)).ok();
+            result.weights = Some(weights);
+        }
+        Err(error) => result.error = Some(error),
+    }
+    if let (Some(points), Some(m)) = (request.frontier, mean_variance) {
+        match data.frontier(m, points) {
+            Ok(frontier) => result.frontier = Some(frontier),
+            Err(error) => result.frontier_error = Some(error),
+        }
+    }
+    result.rolling = rolling.map(Iterator::collect);
+    Ok(())
+}
+
 /// Checks `platforms` are some of the sample's, each once.
 fn check_platforms(sample: &Sample, platforms: &[String]) -> Result<(), EngineError> {
     if platforms.is_empty() {
         return Err(EngineError::NoPlatforms);
     }
-    let known = sample.platforms();
     for (i, platform) in platforms.iter().enumerate() {
-        if !known.iter().any(|p| &p.platform == platform) {
+        if !sample.has_platform(platform) {
             return Err(EngineError::UnknownPlatform {
                 platform: platform.clone(),
             });
@@ -325,7 +372,16 @@ fn check_platforms(sample: &Sample, platforms: &[String]) -> Result<(), EngineEr
 
 /// Each platform's yield of `metric` on each day, divided by their average over every
 /// platform and day, labeled with the platforms.
-fn returns(totals: &[Vec<Totals>], metric: Metric, platforms: &[String]) -> Returns {
+///
+/// # Errors
+///
+/// [`CutupError::NonFiniteValue`] if a yield isn't finite, such as a total over a spend so
+/// small that their ratio overflows.
+fn returns(
+    totals: &[Vec<Totals>],
+    metric: Metric,
+    platforms: &[String],
+) -> Result<Returns, CutupError> {
     let yields: Vec<Vec<f64>> = totals
         .iter()
         .map(|day| day.iter().map(|t| t.yield_of(metric)).collect())
@@ -338,21 +394,19 @@ fn returns(totals: &[Vec<Totals>], metric: Metric, platforms: &[String]) -> Retu
         .into_iter()
         .map(|day| day.into_iter().map(|y| y / mean).collect())
         .collect();
-    Returns::new(&rows)
-        .and_then(|data| data.labeled(platforms.iter().cloned()))
-        .expect("finite yields over at least 2 days, one per platform")
+    Returns::new(&rows).and_then(|data| data.labeled(platforms.iter().cloned()))
 }
 
 /// The statistics a result reports, from cutup's.
-fn stats(stats: &cutup::PortfolioStats) -> Stats {
-    Stats {
+fn stats(stats: &cutup::PortfolioStats) -> Result<Stats, CutupError> {
+    Ok(Stats {
         expected_return: stats.expected_return(),
         volatility: stats.volatility(),
         sharpe_ratio: stats.sharpe_ratio(0.0),
         diversification_ratio: stats.diversification_ratio(),
         risk_contributions: stats.risk_contributions().map(<[f64]>::to_vec),
-        cvar: stats.cvar(CVAR_CONFIDENCE).unwrap_or(f64::NAN),
-    }
+        cvar: stats.cvar(CVAR_CONFIDENCE)?,
+    })
 }
 
 #[cfg(test)]
