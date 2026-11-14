@@ -1,6 +1,41 @@
-# The campaign allocation app's Rust crates: the engine both backends share, and later the
-# native handler and the wasm wrapper. Its own workspace, so the cutup crate's builds and tests
-# don't reach it, and none of it is published: cutup's `include` list leaves `apps/` out.
+# The campaign allocation app: a Vercel project whose Rust functions are the [[bin]]s under
+# api/, run by the `vercel-rust` runtime that vercel.json names, around the engine both
+# backends share. The workspace also holds the engine and the wasm wrapper, and none of it is
+# published: cutup's `include` list leaves `apps/` out.
+[package]
+name = "campaigns"
+version = "0.0.0"
+edition = "2024"
+# vercel_runtime 2 takes let chains, from Rust 1.88. Vercel builds the functions with stable,
+# and the engine and the wasm wrapper keep cutup's 1.85.
+rust-version = "1.88.0"
+publish = false
+description = "The campaign allocation app's native serverless functions."
+
+[dependencies]
+campaign-engine = { path = "engine" }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros"] }
+vercel_runtime = "2.4.1"
+
+# Each function is a [[bin]], at the path Vercel serves it from.
+[[bin]]
+name = "allocate"
+path = "api/allocate.rs"
+
+[[bin]]
+name = "platforms"
+path = "api/platforms.rs"
+
 [workspace]
-members = ["engine"]
+members = [".", "engine", "wasm"]
 resolver = "3"
+
+# For the browser's wasm, which every visitor who picks it downloads: smaller rather than
+# faster, with `cargo build --profile wasm-release --target wasm32-unknown-unknown`. The native
+# functions keep `release`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
