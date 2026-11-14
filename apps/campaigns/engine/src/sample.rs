@@ -157,6 +157,11 @@ impl Sample {
         summaries.into_values().collect()
     }
 
+    /// Whether `platform` has a row on any day.
+    pub fn has_platform(&self, platform: &str) -> bool {
+        self.days.values().any(|day| day.contains_key(platform))
+    }
+
     /// The days from `from` to `to`, inclusive, either open, on which every one of `platforms`
     /// spent something, oldest first, with their totals in the order of `platforms`.
     pub fn days_with_spend<'a>(
@@ -181,16 +186,31 @@ impl Sample {
     }
 }
 
-/// Whether `date` looks like `YYYY-MM-DD`.
+/// Whether `date` is a real `YYYY-MM-DD` date: one whose month and day exist.
 pub(crate) fn is_date(date: &str) -> bool {
     let bytes = date.as_bytes();
-    bytes.len() == 10
+    let shaped = bytes.len() == 10
         && bytes[4] == b'-'
         && bytes[7] == b'-'
         && bytes
             .iter()
             .enumerate()
-            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+    if !shaped {
+        return false;
+    }
+    // Every slice is ASCII digits, so each parses.
+    let number = |range: std::ops::Range<usize>| date[range].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (number(0..4), number(5..7), number(8..10));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days_in_month).contains(&day)
 }
 
 #[cfg(test)]
@@ -218,6 +238,8 @@ mod tests {
         );
         assert_eq!(summaries[0].days_with_spend, 2);
         assert_eq!(summaries[1].days_with_spend, 3);
+        assert!(sample.has_platform("A") && sample.has_platform("B"));
+        assert!(!sample.has_platform("C"));
     }
 
     #[test]
@@ -267,6 +289,26 @@ mod tests {
                 Err(EngineError::Sample { line: at, .. }) => assert_eq!(at, line, "{csv}"),
                 other => panic!("{csv}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_date_is_a_real_day() {
+        for date in ["2025-09-01", "2024-02-29", "2000-02-29", "2025-12-31"] {
+            assert!(is_date(date), "{date}");
+        }
+        for date in [
+            "2025-9-1",
+            "2025-02-29",
+            "1900-02-29",
+            "2026-02-30",
+            "2025-04-31",
+            "2025-13-01",
+            "2025-00-10",
+            "2025-01-00",
+            "2025-99-99",
+        ] {
+            assert!(!is_date(date), "{date}");
         }
     }
 
