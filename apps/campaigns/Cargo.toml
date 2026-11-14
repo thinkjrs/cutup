@@ -15,7 +15,7 @@ description = "The campaign allocation app's native serverless functions."
 [dependencies]
 campaign-engine = { path = "engine" }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 vercel_runtime = "2.4.1"
 
 # Each function is a [[bin]], at the path Vercel serves it from.
