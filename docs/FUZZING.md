@@ -34,6 +34,13 @@ clippy on `fuzz/` with stable Rust. The fuzzer itself runs weekly, five minutes
 a target, and uploads any crashing input, so a new finding never fails an
 unrelated PR. GitHub runs scheduled workflows from `main` only.
 
+Before each release, the fuzzer runs once by hand on `develop`, for as long as
+the campaign needs:
+
+```bash
+gh workflow run fuzz.yml --ref develop -f seconds=1800
+```
+
 ## Findings
 
 Each finding gets a regression test in `src` and a CHANGELOG entry.
