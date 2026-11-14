@@ -79,6 +79,9 @@ mod serde_support;
 mod stats;
 #[cfg(test)]
 mod test_support;
+// Natively only: exporting writes files, which wasm32-unknown-unknown can't.
+#[cfg(all(test, feature = "ts-rs", not(target_arch = "wasm32")))]
+mod ts_bindings;
 mod turnover;
 mod weights;
 
