@@ -25,6 +25,12 @@ export default async function Page() {
           spend bought there, for each of four metrics. The same Rust runs on
           the server or, compiled to WebAssembly, in your browser.
         </p>
+        <p className="text-sm text-ink-2">
+          <span className="font-medium text-ink">One caveat:</span> these
+          methods take a platform&apos;s results to grow in proportion to its
+          spend, so they don&apos;t model saturation. Past some budget, each
+          extra unit of spend on a platform buys less than the weights assume.
+        </p>
       </header>
 
       <Allocator />
