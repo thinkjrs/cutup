@@ -19,6 +19,8 @@ export interface Engine {
   name: EngineName;
   allocate(request: string): Promise<Timed>;
   platforms(): Promise<Timed>;
+  /** Gets ready to answer, so a first call's time is the call's, not the engine's start. */
+  warm(): void;
 }
 
 /** A reply read: a response, or the engine's error with its status. */
@@ -26,11 +28,32 @@ export type Outcome =
   | { ok: true; status: number; response: Response }
   | { ok: false; status: number; error: ErrorBody["error"] };
 
+/** A reply read as a response or an error. A body that isn't the engine's JSON, such as a
+ * platform's own page for a crash or a timeout, is an error with its status and its start. */
 export function readReply(reply: Reply): Outcome {
-  const body = JSON.parse(reply.body);
-  return reply.status === 200
-    ? { ok: true, status: reply.status, response: body as Response }
-    : { ok: false, status: reply.status, error: (body as ErrorBody).error };
+  let body: unknown;
+  try {
+    body = JSON.parse(reply.body);
+  } catch {
+    body = undefined;
+  }
+  if (reply.status === 200 && body && typeof body === "object") {
+    return { ok: true, status: reply.status, response: body as Response };
+  }
+  const error = (body as Partial<ErrorBody> | undefined)?.error;
+  if (reply.status !== 200 && error !== undefined) {
+    return { ok: false, status: reply.status, error };
+  }
+  const start = reply.body.trim().slice(0, 120);
+  return {
+    ok: false,
+    status: reply.status,
+    error: {
+      request: {
+        message: `status ${reply.status} without the engine's JSON${start ? `: ${start}` : ""}`,
+      },
+    },
+  };
 }
 
 export function readPlatforms(reply: Reply): PlatformSummary[] {
@@ -77,6 +100,7 @@ export function serverEngine(base = ""): Engine {
         body: request,
       }),
     platforms: () => send("/api/platforms"),
+    warm: () => {},
   };
 }
 
@@ -89,9 +113,9 @@ export type WorkerCall = {
 export type WorkerAnswer =
   { id: number; reply: Reply; compute: number } | { id: number; error: string };
 
-/** The wasm build in a worker, started on the first call, so a visitor who never picks the
- * browser engine never downloads it. A worker that fails, such as on a panic, which leaves the
- * wasm unusable, is replaced on the next call. */
+/** The wasm build in a worker, started when it's warmed or on the first call, so a visitor who
+ * never picks the browser engine never downloads it. A worker that fails, such as on a panic,
+ * which leaves the wasm unusable, is replaced on the next call. */
 export function browserEngine(url = "/engine-worker.js"): Engine {
   let worker: Worker | null = null;
   let next = 0;
@@ -146,5 +170,8 @@ export function browserEngine(url = "/engine-worker.js"): Engine {
     name: "browser",
     allocate: (request) => call("allocate", request),
     platforms: () => call("platforms"),
+    warm: () => {
+      worker ??= start();
+    },
   };
 }

@@ -124,6 +124,7 @@ export function Allocator() {
                 role="radio"
                 aria-checked={engine === name}
                 onClick={() => {
+                  engines[name].warm();
                   setEngine(name);
                   setNotice(null);
                 }}
@@ -163,7 +164,7 @@ export function Allocator() {
             onRun={run}
             running={running}
           />
-        ) : (
+        ) : failure ? null : (
           <p className="text-sm text-ink-2">Loading the platforms…</p>
         )}
       </aside>
