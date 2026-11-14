@@ -99,11 +99,21 @@ To read methods from JSON and write weights to it, turn on the `serde` feature: 
 cutup = { version = "0.3.9", features = ["serde"] }
 ```
 
-For TypeScript types that match that JSON, turn on the `ts-rs` feature, which turns on `serde` too. Every type that serializes then implements [ts-rs](https://docs.rs/ts-rs)' `TS`. Export them, with the types they use, from a build script or a test, with `MeanVariance::export_all(&ts_rs::Config::new().with_out_dir("bindings"))`. A key that's left out is optional in TypeScript, and a value JSON writes as `null`, such as no cap, is `number | null`.
+For TypeScript types that match that JSON, turn on the `ts-rs` feature, which turns on `serde` too. Every type that serializes then implements [ts-rs](https://docs.rs/ts-rs)' `TS`. Exporting them takes ts-rs 12 as a dependency of your own, for its `TS` trait and its `Config`. A key that's left out is optional in TypeScript, and a value JSON writes as `null`, such as no cap, is `number | null`.
 
 ```toml
 [dependencies]
 cutup = { version = "0.3.9", features = ["ts-rs"] }
+ts-rs = "12"
+```
+
+Then export each type, with the types it uses, from a build script or a test:
+
+```rust,ignore
+use cutup::MeanVariance;
+use ts_rs::TS;
+
+MeanVariance::export_all(&ts_rs::Config::new().with_out_dir("bindings"))?;
 ```
 
 ## Usage
