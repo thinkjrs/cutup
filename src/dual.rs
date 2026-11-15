@@ -140,16 +140,15 @@ impl Portfolios {
         });
         Ok((normalized(weights), -solution.objective / unit))
     }
-}
 
-impl Portfolios {
     /// The portfolio whose largest `cutᵀw` over `cuts` is least, and that largest value.
     ///
     /// The same min-max as [`Portfolios::min_max`], with the cuts as the scenarios and their
     /// weighting any probability, but solved as the primal, `min η` subject to `cutᵀw ≤ η` for
     /// each cut, a row per cut rather than per asset: the bounds are the weights' own, so
     /// with few cuts the program is small however many assets there are. The cuts are
-    /// multiplied by `unit`, as the scenarios are, and the largest value is unscaled.
+    /// multiplied by `unit`, as the scenarios are, and so is the largest value: unscaling it
+    /// could take it out of the normal range, and the caller compares it with scaled values.
     ///
     /// # Errors
     ///
@@ -211,7 +210,7 @@ impl Portfolios {
         let weights = DVector::from_fn(n, |i, _| {
             solution.x[i].clamp(bounds.lower[i], bounds.upper[i])
         });
-        Ok((normalized(weights), solution.objective / unit))
+        Ok((normalized(weights), solution.objective))
     }
 }
 
@@ -322,14 +321,17 @@ mod tests {
                 )
                 .unwrap();
             assert!(
-                (worst - worst_dual).abs() <= 1e-15,
+                (worst / unit - worst_dual).abs() <= 1e-15,
                 "{worst} vs {worst_dual}"
             );
             // Each one's worst case is its largest cut, unscaled.
             for weights in [&primal, &dual] {
                 let w = DVector::from_column_slice(weights);
                 let largest = cuts.iter().map(|c| c.dot(&w)).fold(f64::MIN, f64::max) / unit;
-                assert!((largest - worst).abs() <= 1e-15, "{largest} vs {worst}");
+                assert!(
+                    (largest - worst / unit).abs() <= 1e-15,
+                    "{largest} vs {worst}"
+                );
                 assert!(
                     weights
                         .iter()

@@ -148,20 +148,22 @@ impl Allocation for MinCdar {
         let mut best: Option<(Vec<f64>, f64)> = None;
         for _ in 0..MAX_ROUNDS {
             let (master, bound) = portfolios.min_of_max(&cuts, unit)?;
-            let bound = bound * unit;
             let (master_cut, master_cdar) = drawdowns.cut(&master);
             let (best_weights, best_cdar) = match best.take() {
                 Some((weights, cdar)) if cdar <= master_cdar => (weights, cdar),
                 _ => (master.clone(), master_cdar),
             };
             // Within rounding of the bound: the cuts and the CDaRs are sums over the same
-            // scaled returns, to about 1e-15 of the largest drawdown.
-            let tolerance = 1e-12 * best_cdar.abs();
+            // scaled returns, to about 1e-15 of the largest drawdown. The scaled returns are at
+            // most 1 in size, so a sum of `t` of them rounds by up to about `tε`: below that, a
+            // CDaR of 0 and a bound of −1e-17 agree.
+            let tolerance = (1e-12 * best_cdar.abs()).max(t as f64 * f64::EPSILON);
             if best_cdar - bound <= tolerance {
                 return Ok(data.weights(best_weights));
             }
             // The cut at a point between the best so far and the minimizer, if it cuts the
-            // minimizer off; otherwise the minimizer's own, which always does.
+            // minimizer off and the bound doesn't have it yet; otherwise the minimizer's own,
+            // which always does.
             let query: Vec<f64> = best_weights
                 .iter()
                 .zip(&master)
@@ -169,7 +171,11 @@ impl Allocation for MinCdar {
                 .collect();
             let (query_cut, query_cdar) = drawdowns.cut(&query);
             let separates = query_cut.dot(&DVector::from_column_slice(&master)) > bound + tolerance;
-            let cut = if separates { query_cut } else { master_cut };
+            let cut = if separates && !cuts.contains(&query_cut) {
+                query_cut
+            } else {
+                master_cut
+            };
             best = Some(if query_cdar < best_cdar {
                 (query, query_cdar)
             } else {
