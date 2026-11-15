@@ -66,6 +66,7 @@ mod cluster;
 mod covariance;
 mod cvar;
 mod deprecated;
+mod dual;
 mod eigen;
 mod error;
 mod expected_returns;

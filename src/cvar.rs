@@ -1,8 +1,7 @@
 //! Conditional value at risk: measuring it, and the long-only portfolio that minimizes it.
 
-use crate::bounds::{ReturnRange, feasible_start};
-use crate::methods::normalized;
-use crate::{Allocation, CutupError, Returns, WeightBounds, Weights, lp};
+use crate::dual::{Portfolios, unit_scale};
+use crate::{Allocation, CutupError, Returns, WeightBounds, Weights};
 use nalgebra::{DMatrix, DVector};
 
 #[cfg(feature = "serde")]
@@ -110,119 +109,22 @@ impl Allocation for MinCvar {
     /// CVaR is the most a probability weighting `z` of the scenarios can make of the loss,
     /// `max zᵀ(−Rw)` over `0 ≤ zₜ ≤ 1/((1 − β)T)` with `Σzₜ = 1`, so minimizing it is a
     /// min-max. Swapping the two and writing the minimum over the portfolio as its own dual
-    /// gives a maximization over `z` and that dual's multipliers: `ν` for the budget, `η` for
-    /// the target return, `λ⁺`, `λ⁻` for the bounds, and `γ⁺`, `γ⁻` for the groups' floors and
-    /// caps, subject to `−Rᵀz = ν1 + ημ + λ⁺ − λ⁻ + G(γ⁺ − γ⁻)`, one row per asset, where
-    /// column `k` of `G` marks group `k`'s members. The weights are those rows' multipliers,
-    /// and CVaR is its optimum. A group limit the bounds already meet has no multiplier.
+    /// gives a maximization over `z` and that dual's multipliers, one row per asset, whose
+    /// multipliers are the weights.
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let returns = &data.returns;
-        let (t, n) = returns.shape();
-        let cap = tail_weight(self.confidence, t)?;
-        let bounds = self.bounds.resolve(data.labels())?;
-        // Groups that can't all be met leave the dual unbounded rather than infeasible, so
-        // they're found first, from the portfolios themselves: by the range's ends with a
-        // target, otherwise by the simplex solver's start. Without groups, neither can fail.
-        let target = match self.target_return {
-            Some(target) if !target.is_finite() => {
-                return Err(CutupError::InvalidConfig {
-                    field: "target_return",
-                    value: target,
-                });
-            }
-            Some(target) => {
-                let mu = returns.row_mean().transpose();
-                Some((ReturnRange::new(&mu, &bounds)?.reachable(target)?, mu))
-            }
-            None => {
-                feasible_start(&bounds)?;
-                None
-            }
-        };
+        let cap = tail_weight(self.confidence, returns.nrows())?;
+        let portfolios = Portfolios::new(data, &self.bounds, self.target_return)?;
         // CVaR scales with the returns, and its minimizer doesn't change, so the program is
         // solved on returns scaled to at most 1 in size: next to the bounds and the budget's
         // entries, which don't scale, returns near 1e100 or 1e-100 leave the simplex method's
         // tolerances meaningless. A power of two, so that the scaling is exact.
         let unit = unit_scale(returns.amax());
         let returns = &(returns * unit);
-        let target = target.map(|(rho, mu)| (rho * unit, mu * unit));
-
-        // The dual's columns, in order: z (t), ν, then η with a target, λ⁺ (n), λ⁻ (n), and a γ
-        // for each finite group limit. Resolved bounds are all finite, so every asset has a
-        // λ⁻. Maximizing ν + ρη + lᵀλ⁺ − uᵀλ⁻ + Lᵀγ⁺ − Uᵀγ⁻ is minimizing its negative.
-        let mut dual = Columns::default();
-        for row in returns.row_iter() {
-            dual.push(row.iter().map(|r| -r), 1.0, 0.0, (0.0, cap));
-        }
-        let free = (f64::NEG_INFINITY, f64::INFINITY);
-        dual.push(std::iter::repeat_n(-1.0, n), 0.0, -1.0, free);
-        if let Some((rho, mu)) = &target {
-            dual.push(mu.iter().map(|m| -m), 0.0, -rho, free);
-        }
-        let nonnegative = (0.0, f64::INFINITY);
-        let unit = |i: usize, sign: f64| (0..n).map(move |j| if j == i { sign } else { 0.0 });
-        for i in 0..n {
-            dual.push(unit(i, -1.0), 0.0, -bounds.lower[i], nonnegative);
-        }
-        for i in 0..n {
-            dual.push(unit(i, 1.0), 0.0, bounds.upper[i], nonnegative);
-        }
-        let rows = &bounds.rows;
-        for (k, members) in rows.a.column_iter().enumerate() {
-            // A limit the bounds already meet is infinite, and has no multiplier.
-            for (sign, cost) in [(-1.0, -rows.lower[k]), (1.0, rows.upper[k])] {
-                if cost.is_finite() {
-                    dual.push(members.iter().map(|g| sign * g), 0.0, cost, nonnegative);
-                }
-            }
-        }
-        let a = DMatrix::from_columns(&dual.a);
-        let mut b = DVector::zeros(n + 1);
-        b[n] = 1.0;
-        let (c, lower, upper) = (
-            DVector::from_vec(dual.cost),
-            DVector::from_vec(dual.lower),
-            DVector::from_vec(dual.upper),
-        );
-
-        // The portfolio is feasible and CVaR is bounded below on it, so the dual has an optimum.
+        let losses = returns.transpose().map(|r| -r);
         let start = starting_tail(returns, cap);
-        let lp::Outcome::Optimal(solution) = lp::solve_from(&c, &a, &b, &lower, &upper, &start)?
-        else {
-            return Err(CutupError::NotConverged);
-        };
-        let weights = DVector::from_fn(n, |i, _| {
-            solution.y[i].clamp(bounds.lower[i], bounds.upper[i])
-        });
-        Ok(data.weights(normalized(weights)))
-    }
-}
-
-/// The columns of [`MinCvar`]'s dual linear program, each with its cost and bounds, in the
-/// order they're pushed. Built a column at a time rather than at computed offsets, so that no
-/// column's place depends on arithmetic.
-#[derive(Default)]
-struct Columns {
-    a: Vec<DVector<f64>>,
-    cost: Vec<f64>,
-    lower: Vec<f64>,
-    upper: Vec<f64>,
-}
-
-impl Columns {
-    /// A column with `assets` in the asset rows and `budget` in the budget row `Σzₜ = 1`.
-    fn push(
-        &mut self,
-        assets: impl Iterator<Item = f64>,
-        budget: f64,
-        cost: f64,
-        (lower, upper): (f64, f64),
-    ) {
-        self.a
-            .push(DVector::from_vec(assets.chain([budget]).collect()));
-        self.cost.push(cost);
-        self.lower.push(lower);
-        self.upper.push(upper);
+        let (weights, _) = portfolios.min_max(&losses, unit, (0.0, cap), true, &start)?;
+        Ok(data.weights(weights))
     }
 }
 
@@ -288,17 +190,6 @@ pub(crate) fn tail_loss(mut losses: Vec<f64>, cap: f64) -> f64 {
         }
     }
     total
-}
-
-/// The power of two that scales `largest`, the largest return in size, to between ½ and 1, or
-/// 1 if it's 0. Within the exponents an `f64` can scale by in one step, so that a subnormal
-/// `largest` is scaled up as far as that goes.
-fn unit_scale(largest: f64) -> f64 {
-    if largest > 0.0 {
-        2f64.powi(-(largest.log2().floor() as i32 + 1).clamp(-1022, 1022))
-    } else {
-        1.0
-    }
 }
 
 /// The scenarios whose `zₜ` start at `cap` in [`MinCvar`]'s LP: those where the equal-weight
@@ -575,19 +466,6 @@ mod tests {
         assert!((weights[0] + weights[1] - 0.6).abs() < 1e-15, "{weights:?}");
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - target).abs() < 1e-15, "{achieved} vs {target}");
-    }
-
-    #[test]
-    fn the_unit_scale_takes_the_largest_return_to_between_a_half_and_1() {
-        for largest in [0.5, 0.75, 1.0, 3.0, 1e100, 1e-100, f64::MIN_POSITIVE] {
-            let scaled = largest * unit_scale(largest);
-            assert!((0.5..1.0).contains(&scaled), "{largest}: {scaled}");
-        }
-        assert_eq!(unit_scale(1.0), 0.5);
-        // Past what one power of two can reach, as far as it goes.
-        assert_eq!(unit_scale(f64::MAX), 2f64.powi(-1022));
-        assert_eq!(unit_scale(5e-324), 2f64.powi(1022));
-        assert_eq!(unit_scale(0.0), 1.0);
     }
 
     #[test]
