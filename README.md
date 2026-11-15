@@ -45,7 +45,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds, groups and a target return, and `cvar` measures any portfolio's CVaR.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. With a target return, costs make it a floor on the net return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
-- **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions and CVaR, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
+- **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions, CVaR, mean absolute deviation and drawdowns, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
 - **Rolling Allocation**: `data.rolling(60).allocate(method)` recomputes any method's weights over rolling windows of the data, giving weights over time, with each window's own result.
 - **JSON**: With the `serde` feature, weights, bounds, covariance configs and every method serialize and deserialize, each method as an object of its builders' settings.
 - **Fully Unit-Tested**: Includes test cases for correctness verification.
@@ -619,7 +619,9 @@ fn main() -> Result<(), CutupError> {
 
 ### Portfolio statistics
 
-`data.stats(&weights)` measures any weights on the same returns: the expected return, the volatility, the Sharpe ratio at a risk-free rate, the diversification ratio, each asset's share of the variance, and CVaR at a confidence. They're per period, in the units of the returns, with the sample mean and covariance, so methods are compared on the same footing whatever settings produced their weights. A riskless portfolio, such as cash, has a volatility of 0, and no Sharpe ratio, diversification ratio or risk shares.
+`data.stats(&weights)` measures any weights on the same returns: the expected return, the volatility, the Sharpe ratio at a risk-free rate, the diversification ratio, each asset's share of the variance, CVaR at a confidence, the mean absolute deviation, the mean shortfall below a threshold, and drawdowns: the largest, the average, and CDaR, the average of the worst ones at a confidence. They're per period, in the units of the returns, with the sample mean and covariance, so methods are compared on the same footing whatever settings produced their weights. A riskless portfolio, such as cash, has a volatility of 0, and no Sharpe ratio, diversification ratio or risk shares.
+
+A drawdown is how far the running sum of the portfolio's returns, from 0 before the first period, is below its highest so far, after each period. The returns are summed rather than compounded, as linear programs for drawdown risk take them, so with returns of a few percent a period the two differ only in the second order. Unlike the other measures, drawdowns depend on the order of the periods: losses in a row are a deeper drawdown than the same losses spread out.
 
 ```rust
 use cutup::{CutupError, Hrp, MinVariance, Returns, RiskParity};
@@ -649,12 +651,19 @@ fn main() -> Result<(), CutupError> {
             stats.risk_contributions().unwrap_or_default(),
             stats.cvar(0.8)?,
         );
+        println!(
+            "    MAD {:.5}, short of 0 by {:.5}, max drawdown {:.5}, CDaR {:.5}",
+            stats.mad(),
+            stats.downside_mad(0.0)?,
+            stats.max_drawdown(),
+            stats.cdar(0.8)?,
+        );
     }
     Ok(())
 }
 ```
 
-`data.stats_with(&weights, &covariance)` measures them under a `CovarianceConfig` instead, such as the one a method was given, an exponentially weighted covariance or a Black-Litterman posterior: the volatility, the Sharpe ratio, the diversification ratio and the risk shares use its matrix, while the expected return and CVaR stay those of the returns. With the default config it's `data.stats(&weights)`.
+`data.stats_with(&weights, &covariance)` measures them under a `CovarianceConfig` instead, such as the one a method was given, an exponentially weighted covariance or a Black-Litterman posterior: the volatility, the Sharpe ratio, the diversification ratio and the risk shares use its matrix, while the expected return, CVaR, deviations and drawdowns stay those of the returns. With the default config it's `data.stats(&weights)`.
 
 ```rust
 use cutup::{CovarianceConfig, CutupError, MinVariance, Returns};
