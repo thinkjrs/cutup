@@ -134,6 +134,14 @@ impl Allocation for MinCdar {
     /// seconds at 1,000 periods. This way it's milliseconds there for tens of assets, and a
     /// few seconds for 500.
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
+        let (weights, _) = self.solve(data)?;
+        Ok(data.weights(weights))
+    }
+}
+
+impl MinCdar {
+    /// The weights, and how many rounds of cuts they took: see [`MinCdar::allocate`].
+    fn solve(&self, data: &Returns) -> Result<(Vec<f64>, usize), CutupError> {
         let returns = &data.returns;
         let (t, n) = returns.shape();
         let cap = tail_weight(self.confidence, t)?;
@@ -146,7 +154,7 @@ impl Allocation for MinCdar {
         // Everything below is in the scaled returns' units: the cuts, the CDaRs and the bound.
         let mut cuts = vec![drawdowns.cut(&vec![1.0 / n as f64; n]).0];
         let mut best: Option<(Vec<f64>, f64)> = None;
-        for _ in 0..MAX_ROUNDS {
+        for round in 1..=MAX_ROUNDS {
             let (master, bound) = portfolios.min_of_max(&cuts, unit)?;
             let (master_cut, master_cdar) = drawdowns.cut(&master);
             let (best_weights, best_cdar) = match best.take() {
@@ -159,7 +167,7 @@ impl Allocation for MinCdar {
             // CDaR of 0 and a bound of −1e-17 agree.
             let tolerance = (1e-12 * best_cdar.abs()).max(t as f64 * f64::EPSILON);
             if best_cdar - bound <= tolerance {
-                return Ok(data.weights(best_weights));
+                return Ok((best_weights, round));
             }
             // The cut at a point between the best so far and the minimizer, if it cuts the
             // minimizer off and the bound doesn't have it yet; otherwise the minimizer's own,
@@ -185,7 +193,7 @@ impl Allocation for MinCdar {
                 // The minimizer's cut is one the bound already has, so the bound is its CDaR,
                 // and the best so far is no worse.
                 let (weights, _) = best.unwrap();
-                return Ok(data.weights(weights));
+                return Ok((weights, round));
             }
             cuts.push(cut);
         }
@@ -476,6 +484,61 @@ mod tests {
             let below = cut.dot(&DVector::from_column_slice(&other));
             let actual = data.cdar(&Weights::from(other.to_vec()), 0.8).unwrap();
             assert!(below <= actual + 1e-15, "{below} > {actual}");
+        }
+    }
+
+    #[test]
+    fn a_cut_measures_from_the_earliest_of_equal_peaks() {
+        // All on asset 0's half: the portfolio returns 0.5, then exactly 0, then −0.5, so the
+        // running sum peaks at 0.5 after both the first and the second period. Asset by asset
+        // the second period moved, so the two peaks give different cuts: the first is kept.
+        let returns = DMatrix::from_row_slice(3, 2, &[0.5, 0.5, 0.25, -0.25, -0.75, -0.25]);
+        let drawdowns = Drawdowns::new(&returns, tail_weight(0.9, 3).unwrap());
+        let (cut, cdar) = drawdowns.cut(&[0.5, 0.5]);
+        assert_eq!(cdar, 0.5);
+        // The running sums after the first period less those after the third: (0.5, 0.5) − 0.
+        assert_eq!(cut, DVector::from_vec(vec![0.5, 0.5]));
+    }
+
+    #[test]
+    fn a_cut_counts_the_drawdown_rounding_leaves_in_the_tail() {
+        // At β = 0.5 over 10 periods each of the worst 5 drawdowns weighs 0.2, which leaves about
+        // 5.6e-17 of the tail for the sixth, as for CVaR. All on asset 0, the drawdowns shrink
+        // from 0.10 after the first period to 0.01 after the tenth, so the sixth is after the
+        // sixth period, and asset 1's only return, a loss of 1e200 in that period, reaches the
+        // cut through it alone.
+        let mut returns = DMatrix::zeros(10, 2);
+        returns[(0, 0)] = -0.10;
+        for k in 1..10 {
+            returns[(k, 0)] = 0.01;
+        }
+        returns[(5, 1)] = -1e200;
+        let drawdowns = Drawdowns::new(&returns, tail_weight(0.5, 10).unwrap());
+        let (cut, _) = drawdowns.cut(&[1.0, 0.0]);
+        assert!(cut[1] > 1e183, "{}", cut[1]);
+    }
+
+    #[test]
+    fn the_rounds_follow_the_stabilized_path() {
+        // Each cut is chosen between the query's and the minimizer's, and the best portfolio
+        // kept, so that the rounds are few; any other choice ends at the same optimum but takes
+        // more of them here. Natively they take 4 and 3, 12 and 7, and 21 and 22 rounds. The
+        // generated returns use `ln` and `cos`, which round differently on wasm, where one
+        // takes 13, so each is held within two rounds of those counts: the other choices took
+        // from 16 to 31.
+        for ((n, t, seed), most) in [
+            ((5, 60, 11), [6, 5]),
+            ((8, 120, 3), [14, 9]),
+            ((12, 200, 5), [23, 24]),
+        ] {
+            let data = Returns::returns_matrix(factor_returns(n, t, seed)).unwrap();
+            for (beta, most) in [0.5, 0.9].into_iter().zip(most) {
+                let (_, rounds) = MinCdar::default().confidence(beta).solve(&data).unwrap();
+                assert!(
+                    rounds <= most,
+                    "{n} assets, {t} periods, β = {beta}: {rounds} rounds"
+                );
+            }
         }
     }
 
