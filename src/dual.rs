@@ -204,6 +204,24 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
+    fn the_worst_case_is_the_optimum_unscaled() {
+        // Returns of a few percent scale by 16, so the optimum has to be divided back by it.
+        let data = Returns::returns_matrix(crate::test_support::factor_returns(4, 30, 3)).unwrap();
+        let unit = unit_scale(data.returns.amax());
+        assert_eq!(unit, 16.0);
+        let beta = 0.8;
+        let cap = crate::cvar::tail_weight(beta, 30).unwrap();
+        let losses = (&data.returns * unit).transpose().map(|r| -r);
+        let portfolios = Portfolios::new(&data, &WeightBounds::default(), None).unwrap();
+        let (weights, worst) = portfolios
+            .min_max(&losses, unit, (0.0, cap), true, &[])
+            .unwrap();
+        let cvar = data.cvar(&weights.into(), beta).unwrap();
+        assert!(cvar > 0.0);
+        assert!((worst - cvar).abs() <= 1e-15, "{worst} vs {cvar}");
+    }
+
+    #[test]
     fn the_unit_scale_takes_the_largest_return_to_between_a_half_and_1() {
         for largest in [0.5, 0.75, 1.0, 3.0, 1e100, 1e-100, f64::MIN_POSITIVE] {
             let scaled = largest * unit_scale(largest);
