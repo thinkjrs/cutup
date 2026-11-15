@@ -7,8 +7,9 @@
 //! ```
 //!
 //! The solvers are private, so each one is measured through a method that uses it:
-//! `MinVariance` for the active-set QP solver, `MinCvar` for the LP, `Hrp` and `Herc` for the
-//! clustering, and `RiskParity` for its Newton iteration. `MinVarianceGroups` adds groups
+//! `MinVariance` for the active-set QP solver, `MinCvar` for the LP, `MinCdar` for its cutting
+//! planes on the LP, `Hrp` and `Herc` for the clustering, and `RiskParity` for its Newton
+//! iteration. `MinVarianceGroups` adds groups
 //! that bind, which the QP solver holds at their limits. Each run covers the whole of
 //! `allocate`, including the sample covariance.
 //!
@@ -28,7 +29,9 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
-    use cutup::{Allocation, Herc, Hrp, MinCvar, MinVariance, Returns, RiskParity, WeightBounds};
+    use cutup::{
+        Allocation, Herc, Hrp, MinCdar, MinCvar, MinVariance, Returns, RiskParity, WeightBounds,
+    };
 
     /// The sizes each method is timed at, in assets, with how many samples criterion takes at
     /// each. Its default is 100. Sizes where a solve takes over a tenth of a second get its minimum
@@ -36,8 +39,9 @@ mod native {
     /// minute and a half to measure.
     const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
-    /// The sizes for `MinVariance` and `MinCvar`, where a solve at 500 assets takes over a tenth
-    /// of a second: about 0.23 s for `MinVariance` and 1 s for `MinCvar`.
+    /// The sizes for `MinVariance`, `MinCvar` and `MinCdar`, where a solve at 500 assets takes
+    /// over a tenth of a second: about 0.23 s for `MinVariance`, 11 s for `MinCvar` and 5.5 s
+    /// for `MinCdar`.
     const SLOW_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
 
     /// Periods per asset. Twice as many periods as assets keeps the sample covariance well
@@ -147,6 +151,7 @@ mod native {
         bench_method(c, "MinVariance", |_| MinVariance::default(), &SLOW_SIZES);
         bench_method(c, "MinVarianceGroups", grouped, &SLOW_SIZES);
         bench_method(c, "MinCvar", |_| MinCvar::default(), &SLOW_SIZES);
+        bench_method(c, "MinCdar", |_| MinCdar::default(), &SLOW_SIZES);
         bench_method(c, "Hrp", |_| Hrp::default(), &SIZES);
         bench_method(c, "Herc", |_| Herc::default(), &SIZES);
         bench_method(c, "RiskParity", |_| RiskParity::default(), &SIZES);
