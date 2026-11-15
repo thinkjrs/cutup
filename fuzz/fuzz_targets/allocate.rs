@@ -22,8 +22,8 @@ use arbitrary::Arbitrary;
 use cutup::{
     Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
-    Weights,
+    MinCvar, MinMad, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View,
+    WeightBounds, Weights,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::Serialize;
@@ -130,7 +130,8 @@ fn groups(method: &Method) -> Vec<Group> {
     match method {
         Method::MinVariance { bounds, .. }
         | Method::MeanVariance { bounds, .. }
-        | Method::MinCvar { bounds, .. } => bounds
+        | Method::MinCvar { bounds, .. }
+        | Method::MinMad { bounds, .. } => bounds
             .as_ref()
             .map_or_else(Vec::new, |grouped| grouped.groups.clone()),
         _ => Vec::new(),
@@ -360,6 +361,11 @@ enum Method {
         confidence: Option<f64>,
         bounds: Option<Grouped>,
         target_return: Option<f64>,
+    },
+    MinMad {
+        bounds: Option<Grouped>,
+        target_return: Option<f64>,
+        downside: Option<f64>,
     },
     /// Black-Litterman expected returns, into mean-variance or max Sharpe, with its posterior
     /// covariance or the method's own.
@@ -704,6 +710,23 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             }
             if let Some(target) = target_return {
                 m = m.target_return(target);
+            }
+            boxed(m)
+        }
+        Method::MinMad {
+            bounds,
+            target_return,
+            downside,
+        } => {
+            let mut m = MinMad::default();
+            if let Some(bounds) = bounds {
+                m = m.bounds(bounds.into());
+            }
+            if let Some(target) = target_return {
+                m = m.target_return(target);
+            }
+            if let Some(threshold) = downside {
+                m = m.downside(threshold);
             }
             boxed(m)
         }

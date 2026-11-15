@@ -8,7 +8,8 @@
 use cutup::{
     Allocation, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinVariance, Returns, RiskParity, ShrinkageTarget, View, WeightBounds, Weights,
+    MinCvar, MinMad, MinVariance, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
+    Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -645,12 +646,16 @@ proptest! {
         let highest = stats(&MaxDiversification::default()).diversification_ratio().unwrap();
         let best = stats(&low_rate()).sharpe_ratio(-1.0).unwrap();
         let least = stats(&MinCvar::default()).cvar(0.95).unwrap();
+        let least_mad = stats(&MinMad::default()).mad();
+        let least_shortfall = stats(&MinMad::default().downside(0.0)).downside_mad(0.0).unwrap();
         for weights in long_only_methods(&allocator) {
             let other = allocator.stats(&weights).unwrap();
             prop_assert!(lowest <= other.volatility() * (1.0 + 1e-9), "{weights:?}");
             prop_assert!(other.diversification_ratio().unwrap() <= highest * (1.0 + 1e-9), "{weights:?}");
             prop_assert!(other.sharpe_ratio(-1.0).unwrap() <= best * (1.0 + 1e-9), "{weights:?}");
             prop_assert!(least <= other.cvar(0.95).unwrap() + 1e-12 * least.abs().max(1e-3), "{weights:?}");
+            prop_assert!(least_mad <= other.mad() + 1e-12 * least_mad.max(1e-3), "{weights:?}");
+            prop_assert!(least_shortfall <= other.downside_mad(0.0).unwrap() + 1e-12 * least_shortfall.max(1e-3), "{weights:?}");
         }
         let n = allocator.labels().len() as f64;
         for share in stats(&RiskParity::default()).risk_contributions().unwrap() {
@@ -2169,6 +2174,78 @@ proptest! {
             let other = allocator.cvar(&Weights::from(candidate.clone()), beta).unwrap();
             prop_assert!(best <= other + 1e-12 * scale, "{best} > {other} at {candidate:?}");
         }
+    }
+
+    #[test]
+    fn min_mad_beats_every_long_only_portfolio_tried(
+        returns in returns(),
+        threshold in prop::option::of(-0.03f64..0.03),
+        tries in prop::collection::vec(prop::collection::vec(0.0f64..1.0, 6), 30),
+    ) {
+        let n = returns.ncols();
+        let allocator = returns_via_flat(returns).unwrap();
+        let method = match threshold {
+            Some(threshold) => MinMad::default().downside(threshold),
+            None => MinMad::default(),
+        };
+        let risk = |weights: &Weights| match threshold {
+            Some(threshold) => allocator.downside_mad(weights, threshold).unwrap(),
+            None => allocator.mad(weights).unwrap(),
+        };
+        let weights = allocator.allocate(&method).unwrap();
+        prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        prop_assert!(weights.iter().all(|&w| w >= 0.0));
+        let best = risk(&weights);
+        let scale = best.max(1e-3);
+        let mut candidates: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        candidates.push(vec![1.0 / n as f64; n]);
+        candidates.extend(tries.iter().map(|t| current_weights(&t.iter().map(|x| x + 1e-3).collect::<Vec<_>>(), n)));
+        for candidate in candidates {
+            let other = risk(&Weights::from(candidate.clone()));
+            prop_assert!(best <= other + 1e-12 * scale, "{best} > {other} at {candidate:?}");
+        }
+    }
+
+    #[test]
+    fn min_mad_meets_its_bounds_and_target(
+        returns in returns(),
+        threshold in prop::option::of(-0.03f64..0.03),
+        fractions in bounds(),
+        mix in 0.0f64..0.999,
+    ) {
+        let n = returns.ncols();
+        let mu = returns.row_mean();
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let allocator = returns_via_flat(returns).unwrap();
+        let mut bounded = MinMad::default().bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
+        if let Some(threshold) = threshold {
+            bounded = bounded.downside(threshold);
+        }
+        let weights = allocator.allocate(&bounded).unwrap();
+        for i in 0..n {
+            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+        }
+        // Any target between the bounded portfolio's own return and the highest inside the
+        // bounds is reachable, as for min CVaR.
+        let own: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        let mut left = 1.0 - lower.iter().sum::<f64>();
+        let mut highest: f64 = lower.iter().zip(mu.iter()).map(|(l, m)| l * m).sum();
+        for i in order {
+            let share = left.min(upper[i] - lower[i]);
+            highest += share * mu[i];
+            left -= share;
+        }
+        let target = own + mix * (highest - own);
+        let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
+        for i in 0..n {
+            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+        }
+        let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
     }
 
     #[test]

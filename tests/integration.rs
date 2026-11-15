@@ -134,6 +134,7 @@ fn public_types_are_send_and_sync() {
     send_and_sync::<cutup::MaxSharpe>();
     send_and_sync::<MeanVariance>();
     send_and_sync::<cutup::MinCvar>();
+    send_and_sync::<cutup::MinMad>();
     send_and_sync::<MinVariance>();
     send_and_sync::<cutup::PerAsset>();
     send_and_sync::<Returns>();
