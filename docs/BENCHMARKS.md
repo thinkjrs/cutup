@@ -89,15 +89,19 @@ got fast enough.
 | Each round's program as `MinCvar`'s dual, a row per asset | 0.22 ms | 1.5 s | 602 s |
 | As the primal, a row per cut | | | 10.8 s |
 | Each cut halfway from the best so far | 59 µs | 0.15 s | 5.5 s |
+| Sorting only the tail, with no temporaries | 29 µs | 77 ms | 2.8 s |
 
 - **The dual form** has a row per asset whatever the rounds, so at 500 assets
-  each round took about 2 seconds, as long as a `MinCvar` solve, from the first.
+  each round took about 2 seconds, from the first.
 - **The primal form** has a row per cut, so the early rounds are tiny, and the
   bounds are the weights' own rather than columns of the program. The rounds
   and their bounds were the same.
 - **In-out stabilization** takes each cut halfway from the best portfolio so far
   to the program's minimizer, where Kelley's cuts at the minimizer alone
   zig-zag: about 110 rounds at 500 assets rather than 190.
+- **Each cut** sorts only the worst drawdowns that can be in the tail, as
+  `tail_loss` does for CVaR, rather than all `T`, and adds each one's gap into
+  the cut in place rather than through temporary vectors.
 
 The 10.8 s row is from a test with other generated returns at that size, which
 took 2.2 s with the stabilization, so the last two rows aren't measured alike.

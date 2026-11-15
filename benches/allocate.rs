@@ -40,7 +40,7 @@ mod native {
     const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
     /// The sizes for `MinVariance`, `MinCvar` and `MinCdar`, where a solve at 500 assets takes
-    /// over a tenth of a second: about 0.23 s for `MinVariance`, 11 s for `MinCvar` and 5.5 s
+    /// over a tenth of a second: about 0.23 s for `MinVariance`, 11 s for `MinCvar` and 2.8 s
     /// for `MinCdar`.
     const SLOW_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
 

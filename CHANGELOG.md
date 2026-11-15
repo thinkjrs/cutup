@@ -14,7 +14,7 @@ All notable changes to this project are documented here. The format follows
   `.target_return(..)`, as `MinCvar` does, and it's the one method that depends on the order of
   the periods. The full linear program has rows for every period and took 86 seconds at 1,000
   periods, so it's solved exactly by cutting planes instead (Kelley, 1960), each round a
-  program with a row per cut, with in-out stabilization: about 0.15 s at 100 assets and 5.5 s
+  program with a row per cut, with in-out stabilization: about 0.08 s at 100 assets and 2.8 s
   at 500 in the benchmark. It serializes with the `serde` feature as `MinCvar` does, and has a
   TypeScript type with `ts-rs`. The reference suite checks it against the full program in
   SciPy's `linprog` and riskfolio-lib's `rm="CDaR"`, the fuzzer and the property tests cover
