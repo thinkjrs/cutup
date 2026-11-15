@@ -487,6 +487,7 @@ fn stats_match_python_reference() {
     let expected: Value = serde_json::from_str(include_str!("fixtures/stats.json")).unwrap();
     let rates = floats(&expected["rates"]);
     let betas = floats(&expected["betas"]);
+    let thresholds = floats(&expected["thresholds"]);
     let cases = expected["cases"].as_array().unwrap();
     assert!(!cases.is_empty());
 
@@ -525,6 +526,42 @@ fn stats_match_python_reference() {
                 stats.cvar(*beta).unwrap(),
                 want,
                 1e-13 * scale,
+            );
+        }
+        compare(
+            "MAD".into(),
+            stats.mad(),
+            case["mad"].as_f64().unwrap(),
+            1e-13 * scale,
+        );
+        for (threshold, want) in thresholds.iter().zip(floats(&case["downside_mad"])) {
+            compare(
+                format!("downside MAD below {threshold}"),
+                stats.downside_mad(*threshold).unwrap(),
+                want,
+                1e-13 * scale,
+            );
+        }
+        // A drawdown is a running sum of up to T returns.
+        let sums = scale * data.period_count() as f64;
+        compare(
+            "max drawdown".into(),
+            stats.max_drawdown(),
+            case["max_drawdown"].as_f64().unwrap(),
+            1e-13 * sums,
+        );
+        compare(
+            "average drawdown".into(),
+            stats.average_drawdown(),
+            case["average_drawdown"].as_f64().unwrap(),
+            1e-13 * sums,
+        );
+        for (beta, want) in betas.iter().zip(floats(&case["cdar"])) {
+            compare(
+                format!("CDaR at {beta}"),
+                stats.cdar(*beta).unwrap(),
+                want,
+                1e-13 * sums,
             );
         }
         if case["diversification_ratio"].is_null() {
@@ -617,6 +654,15 @@ fn stats_with_match_python_reference() {
             || betas.iter().any(|&b| stats.cvar(b) != sample.cvar(b))
         {
             failures.push(format!("{what}: the expected return or CVaR isn't stats'"));
+        }
+        // The deviations and drawdowns are historical too.
+        if stats.mad() != sample.mad()
+            || stats.downside_mad(0.0) != sample.downside_mad(0.0)
+            || stats.max_drawdown() != sample.max_drawdown()
+            || stats.average_drawdown() != sample.average_drawdown()
+            || betas.iter().any(|&b| stats.cdar(b) != sample.cdar(b))
+        {
+            failures.push(format!("{what}: the deviations or drawdowns aren't stats'"));
         }
         let volatility = case["volatility"].as_f64().unwrap();
         if case["diversification_ratio"].is_null() {

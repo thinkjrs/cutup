@@ -14,11 +14,15 @@ computation from the portfolio's return in each period:
 * the diversification ratio σᵀw / sqrt(wᵀΣw);
 * each asset's share of the variance wᵢ(Σw)ᵢ / wᵀΣw;
 * CVaR at β = 0.5, 0.8 and 0.95: the average loss over the worst 1 − β of the periods, the
-  last one in part, written out from that definition.
+  last one in part, written out from that definition;
+* the mean absolute deviation (1/T) Σ|rₜ − r̄|, and the mean shortfall (1/T) Σ max(τ − rₜ, 0)
+  below τ = 0 and 0.001;
+* the drawdowns of the running sum of the portfolio's returns, from 0 before the first period:
+  the largest, their average, and CDaR, the CVaR of the drawdowns, at the same β.
 
 Each case is cross-checked against PyPortfolioOpt's portfolio_performance, to 1e-12, and
 against riskfolio-lib's Risk_Contribution with rm="MV", which uses central differences, to
-1e-6, and its CVaR_Hist, to 1e-12. A portfolio whose volatility is below 1e-10 of the
+1e-6, and its CVaR_Hist, MAD, LPM with p = 1, MDD_Abs, ADD_Abs and CDaR_Abs, to 1e-12. A portfolio whose volatility is below 1e-10 of the
 sizes of its positions' largest returns, Σᵢ|wᵢ| maxₜ|rₜᵢ|, counts as riskless, as cutup counts it: its ratios
 and shares are null.
 
@@ -51,6 +55,7 @@ DATASETS = FIXTURES / "datasets.json"
 OUTPUT = FIXTURES / "stats.json"
 RATES = [0.0, 0.0004]
 BETAS = [0.5, 0.8, 0.95]
+THRESHOLDS = [0.0, 0.001]
 
 
 def load_returns(dataset: dict) -> np.ndarray:
@@ -67,6 +72,14 @@ def cvar(portfolio: np.ndarray, beta: float) -> float:
     whole = int(np.floor(tail))
     total = losses[:whole].sum() + (tail - whole) * (losses[whole] if whole < len(losses) else 0.0)
     return float(total / tail)
+
+
+def drawdowns(portfolio: np.ndarray) -> np.ndarray:
+    """How far the running sum of the returns is below its highest so far, from 0 before the
+    first period, after each period."""
+    running = np.cumsum(portfolio)
+    peaks = np.maximum.accumulate(np.concatenate([[0.0], running]))[1:]
+    return peaks - running
 
 
 def stats(returns: np.ndarray, weights: np.ndarray) -> dict:
@@ -86,7 +99,14 @@ def stats(returns: np.ndarray, weights: np.ndarray) -> dict:
         "diversification_ratio": None if riskless else float(np.sqrt(np.diag(cov)) @ weights / volatility),
         "risk_contributions": None if riskless else (weights * (cov @ weights) / variance).tolist(),
         "cvar": [cvar(portfolio, beta) for beta in BETAS],
+        "mad": float(np.abs(portfolio - portfolio.mean()).mean()),
+        "downside_mad": [float(np.maximum(tau - portfolio, 0.0).mean()) for tau in THRESHOLDS],
     }
+    falls = drawdowns(portfolio)
+    out["max_drawdown"] = float(falls.max())
+    out["average_drawdown"] = float(falls.mean())
+    # CDaR is the CVaR of the drawdowns as losses.
+    out["cdar"] = [cvar(-falls, beta) for beta in BETAS]
     cross_check(returns, mu, cov, weights, out)
     return out
 
@@ -116,6 +136,16 @@ def cross_check(returns, mu, cov, weights, out) -> None:
     for beta, value in zip(BETAS, out["cvar"]):
         theirs = riskfolio.CVaR_Hist(portfolio, alpha=1.0 - beta)
         assert close(theirs, value, 1e-12) or abs(theirs - value) <= 1e-15, (beta, theirs, value)
+    agree = lambda theirs, value: close(theirs, value, 1e-12) or abs(theirs - value) <= 1e-15
+    assert agree(riskfolio.MAD(portfolio), out["mad"]), (riskfolio.MAD(portfolio), out)
+    for tau, value in zip(THRESHOLDS, out["downside_mad"]):
+        theirs = riskfolio.LPM(portfolio, MAR=tau, p=1)
+        assert agree(theirs, value), (tau, theirs, value)
+    assert agree(riskfolio.MDD_Abs(portfolio), out["max_drawdown"]), (riskfolio.MDD_Abs(portfolio), out)
+    assert agree(riskfolio.ADD_Abs(portfolio), out["average_drawdown"]), (riskfolio.ADD_Abs(portfolio), out)
+    for beta, value in zip(BETAS, out["cdar"]):
+        theirs = riskfolio.CDaR_Abs(portfolio, alpha=1.0 - beta)
+        assert agree(theirs, value), (beta, theirs, value)
 
 
 def covariance_stats(returns: np.ndarray, cov: np.ndarray, weights: np.ndarray) -> dict:
@@ -231,13 +261,19 @@ def drift(committed: list, fresh: list) -> list[str]:
 
 
 def main() -> None:
-    fresh = {"rates": RATES, "betas": BETAS, "cases": cases(), "with_covariance": covariance_cases()}
+    fresh = {
+        "rates": RATES,
+        "betas": BETAS,
+        "thresholds": THRESHOLDS,
+        "cases": cases(),
+        "with_covariance": covariance_cases(),
+    }
     if "--check" in sys.argv[1:]:
         committed = json.loads(OUTPUT.read_text())
         problems = drift(committed["cases"], fresh["cases"])
         problems += [f"with_covariance {p}" for p in drift(committed["with_covariance"], fresh["with_covariance"])]
-        if committed["rates"] != RATES or committed["betas"] != BETAS:
-            problems.append("rates or betas")
+        if committed["rates"] != RATES or committed["betas"] != BETAS or committed.get("thresholds") != THRESHOLDS:
+            problems.append("rates, betas or thresholds")
         for problem in problems:
             print(problem)
         total = len(fresh["cases"]) + len(fresh["with_covariance"])
