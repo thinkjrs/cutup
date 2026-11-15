@@ -5048,6 +5048,348 @@
       "error": "InfeasibleGroups"
     },
     {
+      "dataset": "orthogonal3",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.01,
+      "weights": [1.0, -0.0, -0.0]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.006666666666666666,
+      "weights": [0.6666666666666666, 0.3333333333333333, -0.0]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.01,
+      "weights": [1.0, -0.0, -0.0]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.003827586206896552,
+      "weights": [0.10344827586206898, 0.896551724137931]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.0016,
+      "weights": [0.2, 0.8]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.003827586206896552,
+      "weights": [0.10344827586206898, 0.896551724137931]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.02702230248695458,
+      "weights": [0.0, 0.0, 0.0, 0.7917730653935825, 0.20822693460641742]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.013263090934337262,
+      "weights": [0.0, 0.56266125230886, 0.0, 0.31709320798119595, 0.12024553970994406]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.024820735486433453,
+      "weights": [0.0, 0.0, 0.0, 0.8522470611250422, 0.14775293887495777]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.01813530601002091,
+      "weights": [0.08650446517755343, 0.0, 0.08185993452971801, 0.1323953128967779, 0.1732931266816637, 0.11824409332273438, 0.05164444720344952, 0.0, 0.35605862018810314, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.009839681601339273,
+      "weights": [0.33171218042599715, 0.0, 0.04913005519655901, 0.0, 0.07193873870079295, 0.2951734030658684, 0.0021653354841235793, 0.0, 0.2498802871266589, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.01736165616914422,
+      "weights": [0.1624603116508582, 0.0, 0.03223517539915672, 0.13976253967739405, 0.1685397321493889, 0.1572145003989893, 0.04858761157752371, 0.0, 0.2912001291466891, 0.0]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.010940016530929648,
+      "weights": [0.11533576175960562, 0.6913506359394345, 0.19331360230095984, 0.0]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.006406892129586305,
+      "weights": [0.26496876740826264, 0.5348414028159403, 0.200189829775797, 0.0]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.010656311794044939,
+      "weights": [0.1512258761362105, 0.7202637997106395, 0.12851032415315006, 0.0]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.0,
+      "weights": [0.2907324632769499, 0.177808579413688, 0.0, 0.0, 0.0, 0.5314589573093622]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.0,
+      "weights": [0.29073246327694985, 0.17780857941368797, 0.0, 0.0, 0.0, 0.5314589573093621]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.0,
+      "weights": [0.2907324632769499, 0.177808579413688, 0.0, 0.0, 0.0, 0.5314589573093622]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 0.02,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.013333333333333332,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.02,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cdar",
+      "tolerance": 1e-09,
+      "cdar": 3.4664711e-10,
+      "weights": [0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.5
+      },
+      "tolerance": 1e-09,
+      "cdar": 2.2724613108333332e-10,
+      "weights": [0.0, 0.0, -0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9
+      },
+      "tolerance": 1e-09,
+      "cdar": 3.279680166666667e-10,
+      "weights": [0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "bounds": [0.0, 0.15]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.025250359619297863,
+      "weights": [0.15, 0.0061903016690626495, 0.08133285417626002, 0.15, 0.15, 0.15, 0.15, 0.01247684415467733, 0.15, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9,
+        "bounds": [0.05, 0.3]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.02130053798287164,
+      "weights": [0.22128259081162688, 0.05, 0.0808041496089359, 0.06583124477708638, 0.05, 0.08208201480235076, 0.05, 0.05, 0.3, 0.05]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.8,
+        "lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0],
+        "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.02139462980380684,
+      "weights": [0.1, 0.24178004767853853, 0.0, 0.6192730325367474, 0.038946919784714096]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9,
+        "target_return": 0.0006
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.04731432937140022,
+      "weights": [0.0, 0.0, 0.0, 0.2807060027171148, 0.011807500487441443, 0.165473686003848, 0.0, 0.0, 0.05152106786996153, 0.49049174292163444]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.8,
+        "target_return": 0.002,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9,
+        "groups": [
+          [[4, 5, 6], 0.0, 0.3]
+        ]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.01765211159260776,
+      "weights": [0.1646304699687336, 0.018479073404341458, 0.08866080446724765, 0.11300495158836642, 0.16469998141804953, 0.11531826213495046, 0.019981756446999996, 0.0, 0.31522470057131086, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.8,
+        "bounds": [0.0, 0.3],
+        "groups": [
+          [[1, 8], 0.35, 1.0]
+        ]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.016551341035930284,
+      "weights": [0.06380280570460498, 0.04999999999999999, 0.05679018028402351, 0.18017197356031858, 0.11493929140283206, 0.16838086096983046, 0.06591488807839031, 0.0, 0.3, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "confidence": 0.9,
+        "target_return": 0.0006,
+        "groups": [
+          [[4, 5, 6], 0.0, 0.3]
+        ]
+      },
+      "tolerance": 1e-09,
+      "cdar": 0.04731432937140022,
+      "weights": [0.0, 0.0, 0.0, 0.2807060027171148, 0.011807500487441443, 0.165473686003848, 0.0, 0.0, 0.05152106786996153, 0.49049174292163444]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "target_return": 0.05
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "bounds": [0.0, 0.05]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_cdar",
+      "params": {
+        "groups": [
+          [[0, 1], 0.6, 1.0],
+          [[2, 3], 0.6, 1.0]
+        ]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleGroups"
+    },
+    {
       "dataset": "prices10x60",
       "method": "black_litterman",
       "params": {

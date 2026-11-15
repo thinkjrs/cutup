@@ -9,8 +9,8 @@
 
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinMad,
-    MinVariance, Returns, RiskParity, View, WeightBounds, Weights,
+    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar,
+    MinMad, MinVariance, Returns, RiskParity, View, WeightBounds, Weights,
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
@@ -263,6 +263,20 @@ fn min_cvar(params: &Value) -> MinCvar {
     method
 }
 
+fn min_cdar(params: &Value) -> MinCdar {
+    let mut method = MinCdar::default();
+    if let Some(beta) = params["confidence"].as_f64() {
+        method = method.confidence(beta);
+    }
+    if let Some(bounds) = weight_bounds(params) {
+        method = method.bounds(bounds);
+    }
+    if let Some(target) = params["target_return"].as_f64() {
+        method = method.target_return(target);
+    }
+    method
+}
+
 fn min_mad(params: &Value) -> MinMad {
     let mut method = MinMad::default();
     if let Some(bounds) = weight_bounds(params) {
@@ -305,7 +319,7 @@ fn frontier_point(
         })
 }
 
-const METHODS: [&str; 20] = [
+const METHODS: [&str; 21] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -324,6 +338,7 @@ const METHODS: [&str; 20] = [
     "rebalance_mean_variance",
     "min_cvar",
     "min_mad",
+    "min_cdar",
     "frontier",
     "long_only_frontier",
 ];
@@ -365,6 +380,7 @@ fn run(allocator: &Returns, method: &str, params: &Value) -> Result<Weights, Cut
         "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
         "min_cvar" => allocator.allocate(&min_cvar(params)),
         "min_mad" => allocator.allocate(&min_mad(params)),
+        "min_cdar" => allocator.allocate(&min_cdar(params)),
         "frontier" => frontier_point(allocator, &frontier_method(params).allow_short(), params),
         "long_only_frontier" => match weight_bounds(params) {
             Some(bounds) => {
@@ -436,6 +452,15 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
             let scale = returns_scale(&datasets[dataset]);
             (got > want + 1e-12 * scale || got < want - 1e-9 * scale)
                 .then(|| format!("{label}: MAD {got:e}, reference {want:e}"))
+        }
+        // The same for min CDaR, whose drawdowns are sums over up to T periods.
+        (Ok(weights), None) if method == "min_cdar" => {
+            let beta = params["confidence"].as_f64().unwrap_or(0.95);
+            let got = allocator.cdar(&weights, beta).unwrap();
+            let want = case["cdar"].as_f64().unwrap();
+            let scale = returns_scale(&datasets[dataset]) * allocator.period_count() as f64;
+            (got > want + 1e-12 * scale || got < want - 1e-9 * scale)
+                .then(|| format!("{label}: CDaR {got:e}, reference {want:e}"))
         }
         (Ok(weights), None) => {
             let expected = floats(&case["weights"]);
