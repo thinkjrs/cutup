@@ -5,8 +5,8 @@
 use crate::{
     Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, FrontierPoint, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinVariance, PerAsset, RiskParity, ShrinkageTarget, View, WeightBounds, Weights,
-    Window,
+    MinCvar, MinMad, MinVariance, PerAsset, RiskParity, ShrinkageTarget, View, WeightBounds,
+    Weights, Window,
 };
 use ts_rs::{Config, TS};
 #[cfg(target_arch = "wasm32")]
@@ -103,6 +103,11 @@ fn each_method_is_an_object_of_its_builders() {
          target_return?: number | null, };"
     );
     assert_eq!(
+        decl::<MinMad>(),
+        "type MinMad = { bounds?: WeightBounds, target_return?: number | null, \
+         downside?: number | null, };"
+    );
+    assert_eq!(
         decl::<BlackLitterman>(),
         "type BlackLitterman = { market_weights: PerAsset, risk_aversion: number, \
          risk_free_rate?: number, tau?: number, views?: Array<View>, \
@@ -144,7 +149,8 @@ fn results_and_errors_are_their_json() {
 mod export {
     use crate::{
         BlackLitterman, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility,
-        MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance, RiskParity, Window,
+        MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinMad, MinVariance, RiskParity,
+        Window,
     };
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -178,6 +184,7 @@ mod export {
         Hrp::export_all(&cfg).unwrap();
         Herc::export_all(&cfg).unwrap();
         MinCvar::export_all(&cfg).unwrap();
+        MinMad::export_all(&cfg).unwrap();
         EqualWeight::export_all(&cfg).unwrap();
         InverseVolatility::export_all(&cfg).unwrap();
         InverseVariance::export_all(&cfg).unwrap();

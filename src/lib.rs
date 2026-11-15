@@ -71,6 +71,7 @@ mod eigen;
 mod error;
 mod expected_returns;
 mod lp;
+mod mad;
 mod methods;
 mod qp;
 mod returns;
@@ -95,6 +96,7 @@ pub use cvar::MinCvar;
 #[allow(deprecated)]
 pub use deprecated::PortfolioAllocator;
 pub use error::CutupError;
+pub use mad::MinMad;
 pub use methods::{
     EqualWeight, FrontierPoint, Herc, Hrp, InverseVariance, InverseVolatility, MaxDiversification,
     MaxSharpe, MeanVariance, MinVariance, RiskParity,
