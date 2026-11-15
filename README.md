@@ -22,6 +22,7 @@ Here are some of the allocation methods included in this library:
 - **Hierarchical Risk Parity (HRP)**
 - **Hierarchical Equal Risk Contribution (HERC)**
 - **Minimum CVaR (expected shortfall)**, from historical scenarios
+- **Minimum mean absolute deviation (MAD)**, or the least mean shortfall below a threshold
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 - **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
 - **Asset labels**, such as tickers, on the data and the weights, and in every per-asset setting
@@ -43,6 +44,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **HRP Allocation**: Uses hierarchical clustering and recursive bisection for risk-based allocation. Choose single, complete, average or Ward linkage with `Hrp::linkage`, and inspect the cluster order with `Hrp::cluster_order`.
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `Herc::clusters`, then splits risk down the tree and by inverse variance within each group.
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds, groups and a target return, and `cvar` measures any portfolio's CVaR.
+- **Minimum MAD**: The long-only portfolio with the lowest mean absolute deviation of its returns around their mean, or with `.downside(threshold)` the lowest mean shortfall below a threshold, solved exactly as a linear program by the same simplex solver. Takes weight bounds, groups and a target return, and `mad` and `downside_mad` measure any portfolio's.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. With a target return, costs make it a floor on the net return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
 - **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions, CVaR, mean absolute deviation and drawdowns, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
@@ -63,6 +65,7 @@ Each method is a value you pass to `Returns::allocate`. Methods that can short a
 | `MeanVariance` | covariance, expected returns | ✅ by default | Markowitz, built from `MeanVariance::risk_aversion(..)` or `MeanVariance::target_return(..)`. Most sensitive to the expected returns you supply. Long-only, a target return must lie between the lowest and highest expected return, or the lowest and highest return the bounds and groups allow; `.bounds(..)` caps or floors each asset, or groups of them. `.transaction_costs(..)`, `.max_turnover(..)` and `.turnover_penalty(..)` rebalance from `.current_weights(..)`; with a target return and costs, the target is a floor on the return net of them. |
 | `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
 | `MinCvar` | return scenarios | ✅ | The lowest average loss in the worst `1 − β` of the scenarios, 5% by default. Looks at the losses themselves rather than a covariance, so it reacts to skew and fat tails; needs enough scenarios for a tail, at least 20 at 95%. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
+| `MinMad` | returns | ✅ | The lowest mean absolute deviation: mean-variance's risk without the squares, so a few large deviations count for less. `.downside(τ)` counts only shortfalls below a fixed threshold `τ`. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
 | `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `RiskParity` | covariance | ✅ | Every asset contributes the same risk, or the shares set by `.risk_budgets(..)`. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `Hrp` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
@@ -214,7 +217,7 @@ fn main() -> Result<(), CutupError> {
 
 ### Group constraints
 
-`WeightBounds::group(members, lower, upper)` limits the total weight of several assets at once, such as every ad channel on one platform, every signal from one source or every fund in one asset class, on top of each asset's own bounds. Members are labels or columns. Groups can overlap, an asset listed twice in one counts once, and an upper limit of `f64::INFINITY` means no cap. `MinVariance`, `MeanVariance` with any objective, with or without rebalancing, `Returns::frontier` and `MinCvar` take them.
+`WeightBounds::group(members, lower, upper)` limits the total weight of several assets at once, such as every ad channel on one platform, every signal from one source or every fund in one asset class, on top of each asset's own bounds. Members are labels or columns. Groups can overlap, an asset listed twice in one counts once, and an upper limit of `f64::INFINITY` means no cap. `MinVariance`, `MeanVariance` with any objective, with or without rebalancing, `Returns::frontier`, `MinCvar` and `MinMad` take them.
 
 ```rust
 use cutup::{CutupError, MinVariance, Returns, WeightBounds};
@@ -613,6 +616,34 @@ fn main() -> Result<(), CutupError> {
     let risk_parity = data.allocate(&RiskParity::default().covariance(covariance.shrinkage(0.1)))?;
     println!("Min variance: {:?}", min_variance.as_slice());
     println!("Risk parity: {:?}", risk_parity.as_slice());
+    Ok(())
+}
+```
+
+### Mean absolute deviation
+
+`MinMad` is the long-only portfolio with the lowest mean absolute deviation of its returns around their mean, `(1/T) Σₜ |rₜ − r̄|` (Konno and Yamazaki, 1991). It's the variance's role without the squares, so a few large deviations count for less, and it needs no covariance. With `.downside(threshold)`, it's the lowest mean shortfall below a minimum acceptable return instead, `(1/T) Σₜ max(τ − rₜ, 0)`: only returns below `τ` count. The threshold is fixed, since below the portfolio's own mean the shortfalls would be half the MAD, with the same weights. Both are linear programs, solved exactly like `MinCvar`, and take bounds, groups and a target return. `data.mad(&weights)` and `data.downside_mad(&weights, threshold)` measure any portfolio.
+
+```rust
+use cutup::{CutupError, MinMad, MinVariance, Returns, WeightBounds};
+
+fn main() -> Result<(), CutupError> {
+    let returns = [
+        [ 0.010, -0.020,  0.005],
+        [-0.004,  0.015,  0.002],
+        [ 0.007,  0.003, -0.006],
+        [ 0.002, -0.001,  0.004],
+        [-0.003,  0.006,  0.001],
+    ];
+    let data = Returns::new(&returns)?;
+
+    let least = data.allocate(&MinMad::default().bounds(WeightBounds::uniform(0.0, 0.6)))?;
+    let variance = data.allocate(&MinVariance::default())?;
+    println!("MAD {:.5} for min MAD, {:.5} for min variance", data.mad(&least)?, data.mad(&variance)?);
+
+    // The least average shortfall below a loss of 0.1% a period.
+    let downside = data.allocate(&MinMad::default().downside(-0.001))?;
+    println!("short of -0.1% by {:.5} a period", data.downside_mad(&downside, -0.001)?);
     Ok(())
 }
 ```
