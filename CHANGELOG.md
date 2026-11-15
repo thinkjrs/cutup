@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `MinMad`: the long-only portfolio with the lowest mean absolute deviation of its returns
+  around their mean (Konno and Yamazaki, 1991), or with `.downside(threshold)` the lowest mean
+  shortfall below a fixed minimum acceptable return. It takes `.bounds(..)` with groups and
+  `.target_return(..)`, as `MinCvar` does, and is a linear program solved exactly through the
+  same dual, with a row per asset rather than per period. A threshold that isn't finite is
+  `InvalidConfig { field: "threshold" }`. It serializes with the `serde` feature as
+  `{"bounds": .., "target_return": .., "downside": ..}`, and has a TypeScript type with
+  `ts-rs`. The reference suite checks it against the primal program in SciPy's `linprog` and
+  riskfolio-lib's `rm="MAD"` and `rm="FLPM"`, and the fuzzer and the property tests cover it.
 - Deviation and drawdown risk in the portfolio statistics:
   - **`PortfolioStats::mad()`** and **`Returns::mad(&weights)`**: the mean absolute deviation
     of the portfolio's return around its mean.
