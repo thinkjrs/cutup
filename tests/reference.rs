@@ -9,8 +9,8 @@
 
 use cutup::{
     BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVariance,
-    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance,
-    Returns, RiskParity, View, WeightBounds, Weights,
+    InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinMad,
+    MinVariance, Returns, RiskParity, View, WeightBounds, Weights,
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
@@ -263,6 +263,20 @@ fn min_cvar(params: &Value) -> MinCvar {
     method
 }
 
+fn min_mad(params: &Value) -> MinMad {
+    let mut method = MinMad::default();
+    if let Some(bounds) = weight_bounds(params) {
+        method = method.bounds(bounds);
+    }
+    if let Some(target) = params["target_return"].as_f64() {
+        method = method.target_return(target);
+    }
+    if let Some(threshold) = params["downside"].as_f64() {
+        method = method.downside(threshold);
+    }
+    method
+}
+
 /// The method a frontier case's points come from. Its objective is ignored.
 fn frontier_method(params: &Value) -> MeanVariance {
     let method = MeanVariance::risk_aversion(1.0).covariance(covariance_config(params));
@@ -291,7 +305,7 @@ fn frontier_point(
         })
 }
 
-const METHODS: [&str; 19] = [
+const METHODS: [&str; 20] = [
     "equal_weight",
     "inverse_volatility",
     "inverse_variance",
@@ -309,6 +323,7 @@ const METHODS: [&str; 19] = [
     "rebalance_min_variance",
     "rebalance_mean_variance",
     "min_cvar",
+    "min_mad",
     "frontier",
     "long_only_frontier",
 ];
@@ -349,6 +364,7 @@ fn run(allocator: &Returns, method: &str, params: &Value) -> Result<Weights, Cut
         "rebalance_min_variance" => allocator.allocate(&rebalance!(MinVariance::default(), params)),
         "rebalance_mean_variance" => allocator.allocate(&rebalance_mean_variance(params)),
         "min_cvar" => allocator.allocate(&min_cvar(params)),
+        "min_mad" => allocator.allocate(&min_mad(params)),
         "frontier" => frontier_point(allocator, &frontier_method(params).allow_short(), params),
         "long_only_frontier" => match weight_bounds(params) {
             Some(bounds) => {
@@ -409,6 +425,17 @@ fn check(case: &Value, datasets: &Value) -> Option<String> {
             let scale = returns_scale(&datasets[dataset]);
             (got > want + 1e-12 * scale || got < want - 1e-9 * scale)
                 .then(|| format!("{label}: CVaR {got:e}, reference {want:e}"))
+        }
+        // The same for min MAD, by the MAD or the mean shortfall.
+        (Ok(weights), None) if method == "min_mad" => {
+            let got = match params["downside"].as_f64() {
+                Some(threshold) => allocator.downside_mad(&weights, threshold).unwrap(),
+                None => allocator.mad(&weights).unwrap(),
+            };
+            let want = case["mad"].as_f64().unwrap();
+            let scale = returns_scale(&datasets[dataset]);
+            (got > want + 1e-12 * scale || got < want - 1e-9 * scale)
+                .then(|| format!("{label}: MAD {got:e}, reference {want:e}"))
         }
         (Ok(weights), None) => {
             let expected = floats(&case["weights"]);

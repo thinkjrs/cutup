@@ -101,6 +101,12 @@ cutup's implementation:
   vertex must be no worse than that CVaR, and no more than 1e-9 of the returns' scale
   better. Each is cross-checked against PyPortfolioOpt's EfficientCVaR and
   riskfolio-lib's rm="CVaR" on cvxpy, by CVaR, to 1e-6.
+* Min MAD: scipy.optimize.linprog (HiGHS) on the primal program, two constraints per period
+  for the mean absolute deviation and one for the mean shortfall below a threshold, which it
+  keeps as a constant where cutup folds it into the weights through the budget. Cases hold
+  the MAD or the shortfall of linprog's weights, compared as for min CVaR. Long-only cases
+  with no caps, groups or target are cross-checked against riskfolio-lib's rm="MAD" and
+  rm="FLPM", with the threshold as its minimum acceptable return, on cvxpy, to 1e-6.
 * Black-Litterman: PyPortfolioOpt's market_implied_prior_returns and
   BlackLittermanModel.bl_returns, with its "default" (He-Litterman) and "idzorek" view
   uncertainties, or, when a case mixes kinds of view, a diagonal Ω built row by row with
@@ -1252,6 +1258,83 @@ def cross_check_cvar(returns, beta, lower, upper, targeted, value, groups=None) 
             raise ValueError(f"riskfolio's CVaR {theirs} differs from {value}")
 
 
+def mad(returns: np.ndarray, weights: np.ndarray, threshold: float | None) -> float:
+    """The mean absolute deviation of the portfolio's returns around their mean, or with a
+    threshold the mean shortfall below it."""
+    portfolio = returns @ weights
+    if threshold is None:
+        return float(np.abs(portfolio - portfolio.mean()).mean())
+    return float(np.maximum(threshold - portfolio, 0.0).mean())
+
+
+def min_mad(returns: np.ndarray, params: dict) -> tuple[np.ndarray, float] | str:
+    """minimize Σeₜ / T subject to eₜ ≥ (rₜ − μ)ᵀw and eₜ ≥ −(rₜ − μ)ᵀw, or with a threshold
+    τ to eₜ ≥ τ − rₜᵀw alone, e ≥ 0, 1ᵀw = 1, the bounds, the groups, and μᵀw = ρ for a
+    target, over x = (w, e). The primal, where cutup solves the dual, and with the threshold
+    as a constant, where cutup folds it into the weights through the budget."""
+    t, n = returns.shape
+    threshold = params.get("downside")
+    bounds = weight_bounds_or_default(params, n)
+    lower, upper = bounds if bounds is not None else (np.zeros(n), np.full(n, np.inf))
+    if infeasible((lower, upper)):
+        return "InfeasibleBounds"
+    upper = np.minimum(upper, 1.0 - (lower.sum() - lower))
+    groups = weight_groups(params, n)
+    if groups is not None and groups_infeasible(lower, upper, groups):
+        return "InfeasibleGroups"
+    mu = returns.mean(axis=0)
+    a_eq, b_eq = [np.concatenate([np.ones(n), np.zeros(t)])], [1.0]
+    if "target_return" in params:
+        ends = range_ends(mu, (lower, upper), groups)
+        target = params["target_return"]
+        if out_of_range(ends, target):
+            return "TargetReturnOutOfRange"
+        lowest, highest = ends[:2]
+        a_eq.append(np.concatenate([mu, np.zeros(t)]))
+        b_eq.append(min(max(target, lowest), highest))
+    if threshold is None:
+        # ±(rₜ − μ)ᵀw − eₜ ≤ 0.
+        deviations = returns - mu
+        a_ub = np.vstack([np.hstack([deviations, -np.eye(t)]), np.hstack([-deviations, -np.eye(t)])])
+        b_ub = np.zeros(2 * t)
+    else:
+        # −rₜᵀw − eₜ ≤ −τ.
+        a_ub = np.hstack([-returns, -np.eye(t)])
+        b_ub = np.full(t, -threshold)
+    group_a, group_b = group_rows(groups, t)
+    if group_a is not None:
+        a_ub, b_ub = np.vstack([a_ub, group_a]), np.concatenate([b_ub, group_b])
+    c = np.concatenate([np.zeros(n), np.full(t, 1.0 / t)])
+    box = [(l, None if np.isinf(u) else u) for l, u in zip(lower, upper)] + [(0, None)] * t
+    tight = {"primal_feasibility_tolerance": 1e-10, "dual_feasibility_tolerance": 1e-10}
+    result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=np.array(a_eq), b_eq=b_eq, bounds=box, method="highs", options=tight)
+    weights = result.x[:n]
+    value = mad(returns, weights, threshold)
+    if abs(value - result.fun) > 1e-8 * np.abs(returns).max():
+        raise ValueError(f"MAD of the weights {value} differs from the program's {result.fun}")
+    cross_check_mad(returns, threshold, lower, upper, "target_return" in params or groups is not None, value)
+    return weights, value
+
+
+def cross_check_mad(returns, threshold, lower, upper, skipped, value) -> None:
+    """Checks the optimal MAD against riskfolio-lib's rm="MAD", and the mean shortfall against
+    its rm="FLPM" with the threshold as its minimum acceptable return, on cvxpy, to 1e-6 of it,
+    by the MAD of their weights. Long-only with no caps, no groups and no target: riskfolio-lib
+    asks for a return of at least a target, not exactly it."""
+    if skipped or not (np.all(lower == 0) and np.all(np.isinf(upper) | (upper >= 1))):
+        return
+    portfolio = riskfolio.Portfolio(returns=pd.DataFrame(returns))
+    portfolio.assets_stats(method_mu="hist", method_cov="hist")
+    portfolio.solvers = ["CLARABEL"]
+    if threshold is None:
+        weights = portfolio.optimization(model="Classic", rm="MAD", obj="MinRisk", hist=True)
+    else:
+        weights = portfolio.optimization(model="Classic", rm="FLPM", obj="MinRisk", rf=threshold, hist=True)
+    theirs = mad(returns, weights["weights"].to_numpy(), threshold)
+    if abs(theirs - value) > 1e-6 * max(abs(value), 1e-3):
+        raise ValueError(f"riskfolio's {'MAD' if threshold is None else 'FLPM'} {theirs} differs from {value}")
+
+
 def black_litterman(cov: np.ndarray, params: dict) -> np.ndarray:
     """Posterior expected returns. Each view is {"absolute": i}, {"relative": [long, short]}
     or {"portfolio": weights}, with a return "q" and optionally a "variance" or a
@@ -1348,6 +1431,8 @@ def run(case: dict, returns: np.ndarray, adjusted: np.ndarray) -> np.ndarray | s
             return black_litterman(adjusted, params)
         case "min_cvar":
             return min_cvar(returns, params)
+        case "min_mad":
+            return min_mad(returns, params)
         case "rebalance_min_variance":
             return rebalance(adjusted, mu, params, mean_variance=False)
         case "rebalance_mean_variance":
@@ -1758,6 +1843,29 @@ def cases(datasets: dict) -> list[dict]:
     ]:
         out.append({"dataset": name, "method": "min_cvar", "params": params, "tolerance": solver})
 
+    # Min MAD and the least mean shortfall on every dataset, then with bounds, groups and
+    # targets, inside and beyond the range of returns, and bounds and groups that can't be met.
+    for name in datasets:
+        out.append({"dataset": name, "method": "min_mad", "tolerance": solver})
+        for threshold in [0.0, -0.005]:
+            out.append({"dataset": name, "method": "min_mad", "params": {"downside": threshold}, "tolerance": solver})
+    for name, params in [
+        ("prices10x60", {"bounds": [0.0, 0.15]}),
+        ("prices10x60", {"downside": 0.001, "bounds": [0.05, 0.3]}),
+        ("two_blocks5", {**blocks_bounds}),
+        ("two_blocks5", {"downside": -0.002, **blocks_bounds}),
+        ("prices10x60", {"target_return": 0.0006}),
+        ("prices10x60", {"downside": 0.0, "target_return": 0.0006}),
+        ("two_blocks5", {"target_return": 0.002, "bounds": [0.0, 0.5]}),
+        ("prices10x60", {"groups": [[[4, 5, 6], 0.0, 0.3]]}),
+        ("prices10x60", {"downside": 0.0, "bounds": [0.0, 0.3], "groups": [[[1, 8], 0.35, 1.0]]}),
+        ("prices10x60", {"target_return": 0.0006, "groups": [[[4, 5, 6], 0.0, 0.3]]}),
+        ("prices10x60", {"target_return": 0.05}),
+        ("prices10x60", {"bounds": [0.0, 0.05]}),
+        ("prices10x60", {"downside": 0.0, "groups": [[[0, 1], 0.6, 1.0], [[2, 3], 0.6, 1.0]]}),
+    ]:
+        out.append({"dataset": name, "method": "min_mad", "params": params, "tolerance": solver})
+
     # Black-Litterman expected returns: the prior alone, then each kind of view and of view
     # uncertainty, alone and mixed. Market capitalizations, not weights, on prices10x60.
     caps10 = [12.0, 3.5, 8.0, 1.2, 20.0, 4.4, 2.5, 9.1, 6.3, 5.0]
@@ -1917,7 +2025,7 @@ def main() -> None:
         adjusted = adjust(np.cov(returns, rowvar=False), params.get("shrinkage"), params.get("regularization"))
         outcome = run(case, returns, adjusted)
         if isinstance(outcome, tuple):
-            outcome, case["cvar"] = outcome
+            outcome, case["mad" if case["method"] == "min_mad" else "cvar"] = outcome
         if isinstance(outcome, str):
             case["error"] = outcome
         elif not np.all(np.isfinite(outcome)):

@@ -4687,6 +4687,367 @@
       "error": "InfeasibleGroups"
     },
     {
+      "dataset": "orthogonal3",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.006666666666666666,
+      "weights": [0.6666666666666666, 0.3333333333333333, 0.0]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.003333333333333334,
+      "weights": [0.6666666666666667, 0.3333333333333333, -0.0]
+    },
+    {
+      "dataset": "orthogonal3",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.00041666666666666675,
+      "weights": [0.5833333333333334, 0.2916666666666667, 0.125]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.0029144736842105267,
+      "weights": [0.35526315789473684, 0.6447368421052632]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0007678571428571429,
+      "weights": [0.28571428571428575, 0.7142857142857143]
+    },
+    {
+      "dataset": "two_asset",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0,
+      "weights": [0.25000000000000006, 0.7499999999999999]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.005325265212258779,
+      "weights": [0.0, 0.0035852588125929933, 0.0, 0.49144365814723523, 0.5049710830401716]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0026022660030231167,
+      "weights": [0.0, 0.30836727163345673, 0.0, 0.24365725416113898, 0.4479754742054043]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0007259365244693456,
+      "weights": [0.0, 0.5205551161331471, 0.249049989261113, 0.0, 0.23039489460573984]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.006126075841021312,
+      "weights": [0.09094745121274497, 0.06941097002022364, 0.0, 0.0, 0.34746179183123105, 0.1582460042091779, 0.16241045479553784, 0.0, 0.004405236348018019, 0.16711809158306667]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0020173342519209042,
+      "weights": [0.05562540144138684, 0.04265029572738214, 0.0, 0.0, 0.36453805791362814, 0.23727006888476093, 0.20465402954948225, 0.0, 0.09526214648335965, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0005680354626415062,
+      "weights": [0.0, 0.03212470127063213, 0.0, 0.0, 0.4008133834734179, 0.33903049750793074, 0.22803141774801916, 0.0, 0.0, 0.0]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.005782998253873425,
+      "weights": [0.3129550177881727, 0.4755515818319543, 0.0, 0.211493400379873]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0019825915464035605,
+      "weights": [0.13704240668934434, 0.5673171225174606, 0.0, 0.29564047079319494]
+    },
+    {
+      "dataset": "near_singular4",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0005222284637048636,
+      "weights": [0.07330155235888737, 0.5210127228633089, 0.0, 0.4056857247778037]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 1.734723475976807e-18,
+      "weights": [0.2919523643028824, 0.1230701871242793, 0.0, 0.0939053222981366, 0.0, 0.49107212627470165]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 8.673617379884035e-19,
+      "weights": [0.16622432936959664, 0.5145517692278267, 0.0, 0.0, 0.3192239014025766, 0.0]
+    },
+    {
+      "dataset": "rank_deficient6",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 1.0842021724855044e-18,
+      "weights": [0.3850848206743709, 0.5680955525654086, 0.0, 0.0, 0.04681962676022054, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 0.013333333333333334,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 0.005833333333333334,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "collinear2",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0033333333333333335,
+      "weights": [1.0, 0.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_mad",
+      "tolerance": 1e-09,
+      "mad": 7.061190204166667e-11,
+      "weights": [0.0, 0.0, -0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0
+      },
+      "tolerance": 1e-09,
+      "mad": 3.4927786666666664e-11,
+      "weights": [0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "scales4",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.005
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0,
+      "weights": [0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "bounds": [0.0, 0.15]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.006539933326621479,
+      "weights": [0.15, 0.14242619090199296, 0.0, 0.07880993454385328, 0.15, 0.10727206380826479, 0.11235495732126426, 0.03850491082601469, 0.07063194259861008, 0.15]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.001,
+        "bounds": [0.05, 0.3]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0026143899919225696,
+      "weights": [0.05, 0.05, 0.05, 0.05, 0.23101556360034733, 0.24364366285880687, 0.11774960153898692, 0.05, 0.10759117200185866, 0.05]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "params": {
+        "lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0],
+        "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.005495247257011964,
+      "weights": [0.1, 0.0, 0.12860207926550898, 0.47139792073449105, 0.3]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "params": {
+        "downside": -0.002,
+        "lower_bounds": [0.1, 0.0, 0.0, 0.1, 0.0],
+        "upper_bounds": [0.5, 0.4, 1.0, 1.0, 0.3]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0018098919912136189,
+      "weights": [0.1, 0.4, 0.015249862712795163, 0.1847501372872048, 0.3]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "target_return": 0.0006
+      },
+      "tolerance": 1e-09,
+      "mad": 0.006632660456256169,
+      "weights": [0.20696024814876363, 0.1245599245814742, 0.0, 0.0, 0.2709163982031197, 0.014098007407706496, 0.023869906052094495, 0.0, 0.0, 0.35959551560684166]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0,
+        "target_return": 0.0006
+      },
+      "tolerance": 1e-09,
+      "mad": 0.003051882502439964,
+      "weights": [0.2445446876921393, 0.1205682909787687, 0.0, 0.0, 0.2717982221537847, 0.0, 0.014199711289284926, 0.0, 0.0, 0.3488890878860223]
+    },
+    {
+      "dataset": "two_blocks5",
+      "method": "min_mad",
+      "params": {
+        "target_return": 0.002,
+        "bounds": [0.0, 0.5]
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "groups": [
+          [[4, 5, 6], 0.0, 0.3]
+        ]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.006397987584878222,
+      "weights": [0.16079654977028368, 0.14959001245327627, 0.0, 0.012049476098873598, 0.26030602018252363, 0.0, 0.03969397981747634, 0.0, 0.14288329913745978, 0.23468066254010667]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0,
+        "bounds": [0.0, 0.3],
+        "groups": [
+          [[1, 8], 0.35, 1.0]
+        ]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.002128852911982759,
+      "weights": [0.18893894950115525, 0.08687700650787317, 0.0, 0.0, 0.23758387165452677, 0.09640503467871331, 0.12707214416560467, 0.0, 0.2631229934921268, 0.0]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "target_return": 0.0006,
+        "groups": [
+          [[4, 5, 6], 0.0, 0.3]
+        ]
+      },
+      "tolerance": 1e-09,
+      "mad": 0.0066345999154376846,
+      "weights": [0.21058621744519643, 0.12802446874361326, 0.0, 0.0, 0.2758503235373052, 0.018233731242305783, 0.005915945220389002, 0.0, 0.0, 0.3613893138111902]
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "target_return": 0.05
+      },
+      "tolerance": 1e-09,
+      "error": "TargetReturnOutOfRange"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "bounds": [0.0, 0.05]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleBounds"
+    },
+    {
+      "dataset": "prices10x60",
+      "method": "min_mad",
+      "params": {
+        "downside": 0.0,
+        "groups": [
+          [[0, 1], 0.6, 1.0],
+          [[2, 3], 0.6, 1.0]
+        ]
+      },
+      "tolerance": 1e-09,
+      "error": "InfeasibleGroups"
+    },
+    {
       "dataset": "prices10x60",
       "method": "black_litterman",
       "params": {
