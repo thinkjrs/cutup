@@ -36,7 +36,8 @@ This plans the releases from 0.3.0 to 1.0.0.
 | 0.3.8 | Group constraints | No |
 | 0.3.9 | Rolling allocation and the `serde` feature | No |
 | 0.3.10 | Sample campaign allocation app, native and WebAssembly | No |
-| Later 0.3.x or 1.x | Mean absolute deviation and CDaR, NCO, examples and the selection guide | No |
+| 0.3.11 | Deviation and drawdown risk: `MinMad`, `MinCdar` and their statistics | No |
+| Later 0.3.x or 1.x | NCO, examples and the selection guide | No |
 | 1.0.0 | API freeze | No |
 
 This order is agreed. A release can still split or merge if it grows, as long
@@ -576,10 +577,42 @@ adds the `ts-rs` feature and `Returns::period_count()`.
   - form controls for groups, rebalancing and Black-Litterman views, which
     the request's JSON already takes.
 
+## 0.3.11: deviation and drawdown risk
+
+Two measures of risk that don't square deviations, each with a method that
+minimizes it and the statistic that measures it. Both are linear programs, so
+they reuse the simplex solver behind `MinCvar`.
+
+- **Statistics:** on `PortfolioStats`, and on `Returns` for each measure a
+  method minimizes, as `Returns::cvar` is for `MinCvar`.
+  - `mad()`, the mean absolute deviation around the mean;
+  - `downside_mad(threshold)`, the mean shortfall below a minimum acceptable
+    return, the first lower partial moment. Below the portfolio's own mean it
+    would be half the MAD, so the threshold is fixed;
+  - `cdar(β)`, the average of the worst `1 − β` of the drawdowns, with
+    `max_drawdown()` and `average_drawdown()`.
+
+  A drawdown is how far the running sum of the returns, from 0 before the
+  first period, is below its highest so far. The returns are summed, not
+  compounded, the form that keeps the programs linear. Each is checked
+  against riskfolio-lib.
+- **`MinMad`:** the portfolio with the lowest mean absolute deviation, or with
+  `.downside(threshold)` the lowest mean shortfall below the threshold. Takes
+  `.bounds(..)` with groups and `.target_return(..)`, as `MinCvar` does. Like
+  `MinCvar`, it solves a dual with a row per asset rather than per period:
+  the MAD is the most `Σₜ zₜ(rₜ − r̄)ᵀw` can be over `|zₜ| ≤ 1/T`.
+- **`MinCdar`:** the portfolio with the lowest CDaR, with `.confidence(β)`,
+  bounds, groups and a target return. Its program has about `2T` rows, one
+  for each period's peak and one for its drawdown past the tail's threshold,
+  so it's benchmarked at 250 and 1,000 periods before the rest is built on it.
+- **Wiring:** `serde` and `ts-rs` for both methods, the `allocate` fuzz target,
+  the reference suite against SciPy's `linprog` and riskfolio-lib, an
+  `examples/drawdown.rs`, and README sections.
+- **The campaign app:** both methods in its engine and form, and the new
+  statistics in its table.
+
 ## Later 0.3.x or 1.x
 
-- **Mean absolute deviation and CDaR** (conditional drawdown at risk). Both
-  reduce to linear programs, so they reuse the `MinCvar` approach.
 - **Nested Clustered Optimization** (López de Prado): any method inside and
   across the clusters HRP and HERC already build.
 - **Examples:** one per topic in `examples/`, covering rebalancing with
