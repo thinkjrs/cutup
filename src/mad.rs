@@ -114,32 +114,43 @@ impl Allocation for MinMad {
         let portfolios = Portfolios::new(data, &self.bounds, self.target_return)?;
         let returns = &data.returns;
         let (t, n) = returns.shape();
-        let weight = 1.0 / t as f64;
         // The program is solved on returns, and a threshold, scaled to at most 1 in size, as
         // for `MinCvar`: neither the MAD's minimizer nor the shortfall's changes with it.
         let largest = returns.amax().max(self.downside.map_or(0.0, f64::abs));
         let unit = unit_scale(largest);
         let returns = returns * unit;
+        // Each zₜ within 1 rather than 1/T: that scales the dual's optimum by T, but not its
+        // multipliers, the weights, and keeps its entries near 1.
         let (scenarios, weighting) = match self.downside {
             None => {
                 let mean = returns.row_mean();
                 let deviations = DMatrix::from_fn(n, t, |i, k| returns[(k, i)] - mean[i]);
-                (deviations, (-weight, weight))
+                (deviations, (-1.0, 1.0))
             }
             Some(threshold) => {
                 let tau = threshold * unit;
                 let shortfalls = DMatrix::from_fn(n, t, |i, k| tau - returns[(k, i)]);
-                (shortfalls, (0.0, weight))
+                (shortfalls, (0.0, 1.0))
             }
         };
-        // Each zₜ starts at its upper bound where equal weights deviate upward or fall short,
-        // so that the asset rows, whose right-hand sides are 0, start with residuals.
-        let start: Vec<usize> = (0..t)
-            .filter(|&k| scenarios.column(k).sum() > 0.0)
-            .collect();
+        let start = rising(&scenarios);
         let (weights, _) = portfolios.min_max(&scenarios, unit, weighting, false, &start)?;
         Ok(data.weights(weights))
     }
+}
+
+/// The periods whose `zₜ` start at their upper bound in [`MinMad`]'s program: those where
+/// equal weights deviate upward, or fall short of the threshold, the column of `scenarios`
+/// summing to more than 0.
+///
+/// Every asset row has a right-hand side of 0, so starting every `zₜ` at its lower bound, 0
+/// for the shortfall, leaves those rows without a residual: a degenerate start, which the
+/// linear program leaves only by widening its bounds, and more slowly. For the MAD, with
+/// `zₜ` at `±1`, the signs of equal weights' deviations start `z` near where the optimum's are.
+fn rising(scenarios: &DMatrix<f64>) -> Vec<usize> {
+    (0..scenarios.ncols())
+        .filter(|&k| scenarios.column(k).sum() > 0.0)
+        .collect()
 }
 
 #[cfg(test)]
@@ -207,6 +218,18 @@ mod tests {
 
     fn data() -> Returns {
         Returns::returns_matrix(factor_returns(6, 40, 5)).unwrap()
+    }
+
+    #[test]
+    fn the_start_is_where_equal_weights_rise() {
+        // Columns summing to 2, −2, 0, 0.5 and −0.5: only those above 0 start at the upper
+        // bound, a column that sums to exactly 0 not among them.
+        let scenarios = DMatrix::from_column_slice(
+            2,
+            5,
+            &[1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 0.25, 0.25, -0.25, -0.25],
+        );
+        assert_eq!(rising(&scenarios), vec![0, 3]);
     }
 
     #[test]
