@@ -22,9 +22,9 @@ All notable changes to this project are documented here. The format follows
   A drawdown is how far the running sum of the portfolio's returns, from 0 before the first
   period, is below its highest so far; the returns are summed, not compounded. Like CVaR, they
   are historical, so `Returns::stats_with` doesn't change them, and they're computed from the
-  scaled returns, so they don't overflow. The reference suite checks them against riskfolio-lib's
-  `MAD`, `LPM`, `MDD_Abs`, `ADD_Abs` and `CDaR_Abs`, and the fuzzer checks they're never
-  negative.
+  scaled returns, so only a value that's itself past `f64::MAX` overflows. The reference suite
+  checks them against riskfolio-lib's `MAD`, `LPM`, `MDD_Abs`, `ADD_Abs` and `CDaR_Abs`, and the
+  fuzzer checks they're never negative and that `stats_with` keeps them.
 
 ## [0.3.10] - 2026-11-14
 
