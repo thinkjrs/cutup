@@ -8,6 +8,7 @@ for the methods that run a solver or a clustering step:
 | `MinVariance` | The active-set QP solver, long-only |
 | `MinVarianceGroups` | The same with two overlapping groups that bind: the first half of the assets at most 30% together, and every third asset at least 40% |
 | `MinCvar` | The two-phase simplex LP |
+| `MinCdar` | Cutting planes, each round a simplex LP with a row per cut |
 | `Hrp` | Single-linkage clustering and recursive bisection |
 | `Herc` | Single-linkage clustering, the gap statistic and equal risk contribution across clusters |
 | `RiskParity` | Newton's method on `½yᵀΣy − Σᵢ bᵢ ln yᵢ` |
@@ -75,12 +76,37 @@ From 100 assets it's faster than without groups: the binding groups leave the
 solver fewer free weights to factor. A group that doesn't bind costs a slack
 variable, which the solver leaves out of its factored solves.
 
+### `MinCdar`
+
+Measured on 2026-11-15, on the same machine, when `MinCdar` was added. Its full
+linear program has rows for every period's peak and drawdown, so it grows with
+the periods: at 1,000 periods it took 86 seconds with 5 assets and 96 with 20.
+`MinCdar` solves it by cutting planes instead, and the table follows how they
+got fast enough.
+
+| `MinCdar` | 10 assets | 100 assets | 500 assets |
+| --- | --- | --- | --- |
+| Each round's program as `MinCvar`'s dual, a row per asset | 0.22 ms | 1.5 s | 602 s |
+| As the primal, a row per cut | | | 10.8 s |
+| Each cut halfway from the best so far | 59 µs | 0.15 s | 5.5 s |
+
+- **The dual form** has a row per asset whatever the rounds, so at 500 assets
+  each round took about 2 seconds, as long as a `MinCvar` solve, from the first.
+- **The primal form** has a row per cut, so the early rounds are tiny, and the
+  bounds are the weights' own rather than columns of the program. The rounds
+  and their bounds were the same.
+- **In-out stabilization** takes each cut halfway from the best portfolio so far
+  to the program's minimizer, where Kelley's cuts at the minimizer alone
+  zig-zag: about 110 rounds at 500 assets rather than 190.
+
+The 10.8 s row is from a test with other generated returns at that size, which
+took 2.2 s with the stabilization, so the last two rows aren't measured alike.
+
 ## Running time
 
-- **`cargo bench`:** about seven minutes, most of it `MinVariance` and
-  `MinCvar` at 500 assets. Those two sizes, where a solve takes over a tenth of
-  a second, get criterion's minimum of 10 samples rather than its default of
-  100.
+- **`cargo bench`:** about eight minutes, most of it `MinVariance`, `MinCvar`
+  and `MinCdar` at 500 assets. Those sizes, where a solve takes over a tenth of a
+  second, get criterion's minimum of 10 samples rather than its default of 100.
 - **`cargo test --all-targets`:** runs each benchmark once, unoptimized, at the
   smallest size only, so CI checks that the benchmarks build and run without
   timing them. Timings on shared CI runners are too noisy to compare.

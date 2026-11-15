@@ -23,6 +23,7 @@ Here are some of the allocation methods included in this library:
 - **Hierarchical Equal Risk Contribution (HERC)**
 - **Minimum CVaR (expected shortfall)**, from historical scenarios
 - **Minimum mean absolute deviation (MAD)**, or the least mean shortfall below a threshold
+- **Minimum CDaR (conditional drawdown at risk)**, from the path of the returns
 - **Black-Litterman expected returns**, to feed mean-variance or max Sharpe
 - **Rebalancing** from current weights: turnover caps, turnover penalties and transaction costs
 - **Asset labels**, such as tickers, on the data and the weights, and in every per-asset setting
@@ -45,6 +46,7 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 - **HERC Allocation**: Cuts the same clustering into groups, chosen by a gap statistic or set with `Herc::clusters`, then splits risk down the tree and by inverse variance within each group.
 - **Minimum CVaR**: The long-only portfolio with the lowest average loss over the worst `1 − β` of the historical return scenarios, solved exactly as a linear program by a built-in simplex solver. Takes weight bounds, groups and a target return, and `cvar` measures any portfolio's CVaR.
 - **Minimum MAD**: The long-only portfolio with the lowest mean absolute deviation of its returns around their mean, or with `.downside(threshold)` the lowest mean shortfall below a threshold, solved exactly as a linear program by the same simplex solver. Takes weight bounds, groups and a target return, and `mad` and `downside_mad` measure any portfolio's.
+- **Minimum CDaR**: The long-only portfolio with the lowest average of the worst `1 − β` of its drawdowns, or near `β = 1` the lowest maximum drawdown, solved exactly by cutting planes on the same simplex solver, so it stays fast however many periods there are. Takes weight bounds, groups and a target return, and `cdar` measures any portfolio's.
 - **Rebalancing**: From your current weights, cap the turnover of min variance and mean-variance, with a risk aversion or a target return, penalize it, or, for mean-variance, charge proportional transaction costs against the expected return. With a target return, costs make it a floor on the net return. Solved exactly by the same active-set solver.
 - **Black-Litterman**: Expected returns that blend the returns the market portfolio implies with your views on some assets, each with a variance or an Idzorek confidence. Pass them to `MeanVariance` or `MaxSharpe`, with the posterior covariance if you like.
 - **Portfolio Statistics**: `data.stats(&weights)` gives any weights' expected return, volatility, Sharpe ratio, diversification ratio, risk contributions, CVaR, mean absolute deviation and drawdowns, to compare methods on the same data, and `data.stats_with(&weights, &covariance)` the same under a covariance config.
@@ -66,6 +68,7 @@ Each method is a value you pass to `Returns::allocate`. Methods that can short a
 | `MaxSharpe` | covariance, expected returns, risk-free rate | ✅ by default | The tangency portfolio. Long-only, it only needs some asset's expected return above the risk-free rate; long-short, the risk-free rate must be below the min variance portfolio's return. |
 | `MinCvar` | return scenarios | ✅ | The lowest average loss in the worst `1 − β` of the scenarios, 5% by default. Looks at the losses themselves rather than a covariance, so it reacts to skew and fat tails; needs enough scenarios for a tail, at least 20 at 95%. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
 | `MinMad` | returns | ✅ | The lowest mean absolute deviation: mean-variance's risk without the squares, so a few large deviations count for less. `.downside(τ)` counts only shortfalls below a fixed threshold `τ`. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
+| `MinCdar` | returns, in time order | ✅ | The lowest average of the worst `1 − β` of the drawdowns, 5% by default, or near `β = 1` the lowest maximum drawdown. The only method that depends on the order of the periods: losses in a row cost more than the same losses spread out. `.bounds(..)` and `.target_return(..)` work as for mean-variance. |
 | `MaxDiversification` | covariance | ✅ | The most diversified portfolio: the highest weighted average volatility per unit of portfolio volatility. Inverse volatility when assets are uncorrelated. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `RiskParity` | covariance | ✅ | Every asset contributes the same risk, or the shares set by `.risk_budgets(..)`. Diversifies more than inverse volatility when correlations differ. Needs every long-only portfolio to have some variance, so consider shrinkage when data is short. |
 | `Hrp` | covariance, correlations | ✅ | Clusters correlated assets, then splits risk between clusters. Never inverts the covariance, so it's robust when data is short. |
@@ -217,7 +220,7 @@ fn main() -> Result<(), CutupError> {
 
 ### Group constraints
 
-`WeightBounds::group(members, lower, upper)` limits the total weight of several assets at once, such as every ad channel on one platform, every signal from one source or every fund in one asset class, on top of each asset's own bounds. Members are labels or columns. Groups can overlap, an asset listed twice in one counts once, and an upper limit of `f64::INFINITY` means no cap. `MinVariance`, `MeanVariance` with any objective, with or without rebalancing, `Returns::frontier`, `MinCvar` and `MinMad` take them.
+`WeightBounds::group(members, lower, upper)` limits the total weight of several assets at once, such as every ad channel on one platform, every signal from one source or every fund in one asset class, on top of each asset's own bounds. Members are labels or columns. Groups can overlap, an asset listed twice in one counts once, and an upper limit of `f64::INFINITY` means no cap. `MinVariance`, `MeanVariance` with any objective, with or without rebalancing, `Returns::frontier`, `MinCvar`, `MinMad` and `MinCdar` take them.
 
 ```rust
 use cutup::{CutupError, MinVariance, Returns, WeightBounds};
@@ -644,6 +647,43 @@ fn main() -> Result<(), CutupError> {
     // The least average shortfall below a loss of 0.1% a period.
     let downside = data.allocate(&MinMad::default().downside(-0.001))?;
     println!("short of -0.1% by {:.5} a period", data.downside_mad(&downside, -0.001)?);
+    Ok(())
+}
+```
+
+### Drawdown risk
+
+`MinCdar` is the long-only portfolio with the lowest conditional drawdown at risk (Chekhlov, Uryasev and Zabarankin, 2005): the average of its worst `1 − β` drawdowns, 5% by default. A drawdown is how far the running sum of the portfolio's returns, from 0 before the first period, is below its highest so far, one after each period; the returns are summed, not compounded, which keeps the program linear. With `(1 − β)T` under one period, CDaR is the maximum drawdown, so a confidence near 1 minimizes that.
+
+It's the one method that depends on the order of the rows, which must be in time order: losses in a row are a deeper drawdown than the same losses spread out, so it suits a budget or a book that mustn't fall far behind its best. It takes bounds, groups and a target return. The full linear program has rows for every period and takes over a minute at 1,000 periods, so `MinCdar` solves it by cutting planes, on a program with a row per cut, in milliseconds at that size for tens of assets and seconds for hundreds. `data.cdar(&weights, β)` measures any portfolio, and `data.stats(&weights)` gives the maximum and average drawdowns too.
+
+```rust
+use cutup::{CutupError, MinCdar, MinCvar, Returns};
+
+fn main() -> Result<(), CutupError> {
+    // Asset 0 loses three periods in a row; asset 1's losses are as large but spread out.
+    let returns = [
+        [ 0.012,  0.004, 0.002],
+        [-0.010, -0.010, 0.001],
+        [-0.010,  0.012, 0.001],
+        [-0.010, -0.010, 0.002],
+        [ 0.015,  0.012, 0.001],
+        [ 0.013, -0.010, 0.002],
+        [ 0.010,  0.012, 0.001],
+    ];
+    let data = Returns::new(&returns)?;
+
+    let cdar = data.allocate(&MinCdar::default().confidence(0.7))?;
+    let cvar = data.allocate(&MinCvar::default().confidence(0.7))?;
+    for (name, weights) in [("min CDaR", &cdar), ("min CVaR", &cvar)] {
+        let stats = data.stats(weights)?;
+        println!(
+            "{name}: {:.2?}, CDaR {:.4}, max drawdown {:.4}",
+            weights.as_slice(),
+            stats.cdar(0.7)?,
+            stats.max_drawdown(),
+        );
+    }
     Ok(())
 }
 ```
