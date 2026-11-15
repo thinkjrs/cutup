@@ -8,6 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `MinCdar`: the long-only portfolio with the lowest conditional drawdown at risk (Chekhlov,
+  Uryasev and Zabarankin, 2005), the average of the worst `1 − β` of its drawdowns, or near
+  `β = 1` the lowest maximum drawdown. It takes `.confidence(β)`, `.bounds(..)` with groups and
+  `.target_return(..)`, as `MinCvar` does, and it's the one method that depends on the order of
+  the periods. The full linear program has rows for every period and took 86 seconds at 1,000
+  periods, so it's solved exactly by cutting planes instead (Kelley, 1960), each round a
+  program with a row per cut, with in-out stabilization: about 0.15 s at 100 assets and 5.5 s
+  at 500 in the benchmark. It serializes with the `serde` feature as `MinCvar` does, and has a
+  TypeScript type with `ts-rs`. The reference suite checks it against the full program in
+  SciPy's `linprog` and riskfolio-lib's `rm="CDaR"`, the fuzzer and the property tests cover
+  it, and the benchmark times it.
 - `MinMad`: the long-only portfolio with the lowest mean absolute deviation of its returns
   around their mean (Konno and Yamazaki, 1991), or with `.downside(threshold)` the lowest mean
   shortfall below a fixed minimum acceptable return. It takes `.bounds(..)` with groups and
