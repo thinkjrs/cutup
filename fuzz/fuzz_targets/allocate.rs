@@ -851,6 +851,24 @@ fuzz_target!(|input: Input| {
         with.cvar(0.9).map(f64::to_bits),
         stats.cvar(0.9).map(f64::to_bits)
     );
+    // The deviations and drawdowns are historical too.
+    assert_eq!(with.mad().to_bits(), stats.mad().to_bits());
+    assert_eq!(
+        with.downside_mad(0.0).map(f64::to_bits),
+        stats.downside_mad(0.0).map(f64::to_bits)
+    );
+    assert_eq!(
+        with.max_drawdown().to_bits(),
+        stats.max_drawdown().to_bits()
+    );
+    assert_eq!(
+        with.average_drawdown().to_bits(),
+        stats.average_drawdown().to_bits()
+    );
+    assert_eq!(
+        with.cdar(0.9).map(f64::to_bits),
+        stats.cdar(0.9).map(f64::to_bits)
+    );
     assert!(with.volatility() >= 0.0, "{with:?}");
     assert_eq!(with.sharpe_ratio(0.0).is_some(), with.volatility() > 0.0);
     assert!(
