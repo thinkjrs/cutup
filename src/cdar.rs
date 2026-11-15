@@ -223,12 +223,23 @@ impl<'a> Drawdowns<'a> {
             }
             falls.push((peak - sum, at, k + 1));
         }
-        falls.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // The worst first, the earlier of equal ones first. Only the worst ⌈1/cap⌉ are in the
+        // tail, one more for rounding, as in `tail_loss`: only those are sorted.
+        let worst_first = |a: &(f64, usize, usize), b: &(f64, usize, usize)| {
+            b.0.total_cmp(&a.0).then(a.2.cmp(&b.2))
+        };
+        let tail = ((1.0 / self.cap).ceil() as usize + 1).min(falls.len());
+        if tail < falls.len() {
+            falls.select_nth_unstable_by(tail, worst_first);
+        }
+        falls[..tail].sort_by(worst_first);
         let mut cut = DVector::zeros(w.len());
         let (mut left, mut cdar) = (1.0f64, 0.0);
-        for (fall, from, to) in falls {
+        for &(fall, from, to) in &falls[..tail] {
             let share = self.cap.min(left);
-            cut += (self.sums.row(from) - self.sums.row(to)).transpose() * share;
+            for (i, c) in cut.iter_mut().enumerate() {
+                *c += (self.sums[(from, i)] - self.sums[(to, i)]) * share;
+            }
             cdar += share * fall;
             left -= share;
             if left <= 0.0 {
