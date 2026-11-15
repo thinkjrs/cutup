@@ -10,9 +10,10 @@ use nalgebra::{DMatrix, DVector};
 ///
 /// Each is per period, in the units of the returns, with the sample mean and covariance:
 /// with daily returns, the volatility is daily and the Sharpe ratio is daily too. Nothing is
-/// annualized. They're computed from the portfolio's return in each period, scaled by powers of
-/// two, so they don't overflow at any scale of returns or weights, and the variance can't round
-/// below 0. Only a value that's itself past `f64::MAX`, such as the expected return of weights
+/// annualized. The drawdowns are the exception: each is a running sum over the periods so far,
+/// so it's over the whole sample, not per period. They're computed from the portfolio's return
+/// in each period, scaled by powers of two, so they don't overflow at any scale of returns or
+/// weights, and the variance can't round below 0. Only a value that's itself past `f64::MAX`, such as the expected return of weights
 /// several times the size of returns near it, is infinite; the ratios and shares stay finite.
 ///
 /// The weights needn't sum to 1, but every ratio here assumes they're the whole portfolio.
@@ -101,11 +102,7 @@ impl PortfolioStats {
         // larger than the returns doesn't overflow when the volatility, from a covariance given
         // to `Returns::stats_with`, is far larger too. Powers of two scale exactly, so it's the
         // same ratio otherwise.
-        let k = if risk_free_rate == 0.0 {
-            self.exponent
-        } else {
-            self.exponent.max(binary_exponent(risk_free_rate.abs()))
-        };
+        let k = self.exponent_with(risk_free_rate);
         let excess = pow2_scaled(self.mean, self.exponent - k) - pow2_scaled(risk_free_rate, -k);
         Some(pow2_scaled(
             excess / self.deviation,
@@ -171,11 +168,7 @@ impl PortfolioStats {
         }
         // The shortfalls in the larger of the returns' scale and the threshold's, as for the
         // Sharpe ratio's rate, so a threshold far past the returns doesn't overflow.
-        let k = if threshold == 0.0 {
-            self.exponent
-        } else {
-            self.exponent.max(binary_exponent(threshold.abs()))
-        };
+        let k = self.exponent_with(threshold);
         let tau = pow2_scaled(threshold, -k);
         let total: f64 = self
             .scaled
@@ -201,7 +194,7 @@ impl PortfolioStats {
     pub fn cdar(&self, beta: f64) -> Result<f64, CutupError> {
         let cap = tail_weight(beta, self.scaled.len())?;
         Ok(pow2_scaled(
-            tail_loss(drawdowns(&self.scaled), cap),
+            tail_loss(drawdowns(&self.scaled).collect(), cap),
             self.exponent,
         ))
     }
@@ -209,30 +202,38 @@ impl PortfolioStats {
     /// The largest drawdown: how far the running sum of the portfolio's returns fell below its
     /// highest before, at worst. See [`cdar`](Self::cdar) for the drawdowns.
     pub fn max_drawdown(&self) -> f64 {
-        let largest = drawdowns(&self.scaled).into_iter().fold(0.0, f64::max);
+        let largest = drawdowns(&self.scaled).fold(0.0, f64::max);
         pow2_scaled(largest, self.exponent)
     }
 
     /// The average drawdown over every period. See [`cdar`](Self::cdar) for the drawdowns.
     pub fn average_drawdown(&self) -> f64 {
-        let total: f64 = drawdowns(&self.scaled).iter().sum();
+        let total: f64 = drawdowns(&self.scaled).sum();
         pow2_scaled(total / self.scaled.len() as f64, self.exponent)
+    }
+
+    /// The larger of the returns' binary exponent and `value`'s, to put `value` and the returns
+    /// in one scale: so a value far larger than the returns, such as a risk-free rate or a
+    /// threshold, doesn't overflow next to them.
+    fn exponent_with(&self, value: f64) -> i32 {
+        if value == 0.0 {
+            self.exponent
+        } else {
+            self.exponent.max(binary_exponent(value.abs()))
+        }
     }
 }
 
 /// The drawdown after each period of `returns`: how far their running sum, from 0 before the
 /// first, is below its highest so far.
-pub(crate) fn drawdowns(returns: &[f64]) -> Vec<f64> {
+fn drawdowns(returns: &[f64]) -> impl Iterator<Item = f64> + '_ {
     let mut sum = 0.0f64;
     let mut peak = 0.0f64;
-    returns
-        .iter()
-        .map(|r| {
-            sum += r;
-            peak = peak.max(sum);
-            peak - sum
-        })
-        .collect()
+    returns.iter().map(move |r| {
+        sum += r;
+        peak = peak.max(sum);
+        peak - sum
+    })
 }
 
 impl Returns {
@@ -598,6 +599,8 @@ impl Returns {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn cdar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
+        // The confidence first, as `Returns::cvar` checks it, before the portfolio's returns.
+        tail_weight(beta, self.returns.nrows())?;
         self.portfolio_stats(weights, false)?.cdar(beta)
     }
 }
