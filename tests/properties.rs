@@ -8,8 +8,8 @@
 use cutup::{
     Allocation, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinMad, MinVariance, Returns, RiskParity, ShrinkageTarget, View, WeightBounds,
-    Weights,
+    MinCdar, MinCvar, MinMad, MinVariance, Returns, RiskParity, ShrinkageTarget, View,
+    WeightBounds, Weights,
 };
 use nalgebra::{DMatrix, DVector};
 use proptest::prelude::*;
@@ -648,6 +648,7 @@ proptest! {
         let least = stats(&MinCvar::default()).cvar(0.95).unwrap();
         let least_mad = stats(&MinMad::default()).mad();
         let least_shortfall = stats(&MinMad::default().downside(0.0)).downside_mad(0.0).unwrap();
+        let least_cdar = stats(&MinCdar::default().confidence(0.8)).cdar(0.8).unwrap();
         for weights in long_only_methods(&allocator) {
             let other = allocator.stats(&weights).unwrap();
             prop_assert!(lowest <= other.volatility() * (1.0 + 1e-9), "{weights:?}");
@@ -656,6 +657,7 @@ proptest! {
             prop_assert!(least <= other.cvar(0.95).unwrap() + 1e-12 * least.abs().max(1e-3), "{weights:?}");
             prop_assert!(least_mad <= other.mad() + 1e-12 * least_mad.max(1e-3), "{weights:?}");
             prop_assert!(least_shortfall <= other.downside_mad(0.0).unwrap() + 1e-12 * least_shortfall.max(1e-3), "{weights:?}");
+            prop_assert!(least_cdar <= other.cdar(0.8).unwrap() + 1e-12 * least_cdar.max(1e-3), "{weights:?}");
         }
         let n = allocator.labels().len() as f64;
         for share in stats(&RiskParity::default()).risk_contributions().unwrap() {
@@ -2206,6 +2208,70 @@ proptest! {
             let other = risk(&Weights::from(candidate.clone()));
             prop_assert!(best <= other + 1e-12 * scale, "{best} > {other} at {candidate:?}");
         }
+    }
+
+    #[test]
+    fn min_cdar_beats_every_long_only_portfolio_tried(
+        returns in returns(),
+        beta in 0.5f64..0.99,
+        tries in prop::collection::vec(prop::collection::vec(0.0f64..1.0, 6), 30),
+    ) {
+        let n = returns.ncols();
+        let allocator = returns_via_flat(returns).unwrap();
+        let weights = allocator.allocate(&MinCdar::default().confidence(beta)).unwrap();
+        prop_assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        prop_assert!(weights.iter().all(|&w| w >= 0.0));
+        let best = allocator.cdar(&weights, beta).unwrap();
+        let scale = best.max(1e-3);
+        let mut candidates: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        candidates.push(vec![1.0 / n as f64; n]);
+        candidates.extend(tries.iter().map(|t| current_weights(&t.iter().map(|x| x + 1e-3).collect::<Vec<_>>(), n)));
+        for candidate in candidates {
+            let other = allocator.cdar(&Weights::from(candidate.clone()), beta).unwrap();
+            prop_assert!(best <= other + 1e-12 * scale, "{best} > {other} at {candidate:?}");
+        }
+    }
+
+    #[test]
+    fn min_cdar_meets_its_bounds_and_target(
+        returns in returns(),
+        beta in 0.5f64..0.99,
+        fractions in bounds(),
+        mix in 0.0f64..0.999,
+    ) {
+        let n = returns.ncols();
+        let mu = returns.row_mean();
+        let (lower, upper) = weight_bounds(&fractions, n);
+        let allocator = returns_via_flat(returns).unwrap();
+        let bounded = MinCdar::default()
+            .confidence(beta)
+            .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
+        let weights = allocator.allocate(&bounded).unwrap();
+        for i in 0..n {
+            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+        }
+        // Any target between the bounded portfolio's own return and the highest inside the
+        // bounds is reachable, as for min CVaR.
+        let own: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        let mut left = 1.0 - lower.iter().sum::<f64>();
+        let mut highest: f64 = lower.iter().zip(mu.iter()).map(|(l, m)| l * m).sum();
+        for i in order {
+            let share = left.min(upper[i] - lower[i]);
+            highest += share * mu[i];
+            left -= share;
+        }
+        let target = own + mix * (highest - own);
+        let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
+        for i in 0..n {
+            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+        }
+        let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+        prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
+        prop_assert!(allocator.cdar(&targeted, beta).unwrap() >= allocator.cdar(&weights, beta).unwrap() - 1e-12);
     }
 
     #[test]

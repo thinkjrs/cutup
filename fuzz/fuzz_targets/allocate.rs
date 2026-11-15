@@ -22,7 +22,7 @@ use arbitrary::Arbitrary;
 use cutup::{
     Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
     InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCvar, MinMad, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View,
+    MinCdar, MinCvar, MinMad, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View,
     WeightBounds, Weights,
 };
 use libfuzzer_sys::fuzz_target;
@@ -131,7 +131,8 @@ fn groups(method: &Method) -> Vec<Group> {
         Method::MinVariance { bounds, .. }
         | Method::MeanVariance { bounds, .. }
         | Method::MinCvar { bounds, .. }
-        | Method::MinMad { bounds, .. } => bounds
+        | Method::MinMad { bounds, .. }
+        | Method::MinCdar { bounds, .. } => bounds
             .as_ref()
             .map_or_else(Vec::new, |grouped| grouped.groups.clone()),
         _ => Vec::new(),
@@ -366,6 +367,11 @@ enum Method {
         bounds: Option<Grouped>,
         target_return: Option<f64>,
         downside: Option<f64>,
+    },
+    MinCdar {
+        confidence: Option<f64>,
+        bounds: Option<Grouped>,
+        target_return: Option<f64>,
     },
     /// Black-Litterman expected returns, into mean-variance or max Sharpe, with its posterior
     /// covariance or the method's own.
@@ -727,6 +733,23 @@ fn method(method: Method, data: &Returns) -> Option<Box<dyn Allocation>> {
             }
             if let Some(threshold) = downside {
                 m = m.downside(threshold);
+            }
+            boxed(m)
+        }
+        Method::MinCdar {
+            confidence,
+            bounds,
+            target_return,
+        } => {
+            let mut m = MinCdar::default();
+            if let Some(beta) = confidence {
+                m = m.confidence(beta);
+            }
+            if let Some(bounds) = bounds {
+                m = m.bounds(bounds.into());
+            }
+            if let Some(target) = target_return {
+                m = m.target_return(target);
             }
             boxed(m)
         }
