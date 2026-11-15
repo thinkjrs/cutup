@@ -142,6 +142,79 @@ impl Portfolios {
     }
 }
 
+impl Portfolios {
+    /// The portfolio whose largest `cutᵀw` over `cuts` is least, and that largest value.
+    ///
+    /// The same min-max as [`Portfolios::min_max`], with the cuts as the scenarios and their
+    /// weighting any probability, but solved as the primal, `min η` subject to `cutᵀw ≤ η` for
+    /// each cut, a row per cut rather than per asset: the bounds are the weights' own, so
+    /// with few cuts the program is small however many assets there are. The cuts are
+    /// multiplied by `unit`, as the scenarios are, and the largest value is unscaled.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::NotConverged`] if the linear program stops early.
+    pub(crate) fn min_of_max(
+        &self,
+        cuts: &[DVector<f64>],
+        unit: f64,
+    ) -> Result<(Vec<f64>, f64), CutupError> {
+        let bounds = &self.bounds;
+        let n = bounds.lower.len();
+        let groups = bounds.rows.a.ncols();
+        let target = usize::from(self.target.is_some());
+        // Columns: w (n), η, a slack for each cut, and one for each group's total. Rows: each
+        // cut, the budget, the target, then each group.
+        let (eta, slacks) = (n, n + 1);
+        let totals = slacks + cuts.len();
+        let rows = cuts.len() + 1 + target + groups;
+        let mut a = DMatrix::zeros(rows, totals + groups);
+        let mut b = DVector::zeros(rows);
+        for (k, cut) in cuts.iter().enumerate() {
+            // cutᵀw − η + s = 0, s ≥ 0.
+            a.view_mut((k, 0), (1, n)).copy_from(&cut.transpose());
+            a[(k, eta)] = -1.0;
+            a[(k, slacks + k)] = 1.0;
+        }
+        let budget = cuts.len();
+        a.view_mut((budget, 0), (1, n)).fill(1.0);
+        b[budget] = 1.0;
+        if let Some((rho, mu)) = &self.target {
+            a.view_mut((budget + 1, 0), (1, n))
+                .copy_from(&(mu * unit).transpose());
+            b[budget + 1] = rho * unit;
+        }
+        let first = budget + 1 + target;
+        for (g, members) in bounds.rows.a.column_iter().enumerate() {
+            // Gᵀw − t = 0, with t within the group's limits.
+            a.view_mut((first + g, 0), (1, n))
+                .copy_from(&members.transpose());
+            a[(first + g, totals + g)] = -1.0;
+        }
+        let cols = totals + groups;
+        let mut c = DVector::zeros(cols);
+        c[eta] = 1.0;
+        let lower = DVector::from_fn(cols, |j, _| match j {
+            j if j < n => bounds.lower[j],
+            j if j == eta => f64::NEG_INFINITY,
+            j if j < totals => 0.0,
+            j => bounds.rows.lower[j - totals],
+        });
+        let upper = DVector::from_fn(cols, |j, _| match j {
+            j if j < n => bounds.upper[j],
+            j if j >= totals => bounds.rows.upper[j - totals],
+            _ => f64::INFINITY,
+        });
+        let lp::Outcome::Optimal(solution) = lp::solve(&c, &a, &b, &lower, &upper)? else {
+            return Err(CutupError::NotConverged);
+        };
+        let weights = DVector::from_fn(n, |i, _| {
+            solution.x[i].clamp(bounds.lower[i], bounds.upper[i])
+        });
+        Ok((normalized(weights), solution.objective / unit))
+    }
+}
+
 /// The columns of the dual linear program, each with its cost and bounds, in the order
 /// they're pushed. Built a column at a time rather than at computed offsets, so that no
 /// column's place depends on arithmetic.
@@ -219,6 +292,57 @@ mod tests {
         let cvar = data.cvar(&weights.into(), beta).unwrap();
         assert!(cvar > 0.0);
         assert!((worst - cvar).abs() <= 1e-15, "{worst} vs {cvar}");
+    }
+
+    #[test]
+    fn the_primal_and_the_dual_agree() {
+        // The same min-max over some cuts, by the program with a row per cut and the one with
+        // a row per asset, within bounds, two groups and a target. Returns that scale by 8.
+        let returns = crate::test_support::factor_returns(5, 30, 9);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let unit = unit_scale(data.returns.amax());
+        assert_eq!(unit, 8.0);
+        let cuts: Vec<DVector<f64>> = (0..8)
+            .map(|k| returns.row(k).transpose() * unit - returns.row(k + 8).transpose() * unit)
+            .collect();
+        let mu = data.returns.row_mean();
+        let bounds = WeightBounds::uniform(0.05, 0.4)
+            .group([0, 1], 0.3, 0.5)
+            .group([2, 3, 4], 0.0, 0.6);
+        for target in [None, Some(0.4 * mu[0] + 0.3 * mu[2] + 0.3 * mu[4])] {
+            let portfolios = Portfolios::new(&data, &bounds, target).unwrap();
+            let (primal, worst) = portfolios.min_of_max(&cuts, unit).unwrap();
+            let (dual, worst_dual) = portfolios
+                .min_max(
+                    &DMatrix::from_columns(&cuts),
+                    unit,
+                    (0.0, f64::INFINITY),
+                    true,
+                    &[],
+                )
+                .unwrap();
+            assert!(
+                (worst - worst_dual).abs() <= 1e-15,
+                "{worst} vs {worst_dual}"
+            );
+            // Each one's worst case is its largest cut, unscaled.
+            for weights in [&primal, &dual] {
+                let w = DVector::from_column_slice(weights);
+                let largest = cuts.iter().map(|c| c.dot(&w)).fold(f64::MIN, f64::max) / unit;
+                assert!((largest - worst).abs() <= 1e-15, "{largest} vs {worst}");
+                assert!(
+                    weights
+                        .iter()
+                        .all(|&x| (0.05 - 1e-15..=0.4 + 1e-15).contains(&x))
+                );
+                assert!((0.3 - 1e-15..=0.5 + 1e-15).contains(&(weights[0] + weights[1])));
+                assert!(weights[2] + weights[3] + weights[4] <= 0.6 + 1e-15);
+                if let Some(target) = target {
+                    let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
+                    assert!((achieved - target).abs() <= 1e-17, "{achieved} vs {target}");
+                }
+            }
+        }
     }
 
     #[test]
