@@ -42,6 +42,10 @@ use nalgebra::{DMatrix, DVector};
 /// // The same CVaR as `Returns::cvar`.
 /// assert_eq!(stats.cvar(0.8)?, data.cvar(&weights, 0.8)?);
 ///
+/// // Risk without squaring: the mean absolute deviation, and the drawdowns of the running sum.
+/// assert_eq!(stats.mad(), data.mad(&weights)?);
+/// assert!(stats.average_drawdown() <= stats.cdar(0.8)? && stats.cdar(0.8)? <= stats.max_drawdown());
+///
 /// // No long-only portfolio has a higher Sharpe ratio than MaxSharpe's.
 /// let best = data.stats(&data.allocate(&MaxSharpe::default())?)?;
 /// assert!(best.sharpe_ratio(0.0) >= stats.sharpe_ratio(0.0));
@@ -139,11 +143,102 @@ impl PortfolioStats {
         let losses = self.scaled.iter().map(|r| -r).collect();
         Ok(pow2_scaled(tail_loss(losses, cap), self.exponent))
     }
+
+    /// The mean absolute deviation, `(1/T) Σₜ |rₜ − r̄|`, of the portfolio's return in each
+    /// period `rₜ` around their mean `r̄`, the same as [`Returns::mad`]. It's historical, so a
+    /// covariance given to [`Returns::stats_with`] doesn't change it.
+    pub fn mad(&self) -> f64 {
+        let total: f64 = self.scaled.iter().map(|r| (r - self.mean).abs()).sum();
+        pow2_scaled(total / self.scaled.len() as f64, self.exponent)
+    }
+
+    /// The mean shortfall below `threshold`, `(1/T) Σₜ max(τ − rₜ, 0)`: how far the portfolio's
+    /// return falls short of a minimum acceptable return `τ` per period, on average over every
+    /// period, those that reach it counting as 0. The same as [`Returns::downside_mad`].
+    ///
+    /// Below the portfolio's own mean it would be half the [MAD](Self::mad), since the
+    /// shortfalls below the mean add up to the excesses above it, so the threshold is fixed.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::InvalidConfig`] if `threshold` isn't finite.
+    pub fn downside_mad(&self, threshold: f64) -> Result<f64, CutupError> {
+        if !threshold.is_finite() {
+            return Err(CutupError::InvalidConfig {
+                field: "threshold",
+                value: threshold,
+            });
+        }
+        // The shortfalls in the larger of the returns' scale and the threshold's, as for the
+        // Sharpe ratio's rate, so a threshold far past the returns doesn't overflow.
+        let k = if threshold == 0.0 {
+            self.exponent
+        } else {
+            self.exponent.max(binary_exponent(threshold.abs()))
+        };
+        let tau = pow2_scaled(threshold, -k);
+        let total: f64 = self
+            .scaled
+            .iter()
+            .map(|&r| (tau - pow2_scaled(r, self.exponent - k)).max(0.0))
+            .sum();
+        Ok(pow2_scaled(total / self.scaled.len() as f64, k))
+    }
+
+    /// The conditional drawdown at risk at confidence `beta`, the same as [`Returns::cdar`]:
+    /// the average of the worst `1 − β` of the portfolio's drawdowns, one after each period.
+    /// When `(1 − β)T` isn't a whole number of the `T` periods, the last one in the tail counts
+    /// in part; when it's under one, this is the [maximum drawdown](Self::max_drawdown).
+    ///
+    /// A drawdown is how far the running sum of the portfolio's returns, from 0 before the
+    /// first period, is below its highest so far. The returns are summed, not compounded, as
+    /// the linear programs for drawdown risk take them: with returns of a few percent a period,
+    /// the two differ only in the second order.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::InvalidConfig`] if `beta` isn't in `(0, 1)`.
+    pub fn cdar(&self, beta: f64) -> Result<f64, CutupError> {
+        let cap = tail_weight(beta, self.scaled.len())?;
+        Ok(pow2_scaled(
+            tail_loss(drawdowns(&self.scaled), cap),
+            self.exponent,
+        ))
+    }
+
+    /// The largest drawdown: how far the running sum of the portfolio's returns fell below its
+    /// highest before, at worst. See [`cdar`](Self::cdar) for the drawdowns.
+    pub fn max_drawdown(&self) -> f64 {
+        let largest = drawdowns(&self.scaled).into_iter().fold(0.0, f64::max);
+        pow2_scaled(largest, self.exponent)
+    }
+
+    /// The average drawdown over every period. See [`cdar`](Self::cdar) for the drawdowns.
+    pub fn average_drawdown(&self) -> f64 {
+        let total: f64 = drawdowns(&self.scaled).iter().sum();
+        pow2_scaled(total / self.scaled.len() as f64, self.exponent)
+    }
+}
+
+/// The drawdown after each period of `returns`: how far their running sum, from 0 before the
+/// first, is below its highest so far.
+pub(crate) fn drawdowns(returns: &[f64]) -> Vec<f64> {
+    let mut sum = 0.0f64;
+    let mut peak = 0.0f64;
+    returns
+        .iter()
+        .map(|r| {
+            sum += r;
+            peak = peak.max(sum);
+            peak - sum
+        })
+        .collect()
 }
 
 impl Returns {
-    /// The expected return, volatility, Sharpe ratio, diversification ratio, risk contributions
-    /// and CVaR of the portfolio `weights`, over these returns. See [`PortfolioStats`].
+    /// The expected return, volatility, Sharpe ratio, diversification ratio, risk contributions,
+    /// CVaR, mean absolute deviation and drawdowns of the portfolio `weights`, over these
+    /// returns. See [`PortfolioStats`].
     ///
     /// They use the sample mean and covariance, even for weights from a method given other
     /// expected returns or covariance adjustments, so methods are compared on the same data.
@@ -306,7 +401,8 @@ impl Returns {
     ///
     /// The volatility, the diversification ratio and the risk contributions come from its
     /// matrix, and so does the Sharpe ratio's denominator. The expected return is still the
-    /// sample mean, and the CVaR is still historical. With the default config, the sample
+    /// sample mean, and the CVaR, the mean absolute deviation and the drawdowns are still
+    /// historical. With the default config, the sample
     /// covariance with no adjustments, it's [`Returns::stats`] exactly.
     ///
     /// A variance within `10nε` of the square of the positions' own volatilities, `Σᵢ|wᵢ|σᵢ`
@@ -420,6 +516,89 @@ impl Returns {
         stats.diversification_ratio = Some(w.dot(&volatilities) / deviation);
         stats.risk_contributions = Some(contributions.data.into());
         Ok(stats)
+    }
+
+    /// The mean absolute deviation of `weights`' return in each period around their mean,
+    /// `(1/T) Σₜ |rₜ − r̄|`: a measure of risk that, unlike the variance, doesn't square the
+    /// deviations, so a few large ones count for less. The same as [`PortfolioStats::mad`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Returns::stats`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// // Deviations of 1% and 3% either side of a mean of 0.
+    /// let returns = [[0.01], [-0.01], [0.03], [-0.03]];
+    /// let data = Returns::new(&returns)?;
+    /// let mad = data.mad(&vec![1.0].into())?;
+    /// assert!((mad - 0.02).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn mad(&self, weights: &Weights) -> Result<f64, CutupError> {
+        Ok(self.portfolio_stats(weights, false)?.mad())
+    }
+
+    /// The mean shortfall of `weights`' return in each period below `threshold`, a minimum
+    /// acceptable return per period: `(1/T) Σₜ max(τ − rₜ, 0)`, the first lower partial
+    /// moment. Only returns below the threshold count. The same as
+    /// [`PortfolioStats::downside_mad`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Returns::stats`], and [`CutupError::InvalidConfig`] if `threshold` isn't
+    /// finite.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// // Two periods short of 0, by 1% and 3%, over four periods.
+    /// let returns = [[0.01], [-0.01], [0.03], [-0.03]];
+    /// let data = Returns::new(&returns)?;
+    /// let shortfall = data.downside_mad(&vec![1.0].into(), 0.0)?;
+    /// assert!((shortfall - 0.01).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn downside_mad(&self, weights: &Weights, threshold: f64) -> Result<f64, CutupError> {
+        self.portfolio_stats(weights, false)?
+            .downside_mad(threshold)
+    }
+
+    /// The conditional drawdown at risk of `weights` at confidence `beta`: the average of the
+    /// worst `1 − β` of the drawdowns after each period, each how far the running sum of the
+    /// portfolio's returns, from 0 before the first period, is below its highest so far. The
+    /// returns are summed, not compounded. When `(1 − β)T` isn't a whole number of the `T`
+    /// periods, the last one in the tail counts in part; when it's under one, this is the
+    /// maximum drawdown. The same as [`PortfolioStats::cdar`], which also has the maximum and
+    /// average drawdowns.
+    ///
+    /// Unlike CVaR, it depends on the order of the periods: a run of losses is a deeper
+    /// drawdown than the same losses spread out.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Returns::stats`], and [`CutupError::InvalidConfig`] if `beta` isn't in
+    /// `(0, 1)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// // Up 2%, then down 3% and 1%, then up 4%: drawdowns of 0, 3%, 4% and 0.
+    /// let returns = [[0.02], [-0.03], [-0.01], [0.04]];
+    /// let data = Returns::new(&returns)?;
+    /// let cdar = data.cdar(&vec![1.0].into(), 0.5)?;
+    /// assert!((cdar - 0.035).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    pub fn cdar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
+        self.portfolio_stats(weights, false)?.cdar(beta)
     }
 }
 
@@ -1207,5 +1386,193 @@ mod tests {
                 asset: "0".into()
             })
         );
+    }
+
+    /// The portfolio's return in each period, unscaled.
+    fn portfolio_returns(data: &Returns, weights: &Weights) -> Vec<f64> {
+        (&data.returns * DVector::from_column_slice(weights.as_slice()))
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// The average of the worst `1 − β` of `values`, the last in part, written out from its
+    /// definition rather than through `tail_loss`.
+    fn tail_average(values: &[f64], beta: f64) -> f64 {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        let tail = (1.0 - beta) * values.len() as f64;
+        if tail < 1.0 {
+            return sorted[0];
+        }
+        let whole = tail.floor() as usize;
+        let mut total: f64 = sorted[..whole].iter().sum();
+        if whole < sorted.len() {
+            total += (tail - whole as f64) * sorted[whole];
+        }
+        total / tail
+    }
+
+    #[test]
+    fn deviation_and_drawdown_risk_match_their_definitions() {
+        let data = Returns::returns_matrix(factor_returns(5, 41, 3)).unwrap();
+        for weights in [
+            Weights::from(vec![0.2; 5]),
+            data.allocate(&MinVariance::default().allow_short())
+                .unwrap(),
+            Weights::from(vec![1.5, -0.4, 0.0, 2.0, -0.3]),
+        ] {
+            let stats = data.stats(&weights).unwrap();
+            let returns = portfolio_returns(&data, &weights);
+            let t = returns.len() as f64;
+            let mean = returns.iter().sum::<f64>() / t;
+            let mad = returns.iter().map(|r| (r - mean).abs()).sum::<f64>() / t;
+            assert!(close(stats.mad(), mad, 1e-13), "{}", stats.mad());
+            assert_eq!(data.mad(&weights), Ok(stats.mad()));
+            for threshold in [0.0, 1e-3, -2e-3, mean] {
+                let shortfall = returns
+                    .iter()
+                    .map(|r| (threshold - r).max(0.0))
+                    .sum::<f64>()
+                    / t;
+                let got = stats.downside_mad(threshold).unwrap();
+                assert!(
+                    close(got, shortfall, 1e-13),
+                    "{threshold}: {got} vs {shortfall}"
+                );
+                assert_eq!(data.downside_mad(&weights, threshold), Ok(got));
+            }
+            // Below the mean, the shortfalls are half the absolute deviations.
+            assert!(close(stats.downside_mad(mean).unwrap(), mad / 2.0, 1e-12));
+
+            let mut sum = 0.0;
+            let mut peak = 0.0f64;
+            let drawdowns: Vec<f64> = returns
+                .iter()
+                .map(|r| {
+                    sum += r;
+                    peak = peak.max(sum);
+                    peak - sum
+                })
+                .collect();
+            let largest = drawdowns.iter().copied().fold(0.0, f64::max);
+            assert!(largest > 0.0);
+            assert!(close(stats.max_drawdown(), largest, 1e-13));
+            let average = drawdowns.iter().sum::<f64>() / t;
+            assert!(close(stats.average_drawdown(), average, 1e-13));
+            let mut previous = stats.average_drawdown();
+            for beta in [0.05, 0.5, 0.8, 0.9, 0.95, 0.99] {
+                let cdar = stats.cdar(beta).unwrap();
+                let want = tail_average(&drawdowns, beta);
+                assert!(close(cdar, want, 1e-13), "{beta}: {cdar} vs {want}");
+                assert_eq!(data.cdar(&weights, beta), Ok(cdar));
+                // From the average drawdown up to the largest as the confidence rises.
+                assert!(cdar >= previous - 1e-15 && cdar <= stats.max_drawdown() + 1e-15);
+                previous = cdar;
+            }
+            // Under one period's worth of tail, it's the largest drawdown.
+            assert_eq!(stats.cdar(0.99).unwrap(), stats.max_drawdown());
+        }
+    }
+
+    #[test]
+    fn drawdowns_depend_on_the_order_of_the_periods() {
+        // The same returns, the losses together or spread out.
+        let together = Returns::returns_matrix(dmatrix![0.02; -0.01; -0.01; -0.01; 0.03]).unwrap();
+        let spread = Returns::returns_matrix(dmatrix![-0.01; 0.02; -0.01; 0.03; -0.01]).unwrap();
+        let one = Weights::from(vec![1.0]);
+        let (a, b) = (together.stats(&one).unwrap(), spread.stats(&one).unwrap());
+        assert!(close(a.mad(), b.mad(), 1e-14));
+        assert_eq!(a.cvar(0.5), b.cvar(0.5));
+        assert!(close(a.max_drawdown(), 0.03, 1e-14), "{}", a.max_drawdown());
+        assert!(close(b.max_drawdown(), 0.01, 1e-14), "{}", b.max_drawdown());
+        // A gain from the start is no drawdown.
+        let rising = Returns::returns_matrix(dmatrix![0.01; 0.02; 0.03]).unwrap();
+        let stats = rising.stats(&one).unwrap();
+        assert_eq!(stats.max_drawdown(), 0.0);
+        assert_eq!(stats.average_drawdown(), 0.0);
+        assert_eq!(stats.cdar(0.5), Ok(0.0));
+        // The peak starts at 0, before the first period.
+        let falling = Returns::returns_matrix(dmatrix![-0.01; -0.02]).unwrap();
+        assert!(close(
+            falling.stats(&one).unwrap().max_drawdown(),
+            0.03,
+            1e-14
+        ));
+    }
+
+    #[test]
+    fn deviation_and_drawdown_risk_scale_with_the_returns_and_weights() {
+        let returns = factor_returns(3, 30, 11);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let weights = Weights::from(vec![0.6, -0.1, 0.5]);
+        let base = data.stats(&weights).unwrap();
+        let check = |stats: &PortfolioStats, factor: f64, tolerance: f64| {
+            assert!(close(stats.mad(), base.mad() * factor, tolerance));
+            assert!(close(
+                stats.downside_mad(0.0).unwrap(),
+                base.downside_mad(0.0).unwrap() * factor,
+                tolerance
+            ));
+            assert!(close(
+                stats.max_drawdown(),
+                base.max_drawdown() * factor,
+                tolerance
+            ));
+            assert!(close(
+                stats.average_drawdown(),
+                base.average_drawdown() * factor,
+                tolerance
+            ));
+            assert!(close(
+                stats.cdar(0.9).unwrap(),
+                base.cdar(0.9).unwrap() * factor,
+                tolerance
+            ));
+        };
+        // Powers of two scale exactly, other factors to rounding.
+        for (factor, tolerance) in [(2f64.powi(-60), 0.0), (2f64.powi(500), 0.0), (1e140, 1e-14)] {
+            let scaled = Returns::returns_matrix(&returns * factor).unwrap();
+            check(&scaled.stats(&weights).unwrap(), factor, tolerance);
+        }
+        for factor in [1e-250, 1e250] {
+            let scaled: Vec<f64> = weights.iter().map(|w| w * factor).collect();
+            check(&data.stats(&Weights::from(scaled)).unwrap(), factor, 1e-14);
+        }
+    }
+
+    #[test]
+    fn downside_mad_takes_a_threshold_far_from_the_returns() {
+        let data = Returns::returns_matrix(dmatrix![0.01; -0.01; 0.03; -0.03]).unwrap();
+        let stats = data.stats(&Weights::from(vec![1.0])).unwrap();
+        // Every return is short of it by about the threshold, which doesn't overflow.
+        assert!(close(stats.downside_mad(1e308).unwrap(), 1e308, 1e-15));
+        assert_eq!(stats.downside_mad(-1e308), Ok(0.0));
+        assert_eq!(stats.downside_mad(-0.03), Ok(0.0));
+        assert!(close(stats.downside_mad(-0.01).unwrap(), 0.005, 1e-14));
+        for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                stats.downside_mad(threshold),
+                Err(CutupError::InvalidConfig {
+                    field: "threshold",
+                    ..
+                })
+            ));
+        }
+        for beta in [0.0, 1.0, f64::NAN] {
+            assert!(matches!(
+                stats.cdar(beta),
+                Err(CutupError::InvalidConfig {
+                    field: "confidence",
+                    ..
+                })
+            ));
+        }
+        // The weights are checked as for `stats`.
+        assert!(data.mad(&Weights::from(vec![0.5, 0.5])).is_err());
+        assert!(matches!(
+            data.cdar(&Weights::from(vec![f64::NAN]), 0.9),
+            Err(CutupError::NonFiniteWeight { column: 0, .. })
+        ));
     }
 }
