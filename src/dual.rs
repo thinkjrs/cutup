@@ -348,6 +348,20 @@ mod tests {
     }
 
     #[test]
+    fn the_worst_case_can_be_below_0() {
+        // Early cuts can lie below 0 everywhere: here −0.1 and −0.2 on every asset, so −0.1 at
+        // any portfolio. The largest has no floor at 0.
+        let data = Returns::returns_matrix(crate::test_support::factor_returns(3, 20, 1)).unwrap();
+        let portfolios = Portfolios::new(&data, &WeightBounds::default(), None).unwrap();
+        let cuts = [
+            DVector::from_element(3, -0.1),
+            DVector::from_element(3, -0.2),
+        ];
+        let (_, worst) = portfolios.min_of_max(&cuts, 1.0).unwrap();
+        assert!((worst + 0.1).abs() <= 1e-15, "{worst}");
+    }
+
+    #[test]
     fn the_unit_scale_takes_the_largest_return_to_between_a_half_and_1() {
         for largest in [0.5, 0.75, 1.0, 3.0, 1e100, 1e-100, f64::MIN_POSITIVE] {
             let scaled = largest * unit_scale(largest);
