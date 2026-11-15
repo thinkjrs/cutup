@@ -815,6 +815,12 @@ fuzz_target!(|input: Input| {
     assert!(!stats.expected_return().is_nan(), "{stats:?}");
     assert!(stats.volatility() >= 0.0, "{stats:?}");
     assert!(stats.cvar(0.9).is_ok_and(|c| !c.is_nan()), "{stats:?}");
+    // Deviations and drawdowns are never negative, so never NaN either.
+    assert!(stats.mad() >= 0.0, "{stats:?}");
+    assert!(stats.downside_mad(0.0).is_ok_and(|d| d >= 0.0), "{stats:?}");
+    assert!(stats.max_drawdown() >= 0.0, "{stats:?}");
+    assert!(stats.average_drawdown() >= 0.0, "{stats:?}");
+    assert!(stats.cdar(0.9).is_ok_and(|c| c >= 0.0), "{stats:?}");
     assert_eq!(stats.sharpe_ratio(0.0).is_some(), stats.volatility() > 0.0);
     assert!(
         stats.sharpe_ratio(0.0).is_none_or(f64::is_finite),

@@ -582,6 +582,8 @@ proptest! {
         let mu = returns.row_mean().transpose();
         let cov = covariance(&returns);
         let volatilities = cov.diagonal().map(f64::sqrt);
+        let largest_return = returns.amax();
+        let matrix = returns.clone();
         let allocator = returns_via_flat(returns).unwrap();
         for (name, weights) in all_methods(&allocator, mean) {
             let stats = allocator.stats(&weights).unwrap();
@@ -609,6 +611,27 @@ proptest! {
             prop_assert!((total - 1.0).abs() <= 1e-9 * gross * gross, "{name}: {total}");
             for beta in [0.5, 0.9] {
                 prop_assert_eq!(stats.cvar(beta), allocator.cvar(&weights, beta));
+            }
+            // The deviations and drawdowns from each period's return, to rounding of the
+            // positions' sizes.
+            let portfolio: Vec<f64> = (&matrix * &w).iter().copied().collect();
+            let t = portfolio.len() as f64;
+            let size = gross * largest_return;
+            let mean = portfolio.iter().sum::<f64>() / t;
+            let mad = portfolio.iter().map(|r| (r - mean).abs()).sum::<f64>() / t;
+            prop_assert!((stats.mad() - mad).abs() <= 1e-12 * size, "{name}: {} vs {mad}", stats.mad());
+            let shortfall = portfolio.iter().map(|r| (-r).max(0.0)).sum::<f64>() / t;
+            prop_assert!((stats.downside_mad(0.0).unwrap() - shortfall).abs() <= 1e-12 * size, "{name}");
+            let (mut sum, mut peak) = (0.0f64, 0.0f64);
+            let drawdowns: Vec<f64> = portfolio.iter().map(|r| { sum += r; peak = peak.max(sum); peak - sum }).collect();
+            let largest = drawdowns.iter().copied().fold(0.0, f64::max);
+            let average = drawdowns.iter().sum::<f64>() / t;
+            prop_assert!((stats.max_drawdown() - largest).abs() <= 1e-12 * t * size, "{name}");
+            prop_assert!((stats.average_drawdown() - average).abs() <= 1e-12 * t * size, "{name}");
+            for beta in [0.5, 0.9] {
+                let cdar = stats.cdar(beta).unwrap();
+                prop_assert!(cdar >= stats.average_drawdown() - 1e-12 * t * size && cdar <= stats.max_drawdown() + 1e-12 * t * size, "{name}: {cdar}");
+                prop_assert_eq!(Ok(cdar), allocator.cdar(&weights, beta));
             }
         }
     }
