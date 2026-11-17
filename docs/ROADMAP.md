@@ -37,7 +37,9 @@ This plans the releases from 0.3.0 to 1.0.0.
 | 0.3.9 | Rolling allocation and the `serde` feature | No |
 | 0.3.10 | Sample campaign allocation app, native and WebAssembly | No |
 | 0.3.11 | Deviation and drawdown risk: `MinMad`, `MinCdar` and their statistics | No |
-| Later 0.3.x or 1.x | NCO, examples and the selection guide | No |
+| 0.3.12 | Finishing before the freeze: the campaign app's new methods, `MinCdar`'s warm start, and the docs 1.0 needs | No |
+| 0.3.13 | Security, analysis and refactoring, with no change to the public API | No |
+| Later 0.3.x or 1.x | NCO | No |
 | 1.0.0 | API freeze | No |
 
 This order is agreed. A release can still split or merge if it grows, as long
@@ -626,17 +628,90 @@ they reuse the simplex solver behind `MinCvar`.
   - warm-starting `MinCdar`'s program from the last round's basis, the next
     saving, which needs a warm start in the simplex solver.
 
+## 0.3.12: finishing before the freeze
+
+Three pieces, an exception to one theme a release: each finishes something
+0.3.10 or 0.3.11 started, or that 1.0 needs, and none is big enough for a
+release of its own. Each is its own PR, so the CHANGELOG has a section for
+each.
+
+### The campaign app's new methods
+
+What 0.3.11 left for later.
+
+- **Engine:** `MinMad` and `MinCdar` in `Method`, with the bindings
+  regenerated and parity fixtures for each, natively and on wasm.
+- **Form:** both in the method list, with the downside threshold for `MinMad`
+  and the confidence for `MinCdar`.
+- **Statistics:** MAD, the mean shortfall below 0, CDaR, and the maximum and
+  average drawdowns in each result's table, through the engine's `Stats`.
+- **Caps:** `MinCdar` runs once per metric and once per rolling window, so
+  the time a request can take is measured against the native function's limit
+  before the caps stay as they are.
+
+### Warm-starting `MinCdar`
+
+- **The cost now:** each round re-solves the master program from scratch,
+  though it's the last round's with one more row: 2.8 s at 500 assets.
+- **The change:** the simplex solver takes a starting basis and returns its
+  final one, and `MinCdar` starts each round from the last. A new cut is a row
+  the last optimum may violate, so the solver repairs that with dual simplex
+  pivots, which it already uses when restoring bounds.
+- **When:** benchmarked before it's kept, against the cold start: it stays
+  only if it's faster at 100 and 500 assets and gives the same weights.
+
+### The docs 1.0 needs
+
+Moved here from "Later 0.3.x or 1.x" and the 1.0.0 list.
+
+- **Examples:** one per topic in `examples/`, covering rebalancing with
+  costs, Black-Litterman views, `MinCvar`, bounds and group constraints, and
+  `MinMad` and `MinCdar`.
+- **A method-selection guide** in the crate docs: which method fits which
+  question, which use expected returns, which are long-only, and how each
+  scales.
+- **A "verified against" table** in the README: the reference suite checks
+  against PyPortfolioOpt, riskfolio-lib and SciPy, which is currently noted
+  only in the Testing section.
+- **Documented size limits**, from the benchmarks: how many assets and
+  periods each method handles in practice.
+- **An MSRV policy in the README:**
+  - the MSRV is 1.85 from 0.3.0, and stays there through 0.3.x and 1.0.0;
+  - after 1.0, an MSRV bump is a minor release, never a patch;
+  - the MSRV stays at least six months behind the latest stable Rust.
+
+## 0.3.13: security, analysis and refactoring
+
+The last release before the freeze: a review of the whole crate, so that
+1.0.0 freezes code that's been audited, not just tested. Like every release
+after 0.3.0, it changes no public API and no default, so refactoring is of
+the internals. Its scope is settled when it starts.
+
+- **Security:**
+  - every path from untrusted input, JSON through `serde` included, checked
+    for panics, unbounded allocation and unbounded work, with the limits that
+    exist documented and the ones that don't added as errors;
+  - `cargo deny` and the dependency tree reviewed, and anything not needed
+    removed;
+  - `#![forbid(unsafe_code)]` kept, and the dependencies' `unsafe` noted;
+  - a `SECURITY.md` with how to report a vulnerability.
+- **Analysis:**
+  - the known mutation survivors in `docs/MUTATION.md` revisited, each either
+    caught by a new test or confirmed as unable to change a result;
+  - coverage gaps, from the coverage job, closed or explained;
+  - longer fuzz campaigns, and fuzz targets for anything new since 0.3.2;
+  - clippy's pedantic lints, adopted where they find something real.
+- **Refactoring:**
+  - the solvers, `lp.rs`, `qp.rs` and `dual.rs`, for duplication and for code
+    the methods reach into;
+  - consistent names, docs and errors across the methods, where that doesn't
+    change the API;
+  - anything the analysis turns up.
+
 ## Later 0.3.x or 1.x
 
 - **Nested Clustered Optimization** (López de Prado): any method inside and
   across the clusters HRP and HERC already build.
-- **Examples:** one per topic in `examples/`, covering rebalancing with
-  costs, Black-Litterman views, `MinCvar`, bounds and group constraints.
-- **A method-selection guide** in the crate docs: which method fits which
-  question, which use expected returns, and which are long-only.
-- **A "verified against" table** in the README: the reference suite checks
-  against PyPortfolioOpt, riskfolio-lib and SciPy, which is currently noted
-  only in the Testing section.
 
 ## 1.0.0: API freeze
 
@@ -644,15 +719,9 @@ Worked through during 0.3.x. Nothing new lands in 1.0.0 itself.
 `cargo-semver-checks` moved to 0.3.1, the benchmarks to 0.3.2, and `serde`
 to 0.3.9.
 
-- **An MSRV policy in the README:**
-  - the MSRV is 1.85 from 0.3.0, and stays there through 0.3.x and 1.0.0;
-  - after 1.0, an MSRV bump is a minor release, never a patch;
-  - the MSRV stays at least six months behind the latest stable Rust.
-- **Documented size limits**, from the benchmarks: how many assets and
-  scenarios each method handles in practice.
-- **Docs:**
-  - the method-selection guide, if it hasn't landed in 0.3.x;
-  - an asserted doctest on every public item.
+- **Moved earlier:** the MSRV policy, the documented size limits and the
+  method-selection guide go in 0.3.12.
+- **Docs:** an asserted doctest on every public item.
 - **Removal:** `src/deprecated.rs`, with the `PortfolioAllocator` alias and
   `Returns::from_returns`.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
@@ -679,4 +748,4 @@ to 0.3.9.
 
 ## Open decisions
 
-None.
+- **0.3.13's scope:** settled when it starts, from what the analysis finds.
