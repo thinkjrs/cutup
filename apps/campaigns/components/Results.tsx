@@ -168,8 +168,11 @@ function Allocations({ response, all }: { response: Response; all: string[] }) {
         <h3 className="text-sm font-semibold">Statistics</h3>
         <p className="mt-1 text-xs text-ink-2">
           Each day&apos;s return is how far the metric per unit of spend is
-          above or below its average over the platforms and days: an expected
-          return of 0.05 is 5% more than the average, and −0.05 is 5% less.
+          above or below the benchmark, its average over the platforms and days
+          the allocation sees, or a rolling window&apos;s own: an expected
+          return of 0.05 is 5% more than the benchmark, and −0.05 is 5% less.
+          The returns average 0 over every platform, but a platform below the
+          benchmark stays below it.
         </p>
         <div className="mt-3">
           <DataTable
@@ -197,11 +200,17 @@ function Allocations({ response, all }: { response: Response; all: string[] }) {
         <h4 className="mt-5 text-xs font-semibold">Losses and drawdowns</h4>
         <p className="mt-1 text-xs text-ink-2">
           CVaR is the average of the worst 5% of days, as a shortfall from the
-          average. MAD is the mean absolute deviation from the portfolio&apos;s
-          own mean, and the shortfall the mean of each day&apos;s shortfall from
-          the average, the days above it counting as 0. A drawdown is how far
-          the running sum of the returns is below its highest so far: a run of
-          days below the average. CDaR is the average of the worst 5% of them.
+          benchmark. MAD is the mean absolute deviation from the
+          portfolio&apos;s own mean, and the shortfall the mean of each
+          day&apos;s shortfall from the benchmark, the days above it counting as
+          0. A drawdown is how far the running sum of the returns is below its
+          highest so far: how far the budget has fallen behind the benchmark
+          since its best, in days&apos; worth of the average yield. As on any
+          P&amp;L, it includes the drift, so a portfolio below the benchmark
+          falls further behind every day. CDaR is the average of the worst 5% of
+          them. Every method is measured at 95% and below the benchmark,
+          whatever its own confidence or threshold, so the methods compare on
+          one scale.
         </p>
         <div className="mt-3">
           <DataTable
