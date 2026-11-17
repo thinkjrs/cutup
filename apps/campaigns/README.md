@@ -25,7 +25,8 @@ apps/campaigns/
 ## The model
 
 Each ad platform is an asset, and the weights are shares of the budget.
-- **Returns:** for each metric, impressions, clicks, link clicks or views, a platform's return on a day is how far what a unit of spend bought there is above or below its average over the request's platforms and days, as a share of the average: 0.05 is 5% more, −0.05 is 5% less. So the returns are near 0, and a run of days below the average is a drawdown.
+- **Returns:** for each metric, impressions, clicks, link clicks or views, a platform's return on a day is how far what a unit of spend bought there is above or below the benchmark, as a share of it: 0.05 is 5% more, −0.05 is 5% less. The benchmark is the average yield over the platforms and days the allocation sees, as an index is for a fund: the request's, or for a rolling window, the window's own, so no window is measured against days after it. The returns average 0 over every platform, but a platform below the benchmark stays below it.
+- **Drawdowns:** how far the running sum of a portfolio's returns is below its highest so far, in days' worth of the average yield: how far the budget has fallen behind the benchmark since its best. As on any P&L, they include the drift, so a portfolio below the benchmark falls further behind every day, and min CDaR with no target or cap leans toward the platforms above it. A `target_return` or caps trade drawdowns against yield, as on a mean-CDaR frontier.
 - **One allocation per metric:** every method allocates once for each metric.
 - **Days:** only days on which every chosen platform spent count.
 - **Saturation isn't modeled:** these methods take results to grow in proportion to spend.
