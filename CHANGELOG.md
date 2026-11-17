@@ -14,11 +14,19 @@ All notable changes to this project are documented here. The format follows
   - **Statistics:** each result has the mean absolute deviation, the mean shortfall below the
     average, CDaR, and the maximum and average drawdowns, in a table of losses and
     drawdowns.
-  - **Returns:** each is now a yield's excess over its average, 0.05 for 5% more, rather than
-    the yield over the average, 1.05. On those, every running sum rose, so every drawdown was
-    0. The weights of the methods that don't depend on the returns' level are unchanged.
-    `MaxSharpe`'s change, since its risk-free rate of 0 is now the average. Every expected
-    return, CVaR and Sharpe ratio moves with them.
+  - **Returns:** each is now a yield's excess over a benchmark, the average yield, 0.05 for 5%
+    more, rather than the yield over the average, 1.05. On those, every running sum rose, so
+    every drawdown was 0. Drawdowns include the drift, as on any P&L, so a portfolio below the
+    benchmark falls further behind it every day.
+    - **Unchanged:** the weights of the methods that don't depend on the returns' level.
+    - **Changed:** `MaxSharpe`'s, since its risk-free rate of 0 is now the benchmark. Every
+      expected return, CVaR and Sharpe ratio moves with them. So do the settings that are
+      returns, a `target_return` and `MaxSharpe`'s `risk_free_rate`: 0 is now the benchmark,
+      so a target of 1.02 for 2% more is now 0.02.
+  - **Rolling windows:** each is measured against the average over its own days, and allocated
+    by the engine rather than cutup's iterator, so no window sees days after it. Against the
+    whole request's average, `MaxSharpe` failed in windows where every platform trailed it.
+    The windows' JSON is the same.
 
 ## [0.3.11] - 2026-11-17
 
