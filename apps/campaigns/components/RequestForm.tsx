@@ -17,6 +17,9 @@ import {
 
 const field = "rounded-md border border-border bg-surface px-2 py-1 text-sm";
 
+/** A number input's value, or null for none when it's empty. */
+const optionalNumber = (text: string) => (text === "" ? null : Number(text));
+
 export function RequestForm({
   platforms,
   form,
@@ -215,10 +218,7 @@ export function RequestForm({
                 onChange={(event) =>
                   onForm({
                     ...form,
-                    frontier:
-                      event.target.value === ""
-                        ? null
-                        : Number(event.target.value),
+                    frontier: optionalNumber(event.target.value),
                   })
                 }
                 className={`${field} tabular mt-1 block w-full`}
@@ -265,10 +265,7 @@ export function RequestForm({
               onChange={(event) =>
                 onForm({
                   ...form,
-                  downside:
-                    event.target.value === ""
-                      ? null
-                      : Number(event.target.value),
+                  downside: optionalNumber(event.target.value),
                 })
               }
               className={`${field} tabular mt-1 block w-full`}
