@@ -25,7 +25,7 @@ apps/campaigns/
 ## The model
 
 Each ad platform is an asset, and the weights are shares of the budget.
-- **Returns:** for each metric, impressions, clicks, link clicks or views, a platform's return on a day is what a unit of spend bought there. Each is divided by its average over the request's platforms and days.
+- **Returns:** for each metric, impressions, clicks, link clicks or views, a platform's return on a day is how far what a unit of spend bought there is above or below its average over the request's platforms and days, as a share of the average: 0.05 is 5% more, −0.05 is 5% less. So the returns are near 0, and a run of days below the average is a drawdown.
 - **One allocation per metric:** every method allocates once for each metric.
 - **Days:** only days on which every chosen platform spent count.
 - **Saturation isn't modeled:** these methods take results to grow in proportion to spend.
@@ -47,7 +47,8 @@ The sample has six platforms' daily spend, impressions, clicks, link clicks and 
 ```
 
 - **Defaults:** everything but `method` is optional. The platforms default to Meta, Google and TikTok, the three that spent on every day, and the metrics to all four.
-- **Methods:** a method is cutup's own JSON with a `name`, such as `{"name": "mean_variance", "risk_aversion": 5.0}`. A frontier, `"frontier": 10`, takes a mean-variance method.
+- **Methods:** a method is cutup's own JSON with a `name`, such as `{"name": "mean_variance", "risk_aversion": 5.0}`, `{"name": "min_mad", "downside": -0.1}` or `{"name": "min_cdar", "confidence": 0.9}`. A frontier, `"frontier": 10`, takes a mean-variance method.
+- **Statistics:** each result has the expected return, volatility, Sharpe ratio, diversification ratio and risk shares, then CVaR, the mean absolute deviation, the mean shortfall below the average, CDaR, and the maximum and average drawdowns. CVaR and CDaR are at 95%.
 - **Replies:** a response, with each metric's weights and statistics or its own error, comes with status 200. A request that isn't JSON for one is 400, and one that can't be allocated is 422. Both come as `{"error": ..}`.
 
 `GET /api/platforms`, and the wasm `platforms`, list the sample's platforms, each with its first and last dates and how many days it spent on.
@@ -56,8 +57,8 @@ The sample has six platforms' daily spend, impressions, clicks, link clicks and 
 
 One page: a request on the left, its results on the right, and the sample's weekly yields below.
 - **Two engines:** a switch picks the server, which posts to `/api/allocate`, or the browser, which runs the wasm build in a Web Worker. The worker starts when the browser engine is picked, so its first run's round trip doesn't include loading the wasm, and a visitor who never picks it never downloads it. Both get the same request text, and the results say which answered, how long the round trip took, and how long the engine took. The server's time comes in a `server-timing` header.
-- **The request:** the form covers the platforms, dates, metrics, method, a cap on each platform's share, a mean-variance risk aversion and frontier, and rolling windows. The JSON it makes can be edited for any of cutup's other settings, and is sent as it's written.
-- **The results:** each metric's weights side by side, their statistics, the efficient frontier and the weights over time when asked for, each with a table view.
+- **The request:** the form covers the platforms, dates, metrics, method, a cap on each platform's share, a mean-variance risk aversion and frontier, min CVaR's and min CDaR's confidence, min MAD's shortfall threshold, and rolling windows. The JSON it makes can be edited for any of cutup's other settings, and is sent as it's written.
+- **The results:** each metric's weights side by side, their statistics, then their losses and drawdowns, the efficient frontier and the weights over time when asked for, each with a table view.
 - **Exports:** the whole run as JSON, with the request, the engine and its timing, and every allocation as CSV, one row per metric and window.
 - **The types:** `lib/bindings` holds ts-rs's TypeScript for the engine's requests and replies, committed so the frontend builds without Rust. An engine test fails when they're stale.
 
