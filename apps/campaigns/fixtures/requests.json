@@ -38,6 +38,19 @@
     "method": {"name": "min_cvar", "confidence": 0.9},
     "rolling": {"window": 90, "step": 45}
   },
+  "min_cdar_rolling": {
+    "metrics": ["impressions", "clicks"],
+    "method": {"name": "min_cdar", "confidence": 0.9, "bounds": {"upper": 0.6}},
+    "rolling": {"window": 120, "step": 60}
+  },
+  "min_mad": {
+    "method": {"name": "min_mad"}
+  },
+  "min_mad_downside_targeted": {
+    "platforms": ["Meta", "Google", "TikTok", "Reddit"],
+    "metrics": ["link_clicks"],
+    "method": {"name": "min_mad", "downside": -0.1, "target_return": 0.1}
+  },
   "min_variance": {
     "method": {"name": "min_variance"}
   },

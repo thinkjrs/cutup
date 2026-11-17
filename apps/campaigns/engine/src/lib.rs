@@ -4,10 +4,11 @@
 //! JSON through serde, with TypeScript types through ts-rs.
 //!
 //! Each ad platform is an asset, and the weights are shares of the budget. For each metric,
-//! each platform's return on a day is what a unit of spend bought there: impressions, clicks,
-//! link clicks or views per unit. Those are divided by their average over the platforms and
-//! days in the request, so every metric's returns are near 1 and a method's settings, such as a
-//! risk aversion, mean the same for each. Every method allocates once per metric.
+//! each platform's return on a day is how far what a unit of spend bought there, impressions,
+//! clicks, link clicks or views per unit, is above or below its average over the platforms and
+//! days in the request, as a share of it: 0.05 is 5% more than the average. So every metric's
+//! returns are near 0 and a method's settings, such as a risk aversion, mean the same for each,
+//! and a run of days below the average is a drawdown. Every method allocates once per metric.
 //!
 //! These methods take a platform's results to grow in proportion to its spend, so they don't
 //! model saturation.
@@ -18,8 +19,8 @@ pub use sample::{Metric, PlatformSummary, Sample, Totals};
 
 use cutup::{
     Allocation, CutupError, EqualWeight, FrontierPoint, Herc, Hrp, InverseVariance,
-    InverseVolatility, MaxDiversification, MaxSharpe, MeanVariance, MinCvar, MinVariance, Returns,
-    RiskParity, Weights, Window,
+    InverseVolatility, MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad,
+    MinVariance, Returns, RiskParity, Weights, Window,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -29,7 +30,7 @@ use ts_rs::TS;
 /// day of the sample.
 pub const DEFAULT_PLATFORMS: [&str; 3] = ["Meta", "Google", "TikTok"];
 
-/// The confidence of each result's CVaR.
+/// The confidence of each result's CVaR and CDaR.
 pub const CVAR_CONFIDENCE: f64 = 0.95;
 
 /// The most points a frontier can ask for. Each is a solve, once per metric.
@@ -59,6 +60,8 @@ pub enum Method {
     Hrp(Hrp),
     Herc(Herc),
     MinCvar(MinCvar),
+    MinMad(MinMad),
+    MinCdar(MinCdar),
 }
 
 impl Method {
@@ -76,6 +79,8 @@ impl Method {
             Method::Hrp(m) => Box::new(m.clone()),
             Method::Herc(m) => Box::new(m.clone()),
             Method::MinCvar(m) => Box::new(m.clone()),
+            Method::MinMad(m) => Box::new(m.clone()),
+            Method::MinCdar(m) => Box::new(m.clone()),
         }
     }
 }
@@ -133,9 +138,9 @@ fn all_metrics() -> Vec<Metric> {
     Metric::ALL.to_vec()
 }
 
-/// A portfolio's statistics, from [`cutup::PortfolioStats`], in the units of the normalized
-/// returns: an expected return of 1.05 is 5% more of the metric per unit of spend than the
-/// average.
+/// A portfolio's statistics, from [`cutup::PortfolioStats`], in the units of the returns: an
+/// expected return of 0.05 is 5% more of the metric per unit of spend than the average, and a
+/// loss is a shortfall from it.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 pub struct Stats {
     pub expected_return: f64,
@@ -146,8 +151,19 @@ pub struct Stats {
     pub diversification_ratio: Option<f64>,
     /// Each platform's share of the variance.
     pub risk_contributions: Option<Vec<f64>>,
-    /// The average of the worst 5% of days, as a loss: the negative of their return.
+    /// The average of the worst 5% of days, as a loss: how far they fall short of the average.
     pub cvar: f64,
+    /// The mean absolute deviation of each day's return from their mean.
+    pub mad: f64,
+    /// How far each day's return falls short of the average on average, the days above it
+    /// counting as 0: the mean shortfall that `MinMad`'s downside minimizes, at a threshold of 0.
+    pub downside_mad: f64,
+    /// The average of the worst 5% of the drawdowns: how far the running sum of the returns,
+    /// from 0 before the first day, is below its highest so far, after each day. A drawdown is
+    /// a run of days below the average.
+    pub cdar: f64,
+    pub max_drawdown: f64,
+    pub average_drawdown: f64,
 }
 
 /// One metric's allocation: its weights and statistics, or why the method couldn't allocate,
@@ -461,7 +477,8 @@ fn check_platforms(sample: &Sample, platforms: &[String]) -> Result<(), EngineEr
 }
 
 /// Each platform's yield of `metric` on each day, divided by their average over every
-/// platform and day, labeled with the platforms.
+/// platform and day, less 1, labeled with the platforms: how far above or below the average
+/// each is, as a share of it.
 ///
 /// # Errors
 ///
@@ -478,11 +495,14 @@ fn returns(
         .collect();
     let count = (yields.len() * platforms.len()) as f64;
     let mean = yields.iter().flatten().sum::<f64>() / count;
-    // A metric none of the platforms delivered has no yield to compare, so it stays at 0.
-    let mean = if mean > 0.0 { mean } else { 1.0 };
+    // A metric none of the platforms delivered has no yield to compare, so its returns are 0.
     let rows: Vec<Vec<f64>> = yields
         .into_iter()
-        .map(|day| day.into_iter().map(|y| y / mean).collect())
+        .map(|day| {
+            day.into_iter()
+                .map(|y| if mean > 0.0 { y / mean - 1.0 } else { 0.0 })
+                .collect()
+        })
         .collect();
     Returns::new(&rows).and_then(|data| data.labeled(platforms.iter().cloned()))
 }
@@ -496,6 +516,11 @@ fn stats(stats: &cutup::PortfolioStats) -> Result<Stats, CutupError> {
         diversification_ratio: stats.diversification_ratio(),
         risk_contributions: stats.risk_contributions().map(<[f64]>::to_vec),
         cvar: stats.cvar(CVAR_CONFIDENCE)?,
+        mad: stats.mad(),
+        downside_mad: stats.downside_mad(0.0)?,
+        cdar: stats.cdar(CVAR_CONFIDENCE)?,
+        max_drawdown: stats.max_drawdown(),
+        average_drawdown: stats.average_drawdown(),
     })
 }
 

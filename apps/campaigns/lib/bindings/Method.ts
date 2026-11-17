@@ -4,7 +4,9 @@ import type { Hrp } from "./Hrp";
 import type { MaxDiversification } from "./MaxDiversification";
 import type { MaxSharpe } from "./MaxSharpe";
 import type { MeanVariance } from "./MeanVariance";
+import type { MinCdar } from "./MinCdar";
 import type { MinCvar } from "./MinCvar";
+import type { MinMad } from "./MinMad";
 import type { MinVariance } from "./MinVariance";
 import type { RiskParity } from "./RiskParity";
 
@@ -12,4 +14,4 @@ import type { RiskParity } from "./RiskParity";
  * An allocation method, by `"name"`, with its settings as cutup reads them, such as
  * `{"name": "min_variance", "bounds": {"upper": 0.6}}`.
  */
-export type Method = { "name": "equal_weight" } & {} | { "name": "inverse_volatility" } & {} | { "name": "inverse_variance" } & {} | { "name": "min_variance" } & MinVariance | { "name": "mean_variance" } & MeanVariance | { "name": "max_sharpe" } & MaxSharpe | { "name": "max_diversification" } & MaxDiversification | { "name": "risk_parity" } & RiskParity | { "name": "hrp" } & Hrp | { "name": "herc" } & Herc | { "name": "min_cvar" } & MinCvar;
+export type Method = { "name": "equal_weight" } & {} | { "name": "inverse_volatility" } & {} | { "name": "inverse_variance" } & {} | { "name": "min_variance" } & MinVariance | { "name": "mean_variance" } & MeanVariance | { "name": "max_sharpe" } & MaxSharpe | { "name": "max_diversification" } & MaxDiversification | { "name": "risk_parity" } & RiskParity | { "name": "hrp" } & Hrp | { "name": "herc" } & Herc | { "name": "min_cvar" } & MinCvar | { "name": "min_mad" } & MinMad | { "name": "min_cdar" } & MinCdar;

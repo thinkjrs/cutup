@@ -78,7 +78,7 @@ fn each_metric_allocates_on_its_normalized_yields() {
         .zip([Metric::Impressions, Metric::Clicks])
     {
         assert_eq!(result.metric, metric);
-        // The same as cutup on the yields by hand, each divided by their average.
+        // The same as cutup on the yields by hand, each divided by their average, less 1.
         let totals: [[(f64, f64); 2]; 3] = [
             [
                 (
@@ -126,7 +126,10 @@ fn each_metric_allocates_on_its_normalized_yields() {
             .map(|day| day.map(|(spend, total)| total / spend))
             .collect();
         let mean = yields.iter().flatten().sum::<f64>() / 6.0;
-        let rows: Vec<[f64; 2]> = yields.iter().map(|day| day.map(|y| y / mean)).collect();
+        let rows: Vec<[f64; 2]> = yields
+            .iter()
+            .map(|day| day.map(|y| y / mean - 1.0))
+            .collect();
         let data = Returns::new(&rows).unwrap().labeled(["A", "B"]).unwrap();
         let expected = data.allocate(&MinVariance::default()).unwrap();
         assert_eq!(result.weights.as_ref(), Some(&expected), "{metric:?}");
@@ -438,4 +441,31 @@ fn the_typescript_types_are_the_json() {
         Metric::decl(&cfg),
         "type Metric = \"impressions\" | \"clicks\" | \"link_clicks\" | \"views\";"
     );
+}
+
+#[test]
+fn each_risk_method_has_the_least_of_its_risk_on_the_sample() {
+    // The returns are each yield's excess over the average, so a run of days below it is a
+    // drawdown: on yields over the average alone, every running sum rose and every CDaR was 0.
+    let stats = |method: serde_json::Value| -> Stats {
+        let read = request(json!({"metrics": ["clicks"], "method": method}));
+        allocate(&read).unwrap().results[0].stats.clone().unwrap()
+    };
+    let cdar = stats(json!({"name": "min_cdar"}));
+    let mad = stats(json!({"name": "min_mad"}));
+    let shortfall = stats(json!({"name": "min_mad", "downside": 0.0}));
+    assert!(cdar.cdar > 0.0, "{cdar:?}");
+    for other in [
+        json!({"name": "equal_weight"}),
+        json!({"name": "min_variance"}),
+        json!({"name": "min_cvar"}),
+    ] {
+        let other = stats(other);
+        assert!(cdar.cdar <= other.cdar + 1e-12, "{cdar:?} vs {other:?}");
+        assert!(mad.mad <= other.mad + 1e-12, "{mad:?} vs {other:?}");
+        assert!(
+            shortfall.downside_mad <= other.downside_mad + 1e-12,
+            "{shortfall:?} vs {other:?}"
+        );
+    }
 }
