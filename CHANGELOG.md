@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The sample campaign app, which isn't part of the published crate:
+  - **`MinMad` and `MinCdar`:** in its engine and form, with min MAD's shortfall threshold and
+    min CVaR's and min CDaR's confidence.
+  - **Statistics:** each result has the mean absolute deviation, the mean shortfall below the
+    average, CDaR, and the maximum and average drawdowns, in a table of losses and
+    drawdowns.
+  - **Returns:** each is now a yield's excess over its average, 0.05 for 5% more, rather than
+    the yield over the average, 1.05. On those, every running sum rose, so every drawdown was
+    0. The weights of the methods that don't depend on the returns' level are unchanged.
+    `MaxSharpe`'s change, since its risk-free rate of 0 is now the average. Every expected
+    return, CVaR and Sharpe ratio moves with them.
+
 ## [0.3.11] - 2026-11-17
 
 ### Added
