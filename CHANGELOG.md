@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-11-17
+
 ### Added
 
 - `MinCdar`: the long-only portfolio with the lowest conditional drawdown at risk (Chekhlov,
@@ -944,7 +946,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.10...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.11...HEAD
+[0.3.11]: https://github.com/thinkjrs/cutup/compare/0.3.10...0.3.11
 [0.3.10]: https://github.com/thinkjrs/cutup/compare/0.3.9...0.3.10
 [0.3.9]: https://github.com/thinkjrs/cutup/compare/0.3.8...0.3.9
 [0.3.8]: https://github.com/thinkjrs/cutup/compare/0.3.7...0.3.8
