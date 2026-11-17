@@ -336,32 +336,39 @@ mod tests {
 
     #[test]
     fn the_optimum_is_the_full_programs() {
-        let data = data();
-        for beta in [0.5, 0.8, 0.95, 0.99] {
-            for (lower, upper) in [(0.0, 1.0), (0.0, 0.35), (0.1, 0.5)] {
-                let method = MinCdar::default()
-                    .confidence(beta)
-                    .bounds(WeightBounds::uniform(lower, upper));
-                let weights = data.allocate(&method).unwrap();
-                assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-                assert!(
-                    weights
-                        .iter()
-                        .all(|&w| (lower - 1e-15..=upper + 1e-15).contains(&w))
-                );
-                let cdar = data.cdar(&weights, beta).unwrap();
-                let best = primal(&data, beta, (lower, upper), None);
-                assert!(
-                    (cdar - best).abs() <= 1e-12 * best,
-                    "{beta}, {upper}: {cdar} vs {best}"
-                );
-            }
+        // Each confidence with one set of bounds, on 40 periods: the full program has two rows
+        // a period, and cargo-mutants runs this for every mutant. The reference suite checks
+        // more cases against SciPy's.
+        let data = Returns::returns_matrix(factor_returns(5, 40, 11)).unwrap();
+        for (beta, (lower, upper)) in [
+            (0.5, (0.0, 1.0)),
+            (0.8, (0.0, 0.35)),
+            (0.95, (0.1, 0.5)),
+            (0.99, (0.0, 1.0)),
+        ] {
+            let method = MinCdar::default()
+                .confidence(beta)
+                .bounds(WeightBounds::uniform(lower, upper));
+            let weights = data.allocate(&method).unwrap();
+            assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            assert!(
+                weights
+                    .iter()
+                    .all(|&w| (lower - 1e-15..=upper + 1e-15).contains(&w))
+            );
+            let cdar = data.cdar(&weights, beta).unwrap();
+            let best = primal(&data, beta, (lower, upper), None);
+            assert!(
+                (cdar - best).abs() <= 1e-12 * best,
+                "{beta}, {upper}: {cdar} vs {best}"
+            );
         }
     }
 
     #[test]
     fn a_target_holds_at_the_least_cdar_that_reaches_it() {
-        let data = data();
+        // 40 periods, as for the full program above.
+        let data = Returns::returns_matrix(factor_returns(5, 40, 11)).unwrap();
         let mu = data.returns.row_mean();
         let target = mu.mean() + 1e-4;
         let weights = data
