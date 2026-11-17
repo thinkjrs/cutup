@@ -290,6 +290,10 @@ describe("scale and format", () => {
     expect(percent(-0.25)).toBe("-25.0%");
     expect(number(1234.5678, 5)).toBe("1,234.6");
     expect(number(null)).toBe("–");
+    // A solver's rounding of 0, such as equal weight's expected return, is 0.
+    expect(number(-5.2e-16, 4)).toBe("0");
+    expect(number(0.000123456, 4)).toBe("0.0001235");
+    expect(number(-0.4243918, 4)).toBe("-0.4244");
     expect(tick(2500)).toBe("2,500");
     expect(tick(25_000)).toBe("25K");
     const all = ["Google", "Meta", "Reddit", "Snap", "Spotify", "TikTok"];

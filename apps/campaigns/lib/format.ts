@@ -13,12 +13,16 @@ export function percent(value: number, digits = 1): string {
   return `${Number(text) === 0 ? text.replace("-", "") : text}%`;
 }
 
-/** A plain number, to `digits` significant figures, with thousands separated. */
+/** A plain number, to `digits` significant figures but no finer than 1e-10, with thousands
+ * separated. A solver's rounding, such as an expected return of -5e-16 for one that's 0, is 0. */
 export function number(value: number | null | undefined, digits = 3): string {
   if (value === null || value === undefined || !Number.isFinite(value))
     return "–";
   return new Intl.NumberFormat("en-US", {
     maximumSignificantDigits: digits,
+    maximumFractionDigits: 10,
+    roundingPriority: "lessPrecision",
+    signDisplay: "negative",
   }).format(value);
 }
 
