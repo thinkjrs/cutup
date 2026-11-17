@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-11-14 · Current release: 0.3.10
+Status: draft · Last updated: 2026-11-17 · Current release: 0.3.11
 
 This plans the releases from 0.3.0 to 1.0.0.
 
@@ -600,16 +600,31 @@ they reuse the simplex solver behind `MinCvar`.
   `.downside(threshold)` the lowest mean shortfall below the threshold. Takes
   `.bounds(..)` with groups and `.target_return(..)`, as `MinCvar` does. Like
   `MinCvar`, it solves a dual with a row per asset rather than per period:
-  the MAD is the most `Σₜ zₜ(rₜ − r̄)ᵀw` can be over `|zₜ| ≤ 1/T`.
+  the MAD is the most `Σₜ zₜ(rₜ − r̄)ᵀw` can be over `|zₜ| ≤ 1`, which scales
+  the optimum but not the weights. `MinCvar`'s dual moved into `src/dual.rs`,
+  which both build through.
 - **`MinCdar`:** the portfolio with the lowest CDaR, with `.confidence(β)`,
-  bounds, groups and a target return. Its program has about `2T` rows, one
-  for each period's peak and one for its drawdown past the tail's threshold,
-  so it's benchmarked at 250 and 1,000 periods before the rest is built on it.
+  bounds, groups and a target return.
+  - **Why not the full program:** it has about `2T` rows, and the benchmark
+    before building on it took 86 to 96 seconds at 1,000 periods.
+  - **Cutting planes instead** (Kelley, 1960): each round minimizes the most of
+    the cuts so far, a program with a row per cut, and adds a cut halfway from
+    the best portfolio so far to the minimizer, an in-out stabilization.
+  - **Speed:** about 0.08 s at 100 assets and 2.8 s at 500 in the benchmark,
+    where each round as `MinCvar`'s dual took 602 s at 500.
 - **Wiring:** `serde` and `ts-rs` for both methods, the `allocate` fuzz target,
-  the reference suite against SciPy's `linprog` and riskfolio-lib, an
-  `examples/drawdown.rs`, and README sections.
-- **The campaign app:** both methods in its engine and form, and the new
-  statistics in its table.
+  the reference suite against SciPy's `linprog` and riskfolio-lib, and README
+  sections, each with an example, in place of a separate
+  `examples/drawdown.rs`. `MinCdar` is in the benchmark.
+- **Mutation testing:** six mutants of `MinCdar`'s loop can't change its
+  result, the tolerance and path kinds `docs/MUTATION.md` lists. The new tests
+  pushed the full run's shards past 120 minutes, so the slowest tests were
+  trimmed and each shard has 180.
+- **Left for later:**
+  - the campaign app: both methods in its engine and form, and the new
+    statistics in its table;
+  - warm-starting `MinCdar`'s program from the last round's basis, the next
+    saving, which needs a warm start in the simplex solver.
 
 ## Later 0.3.x or 1.x
 
