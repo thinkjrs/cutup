@@ -76,8 +76,10 @@ jobs:
   full:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # About 270 mutants a shard, some of them timing out at 60 s.
-    timeout-minutes: 120
+    # About 500 mutants a shard, counting those that don't compile, some of them timing out at
+    # 60 s. The test suite runs once for each, so the limit leaves room for it to grow: at
+    # 0.3.11, the MinCdar and MinMad tests took four shards past 120 minutes.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
