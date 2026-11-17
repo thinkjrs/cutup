@@ -26,6 +26,8 @@ export const METHODS: { name: MethodName; label: string }[] = [
   { name: "hrp", label: "Hierarchical risk parity" },
   { name: "herc", label: "Hierarchical equal risk contribution" },
   { name: "min_cvar", label: "Minimum CVaR" },
+  { name: "min_mad", label: "Minimum mean absolute deviation" },
+  { name: "min_cdar", label: "Minimum CDaR (drawdowns)" },
 ];
 
 /** The methods that take weight bounds, so a cap on each platform's share. */
@@ -33,7 +35,12 @@ export const BOUNDED: MethodName[] = [
   "min_variance",
   "mean_variance",
   "min_cvar",
+  "min_mad",
+  "min_cdar",
 ];
+
+/** The methods that take a confidence, the share of days or drawdowns their tail leaves out. */
+export const CONFIDENT: MethodName[] = ["min_cvar", "min_cdar"];
 
 export const DEFAULT_PLATFORMS = ["Meta", "Google", "TikTok"];
 
@@ -54,6 +61,11 @@ export type Form = {
   riskAversion: number;
   /** Points along the efficient frontier, for mean-variance, or null for none. */
   frontier: number | null;
+  /** The confidence of min CVaR's and min CDaR's tails, from 0 to 1. */
+  confidence: number;
+  /** The return min MAD's shortfall is measured below, or null for the deviation either side
+   * of the mean. Returns are excesses over the average yield, so 0 is the average. */
+  downside: number | null;
   rolling: { window: number; step: number } | null;
 };
 
@@ -66,6 +78,8 @@ export const DEFAULT_FORM: Form = {
   maxWeight: null,
   riskAversion: 1,
   frontier: null,
+  confidence: 0.95,
+  downside: null,
   rolling: null,
 };
 
@@ -78,6 +92,12 @@ export function toRequest(form: Form): Request {
   }
   if (form.method === "mean_variance") {
     method.risk_aversion = form.riskAversion;
+  }
+  if (CONFIDENT.includes(form.method)) {
+    method.confidence = form.confidence;
+  }
+  if (form.method === "min_mad" && form.downside !== null) {
+    method.downside = form.downside;
   }
   const request: Request = {
     platforms: form.platforms,

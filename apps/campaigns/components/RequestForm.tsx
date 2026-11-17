@@ -7,6 +7,7 @@ import type { PlatformSummary } from "@/lib/bindings/PlatformSummary";
 import { metricLabel, platformColor } from "@/lib/format";
 import {
   BOUNDED,
+  CONFIDENT,
   lowestCap,
   METHODS,
   METRICS,
@@ -224,6 +225,59 @@ export function RequestForm({
               />
             </label>
           </div>
+        ) : null}
+
+        {CONFIDENT.includes(form.method) ? (
+          <label className="block text-xs font-medium text-ink-2">
+            Confidence
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="range"
+                min={0.5}
+                max={0.99}
+                step={0.01}
+                value={form.confidence}
+                onChange={(event) =>
+                  onForm({ ...form, confidence: Number(event.target.value) })
+                }
+                className="flex-1"
+              />
+              <span className="tabular w-24 text-right text-sm text-ink">
+                worst {Math.round((1 - form.confidence) * 100)}%
+              </span>
+            </div>
+            <span className="mt-1 block font-normal text-muted">
+              {form.method === "min_cdar"
+                ? "Of the drawdowns: runs of days below the average."
+                : "Of the days, by how far each falls below the average."}
+            </span>
+          </label>
+        ) : null}
+
+        {form.method === "min_mad" ? (
+          <label className="block text-xs font-medium text-ink-2">
+            Shortfall below
+            <input
+              type="number"
+              step={0.05}
+              placeholder="none: deviation either side"
+              value={form.downside ?? ""}
+              onChange={(event) =>
+                onForm({
+                  ...form,
+                  downside:
+                    event.target.value === ""
+                      ? null
+                      : Number(event.target.value),
+                })
+              }
+              className={`${field} tabular mt-1 block w-full`}
+            />
+            <span className="mt-1 block font-normal text-muted">
+              A return relative to the average: 0 is the average, −0.1 is 10%
+              below it.
+            </span>
+          </label>
         ) : null}
 
         <div>

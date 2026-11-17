@@ -167,9 +167,9 @@ function Allocations({ response, all }: { response: Response; all: string[] }) {
       <section className="rounded-lg border border-border bg-surface p-4">
         <h3 className="text-sm font-semibold">Statistics</h3>
         <p className="mt-1 text-xs text-ink-2">
-          In units of the average yield: an expected return of 1.05 is 5% more
-          of the metric per unit of spend than the average of the platforms and
-          days. CVaR is the average of the worst 5% of days, as a loss.
+          Each day&apos;s return is how far the metric per unit of spend is
+          above or below its average over the platforms and days: an expected
+          return of 0.05 is 5% more than the average, and −0.05 is 5% less.
         </p>
         <div className="mt-3">
           <DataTable
@@ -179,7 +179,6 @@ function Allocations({ response, all }: { response: Response; all: string[] }) {
               "Volatility",
               "Sharpe ratio",
               "Diversification ratio",
-              "CVaR 95%",
               ...names.map((name) => `${name} risk`),
             ]}
             rows={results.map((r) => [
@@ -188,11 +187,41 @@ function Allocations({ response, all }: { response: Response; all: string[] }) {
               number(r.stats?.volatility, 3),
               number(r.stats?.sharpe_ratio, 3),
               number(r.stats?.diversification_ratio, 3),
-              number(r.stats?.cvar, 3),
               ...names.map((_, i) => {
                 const share = r.stats?.risk_contributions?.[i];
                 return share === undefined ? "–" : percent(share);
               }),
+            ])}
+          />
+        </div>
+        <h4 className="mt-5 text-xs font-semibold">Losses and drawdowns</h4>
+        <p className="mt-1 text-xs text-ink-2">
+          CVaR is the average of the worst 5% of days, as a shortfall from the
+          average. MAD is the mean absolute deviation from the portfolio&apos;s
+          own mean, and the shortfall the mean of each day&apos;s shortfall from
+          the average, the days above it counting as 0. A drawdown is how far
+          the running sum of the returns is below its highest so far: a run of
+          days below the average. CDaR is the average of the worst 5% of them.
+        </p>
+        <div className="mt-3">
+          <DataTable
+            head={[
+              "Metric",
+              "CVaR 95%",
+              "MAD",
+              "Shortfall",
+              "CDaR 95%",
+              "Max drawdown",
+              "Average drawdown",
+            ]}
+            rows={results.map((r) => [
+              metricLabel(r.metric),
+              number(r.stats?.cvar, 3),
+              number(r.stats?.mad, 3),
+              number(r.stats?.downside_mad, 3),
+              number(r.stats?.cdar, 3),
+              number(r.stats?.max_drawdown, 3),
+              number(r.stats?.average_drawdown, 3),
             ])}
           />
         </div>

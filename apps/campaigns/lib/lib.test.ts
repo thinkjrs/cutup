@@ -116,6 +116,29 @@ describe("request", () => {
     expect(equal.frontier).toBeUndefined();
   });
 
+  it("carries the risk methods' confidence and threshold", () => {
+    const form = { ...DEFAULT_FORM, confidence: 0.8, downside: -0.1 };
+    expect(toRequest({ ...form, method: "min_cdar" }).method).toEqual({
+      name: "min_cdar",
+      confidence: 0.8,
+    });
+    expect(toRequest({ ...form, method: "min_cvar" }).method).toEqual({
+      name: "min_cvar",
+      confidence: 0.8,
+    });
+    expect(
+      toRequest({ ...form, method: "min_mad", maxWeight: 0.5 }).method,
+    ).toEqual({ name: "min_mad", bounds: { upper: 0.5 }, downside: -0.1 });
+    // With no threshold, the deviation either side of the mean.
+    expect(
+      toRequest({ ...form, method: "min_mad", downside: null }).method,
+    ).toEqual({ name: "min_mad" });
+    // Neither goes to a method that doesn't take it.
+    expect(toRequest({ ...form, method: "hrp" }).method).toEqual({
+      name: "hrp",
+    });
+  });
+
   it("carries the settings a method takes", () => {
     expect(
       toRequest({
