@@ -5,10 +5,12 @@
 //!
 //! Each ad platform is an asset, and the weights are shares of the budget. For each metric,
 //! each platform's return on a day is how far what a unit of spend bought there, impressions,
-//! clicks, link clicks or views per unit, is above or below its average over the platforms and
-//! days in the request, as a share of it: 0.05 is 5% more than the average. So every metric's
-//! returns are near 0 and a method's settings, such as a risk aversion, mean the same for each,
-//! and a run of days below the average is a drawdown. Every method allocates once per metric.
+//! clicks, link clicks or views per unit, is above or below the average yield, as a share of
+//! it: 0.05 is 5% more than the average. The average is the benchmark, as an index is for a
+//! fund, and it's over the platforms and days the allocation sees: the request's, or a rolling
+//! window's own, so no window is measured against days after it. The returns average 0, so a
+//! method's settings, such as a risk aversion, mean the same for every metric, but a platform
+//! below the benchmark stays below it. Every method allocates once per metric.
 //!
 //! These methods take a platform's results to grow in proportion to its spend, so they don't
 //! model saturation.
@@ -20,7 +22,7 @@ pub use sample::{Metric, PlatformSummary, Sample, Totals};
 use cutup::{
     Allocation, CutupError, EqualWeight, FrontierPoint, Herc, Hrp, InverseVariance,
     InverseVolatility, MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad,
-    MinVariance, Returns, RiskParity, Weights, Window,
+    MinVariance, Returns, RiskParity, Weights,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -159,11 +161,28 @@ pub struct Stats {
     /// counting as 0: the mean shortfall that `MinMad`'s downside minimizes, at a threshold of 0.
     pub downside_mad: f64,
     /// The average of the worst 5% of the drawdowns: how far the running sum of the returns,
-    /// from 0 before the first day, is below its highest so far, after each day. A drawdown is
-    /// a run of days below the average.
+    /// from 0 before the first day, is below its highest so far, after each day. That's how
+    /// far the budget has fallen behind the benchmark since its best, in days' worth of the
+    /// average yield. As on any P&L, it includes the drift: a portfolio below the benchmark
+    /// falls further behind it every day, besides any run of bad days.
     pub cdar: f64,
     pub max_drawdown: f64,
     pub average_drawdown: f64,
+}
+
+/// One rolling window's allocation: the days it covers, as a range of the response's days, and
+/// its weights or why the method couldn't allocate over them. Its returns are measured from the
+/// average over its own days, so none of them depend on days after it.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+pub struct RollingWindow {
+    pub start: usize,
+    pub end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub weights: Option<Weights>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<CutupError>,
 }
 
 /// One metric's allocation: its weights and statistics, or why the method couldn't allocate,
@@ -190,7 +209,7 @@ pub struct MetricResult {
     pub frontier_error: Option<CutupError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub rolling: Option<Vec<Window>>,
+    pub rolling: Option<Vec<RollingWindow>>,
 }
 
 /// Each metric's allocation, over the days every platform spent on.
@@ -398,10 +417,16 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
             frontier_error: None,
             rolling: None,
         };
-        match returns(&totals, metric, platforms) {
-            Ok(data) => {
-                allocate_metric(&mut result, &data, method.as_ref(), request, mean_variance)?
-            }
+        let yields = yields(&totals, metric);
+        match excess(&yields, platforms) {
+            Ok(data) => allocate_metric(
+                &mut result,
+                &data,
+                &yields,
+                method.as_ref(),
+                request,
+                mean_variance,
+            )?,
             Err(error) => result.error = Some(error),
         }
         results.push(result);
@@ -413,29 +438,30 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
     })
 }
 
-/// Fills in `result` from one metric's returns. The rolling windows are checked first, since
-/// they're lazy, so a request whose windows don't fit, or are more than
-/// [`MAX_ROLLING_WINDOWS`], fails before anything is solved.
+/// Fills in `result` from one metric's returns, `data`, and the yields they come from. The
+/// rolling windows are checked first, through cutup's, which count them without solving, so a
+/// request whose windows don't fit, or are more than [`MAX_ROLLING_WINDOWS`], fails before
+/// anything is solved.
 fn allocate_metric(
     result: &mut MetricResult,
     data: &Returns,
+    yields: &[Vec<f64>],
     method: &dyn Allocation,
     request: &Request,
     mean_variance: Option<&MeanVariance>,
 ) -> Result<(), EngineError> {
     let rolling = match request.rolling {
         Some(rolling) => {
-            let windows = data
+            let count = data
                 .rolling(rolling.window)
                 .step(rolling.step)
                 .allocate(method)
-                .map_err(|error| EngineError::Rolling { error })?;
-            if windows.len() > MAX_ROLLING_WINDOWS {
-                return Err(EngineError::RollingWindows {
-                    windows: windows.len(),
-                });
+                .map_err(|error| EngineError::Rolling { error })?
+                .len();
+            if count > MAX_ROLLING_WINDOWS {
+                return Err(EngineError::RollingWindows { windows: count });
             }
-            Some(windows)
+            Some((rolling, count))
         }
         None => None,
     };
@@ -452,8 +478,35 @@ fn allocate_metric(
             Err(error) => result.frontier_error = Some(error),
         }
     }
-    result.rolling = rolling.map(Iterator::collect);
+    result.rolling = rolling.map(|(rolling, count)| {
+        windows(yields.len(), rolling, count)
+            .map(|periods| {
+                let weights = excess(&yields[periods.clone()], data.labels())
+                    .and_then(|window| window.allocate(method));
+                RollingWindow {
+                    start: periods.start,
+                    end: periods.end,
+                    weights: weights.as_ref().ok().cloned(),
+                    error: weights.err(),
+                }
+            })
+            .collect()
+    });
     Ok(())
+}
+
+/// The days each of `count` rolling windows covers, oldest first, as cutup lays them out:
+/// `window` days each, `step` apart, the last ending at the last of `days`.
+fn windows(
+    days: usize,
+    rolling: RollingRequest,
+    count: usize,
+) -> impl Iterator<Item = std::ops::Range<usize>> {
+    let last = days - rolling.window;
+    (0..count).map(move |k| {
+        let start = last - (count - 1 - k) * rolling.step;
+        start..start + rolling.window
+    })
 }
 
 /// Checks `platforms` are some of the sample's, each once.
@@ -476,31 +529,31 @@ fn check_platforms(sample: &Sample, platforms: &[String]) -> Result<(), EngineEr
     Ok(())
 }
 
-/// Each platform's yield of `metric` on each day, divided by their average over every
-/// platform and day, less 1, labeled with the platforms: how far above or below the average
-/// each is, as a share of it.
+/// Each platform's yield of `metric` on each day: what a unit of spend bought.
+fn yields(totals: &[Vec<Totals>], metric: Metric) -> Vec<Vec<f64>> {
+    totals
+        .iter()
+        .map(|day| day.iter().map(|t| t.yield_of(metric)).collect())
+        .collect()
+}
+
+/// Each of `yields`, one row per day, divided by their average over every platform and day,
+/// less 1, labeled with the platforms: how far above or below the average each is, as a share
+/// of it.
 ///
 /// # Errors
 ///
 /// [`CutupError::NonFiniteValue`] if a yield isn't finite, such as a total over a spend so
-/// small that their ratio overflows.
-fn returns(
-    totals: &[Vec<Totals>],
-    metric: Metric,
-    platforms: &[String],
-) -> Result<Returns, CutupError> {
-    let yields: Vec<Vec<f64>> = totals
-        .iter()
-        .map(|day| day.iter().map(|t| t.yield_of(metric)).collect())
-        .collect();
+/// small that their ratio overflows, and cutup's errors for too few days.
+fn excess(yields: &[Vec<f64>], platforms: &[String]) -> Result<Returns, CutupError> {
     let count = (yields.len() * platforms.len()) as f64;
     let mean = yields.iter().flatten().sum::<f64>() / count;
     // A metric none of the platforms delivered has no yield to compare, so its returns are 0.
     let rows: Vec<Vec<f64>> = yields
-        .into_iter()
+        .iter()
         .map(|day| {
-            day.into_iter()
-                .map(|y| if mean > 0.0 { y / mean - 1.0 } else { 0.0 })
+            day.iter()
+                .map(|&y| if mean > 0.0 { y / mean - 1.0 } else { 0.0 })
                 .collect()
         })
         .collect();

@@ -2,9 +2,9 @@
 import type { CutupError } from "./CutupError";
 import type { FrontierPoint } from "./FrontierPoint";
 import type { Metric } from "./Metric";
+import type { RollingWindow } from "./RollingWindow";
 import type { Stats } from "./Stats";
 import type { Weights } from "./Weights";
-import type { Window } from "./Window";
 
 /**
  * One metric's allocation: its weights and statistics, or why the method couldn't allocate,
@@ -15,4 +15,4 @@ export type MetricResult = { metric: Metric, weights?: Weights, stats?: Stats, e
  * Why the frontier couldn't be traced, when one was asked for: a setting it doesn't take,
  * such as rebalancing, or one it can't use, such as data it can't allocate on.
  */
-frontier_error?: CutupError, rolling?: Array<Window>, };
+frontier_error?: CutupError, rolling?: Array<RollingWindow>, };

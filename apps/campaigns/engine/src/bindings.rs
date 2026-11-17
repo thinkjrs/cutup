@@ -61,7 +61,7 @@ fn bindings_are_committed() {
         "PlatformSummary.ts",
         "Method.ts",
         "MeanVariance.ts",
-        "Window.ts",
+        "RollingWindow.ts",
         "CutupError.ts",
     ] {
         assert!(generated.contains_key(name), "{name} wasn't exported");

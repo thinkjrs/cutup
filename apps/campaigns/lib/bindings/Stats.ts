@@ -30,7 +30,9 @@ mad: number,
 downside_mad: number, 
 /**
  * The average of the worst 5% of the drawdowns: how far the running sum of the returns,
- * from 0 before the first day, is below its highest so far, after each day. A drawdown is
- * a run of days below the average.
+ * from 0 before the first day, is below its highest so far, after each day. That's how
+ * far the budget has fallen behind the benchmark since its best, in days' worth of the
+ * average yield. As on any P&L, it includes the drift: a portfolio below the benchmark
+ * falls further behind it every day, besides any run of bad days.
  */
 cdar: number, max_drawdown: number, average_drawdown: number, };

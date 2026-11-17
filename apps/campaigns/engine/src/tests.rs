@@ -209,7 +209,7 @@ fn a_frontier_and_rolling_windows_come_with_each_metric() {
     assert!(!result.frontier.as_ref().unwrap().is_empty());
     let windows = result.rolling.as_ref().unwrap();
     assert_eq!(
-        windows.iter().map(Window::periods).collect::<Vec<_>>(),
+        windows.iter().map(|w| w.start..w.end).collect::<Vec<_>>(),
         [0..2, 1..3]
     );
     assert!(result.frontier_error.is_none());
@@ -426,7 +426,13 @@ fn the_typescript_types_are_the_json() {
         bare(MetricResult::decl(&cfg)),
         "type MetricResult = { metric: Metric, weights?: Weights, stats?: Stats, \
          error?: CutupError, frontier?: Array<FrontierPoint>, frontier_error?: CutupError, \
-         rolling?: Array<Window>, };"
+         rolling?: Array<RollingWindow>, };"
+    );
+    // The same JSON as cutup's own windows.
+    assert_eq!(
+        bare(RollingWindow::decl(&cfg)),
+        "type RollingWindow = { start: number, end: number, weights?: Weights, \
+         error?: CutupError, };"
     );
     let method = Method::decl(&cfg);
     assert!(
@@ -451,6 +457,8 @@ fn each_risk_method_has_the_least_of_its_risk_on_the_sample() {
         let read = request(json!({"metrics": ["clicks"], "method": method}));
         allocate(&read).unwrap().results[0].stats.clone().unwrap()
     };
+    // The drawdowns include the drift, as on any P&L: a portfolio below the benchmark falls
+    // further behind it each day. So every portfolio here has some.
     let cdar = stats(json!({"name": "min_cdar"}));
     let mad = stats(json!({"name": "min_mad"}));
     let shortfall = stats(json!({"name": "min_mad", "downside": 0.0}));
@@ -468,4 +476,50 @@ fn each_risk_method_has_the_least_of_its_risk_on_the_sample() {
             "{shortfall:?} vs {other:?}"
         );
     }
+}
+
+#[test]
+fn rolling_windows_are_laid_out_as_cutup_lays_them_out() {
+    let data = cutup::Returns::new(&vec![[0.01, -0.02]; 30]).unwrap();
+    for (window, step) in [(2, 1), (5, 3), (7, 7), (30, 4), (11, 2)] {
+        let rolling = data
+            .rolling(window)
+            .step(step)
+            .allocate(cutup::EqualWeight)
+            .unwrap();
+        let count = rolling.len();
+        let theirs: Vec<_> = rolling.map(|w| w.periods()).collect();
+        let ours: Vec<_> = windows(30, RollingRequest { window, step }, count).collect();
+        assert_eq!(ours, theirs, "window {window}, step {step}");
+    }
+}
+
+#[test]
+fn each_window_is_measured_from_its_own_average() {
+    // Max Sharpe at a rate of 0 needs some platform above the benchmark. Measured from the
+    // whole request's average, windows where every platform trailed it failed: 7 of the
+    // impressions windows and 11 of the link clicks windows at the form's default windows.
+    let read = request(json!({
+        "metrics": ["impressions", "link_clicks"],
+        "method": {"name": "max_sharpe"},
+        "rolling": {"window": 60, "step": 7}
+    }));
+    let response = allocate(&read).unwrap();
+    for result in &response.results {
+        let windows = result.rolling.as_ref().unwrap();
+        assert!(windows.len() > 40);
+        for window in windows {
+            assert!(window.error.is_none(), "{:?}: {window:?}", result.metric);
+        }
+    }
+    // A window's weights are the method's on its own days' yields, over their own average.
+    let platforms = default_platforms();
+    let (_, totals): (Vec<&str>, Vec<Vec<Totals>>) = Sample::bundled()
+        .days_with_spend(&platforms, None, None)
+        .unzip();
+    let all = yields(&totals, Metric::Impressions);
+    let window = &response.results[0].rolling.as_ref().unwrap()[3];
+    let own = excess(&all[window.start..window.end], &platforms).unwrap();
+    let expected = own.allocate(&MaxSharpe::default()).unwrap();
+    assert_eq!(window.weights.as_ref(), Some(&expected));
 }
