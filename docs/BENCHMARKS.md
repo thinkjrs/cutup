@@ -108,7 +108,8 @@ got fast enough.
   costs, if not feasible. The simplex solver starts from it, and a few dual
   pivots bring the new cut in, where each round had solved from scratch, from a
   basis of artificial variables. Anything the warm start can't do falls back to
-  that, so it can only be slower, never wrong.
+  that. A warm optimum meets the same tolerances as a cold one after perturbed
+  bounds are restored.
 
 The 10.8 s row is from a test with other generated returns at that size, which
 took 2.2 s with the stabilization, so the last two rows aren't measured alike.
