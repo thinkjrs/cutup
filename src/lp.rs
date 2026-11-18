@@ -198,8 +198,10 @@ fn solve_perturbing(
 /// from a basis of artificial variables.
 ///
 /// Anything that goes wrong from the warm start, such as a basis that can't be factored or a
-/// variable nothing can bring back, falls back to solving from scratch, so a warm start can
-/// only be slower, never wrong.
+/// variable nothing can bring back, falls back to solving from scratch. A warm optimum meets
+/// the same tolerances as a cold one after its bounds are restored: a basic variable can end
+/// up to `1e-9` of `max(1, |x|)` beyond one of its bounds, where a cold solve might land on
+/// another vertex.
 ///
 /// # Errors
 ///
@@ -232,6 +234,18 @@ fn from_basis(
 ) -> Option<(Outcome, Option<Basis>)> {
     let (m, n) = a.shape();
     if m == 0 || warm.basis.len() != m || warm.status.len() != n {
+        return None;
+    }
+    // Each row's basic variable distinct, in range and marked basic, and no other marked so:
+    // otherwise one marked basic outside the basis would be held at zero.
+    let mut seen = vec![false; n];
+    for &j in &warm.basis {
+        if j >= n || seen[j] || warm.status[j] != Status::Basic {
+            return None;
+        }
+        seen[j] = true;
+    }
+    if warm.status.iter().filter(|&&s| s == Status::Basic).count() != m {
         return None;
     }
     // Each nonbasic variable at the bound its status says, which must be finite.
@@ -463,7 +477,7 @@ impl Problem {
     /// From [`Perturbation::Repairing`], it first brings each basic variable beyond its bounds
     /// back with dual simplex pivots, as after restoring perturbed bounds: so a basis that's
     /// optimal for the costs but not feasible, such as an earlier optimum with a new row, is a
-    /// start.
+    /// start. Then, with no bounds widened yet, it may widen them as from [`Perturbation::Off`].
     fn minimize(
         &mut self,
         cost: &DVector<f64>,
@@ -507,7 +521,13 @@ impl Problem {
                     stalled = 0;
                     continue;
                 }
-                perturbation = Perturbation::Done;
+                // A warm start never widened any bounds, so it may still widen them on a
+                // degenerate vertex rather than leave each stall to Bland's rule.
+                perturbation = if perturbed.contains(&true) {
+                    Perturbation::Done
+                } else {
+                    Perturbation::Off
+                };
             }
             // A run of pivots that don't move x is on a degenerate vertex, where basic variables
             // sit at their bounds. Widening those bounds, each by a different amount, moves the
@@ -1536,21 +1556,105 @@ mod tests {
         assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis).is_none());
         let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&basis)).unwrap();
         assert_eq!(optimal(outcome).objective, cold.objective);
-        // A variable at a bound it doesn't have.
+        // A variable at a bound it doesn't have: y, s₀ and s₁ have no upper bound, and at the
+        // optimum (3, 1) one of them is nonbasic.
         let mut unbounded = basis.clone();
         unbounded.add_row();
-        let at_upper = (0..4).find(|&j| unbounded.status[j] != Status::Basic && j != 0);
-        if let Some(j) = at_upper {
-            unbounded.status[j] = Status::Upper;
-            assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded).is_none());
-        }
-        // A singular basis: one column twice.
-        let mut singular = basis;
-        singular.add_row();
-        singular.basis[1] = singular.basis[0];
+        let j = (1..4)
+            .find(|&j| unbounded.status[j] != Status::Basic)
+            .expect("a nonbasic variable with no upper bound");
+        unbounded.status[j] = Status::Upper;
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded).is_none());
+        // A basis with one column twice, and so a variable marked basic outside it.
+        let mut repeated = basis;
+        repeated.add_row();
+        repeated.basis[1] = repeated.basis[0];
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &repeated).is_none());
+        let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&repeated)).unwrap();
+        assert_eq!(optimal(outcome).objective, cold.objective);
+        // A basis that's consistent but singular: x's column is s₀'s plus s₁'s, so the
+        // factorization can't solve with it.
+        let singular = Basis {
+            basis: vec![0, 2, 3],
+            status: vec![
+                Status::Basic,
+                Status::Lower,
+                Status::Basic,
+                Status::Basic,
+                Status::Lower,
+            ],
+        };
         assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &singular).is_none());
         let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&singular)).unwrap();
         assert_eq!(optimal(outcome).objective, cold.objective);
+    }
+
+    #[test]
+    fn a_warm_start_holds_each_nonbasic_variable_at_a_bound_it_has() {
+        // minimize x subject to x + z = 2: x ≤ 5, y free and in no row, z ≥ 0 basic, w ≥ 0 with
+        // no upper bound and in no row, and v ≤ 0 with no lower bound and in no row.
+        let c = dvector![1.0, 0.0, 0.0, 0.0, 0.0];
+        let a = dmatrix![1.0, 0.0, 1.0, 0.0, 0.0];
+        let b = dvector![2.0];
+        let lower = dvector![0.0, -INF, 0.0, 0.0, -INF];
+        let upper = dvector![5.0, INF, INF, INF, 0.0];
+        let start = |status: [Status; 5]| Basis {
+            basis: vec![2],
+            status: status.to_vec(),
+        };
+        use Status::{Basic, Free, Lower, Upper};
+        let cold = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
+        // Each at a bound it has, and y free: the warm start itself solves it.
+        let valid = start([Lower, Free, Basic, Lower, Upper]);
+        let (warm, _) = from_basis(&c, &a, &b, &lower, &upper, &valid).unwrap();
+        assert_eq!(optimal(warm).objective, cold.objective);
+        // Free, though it has a bound: x has both, w one. At a lower bound v doesn't have.
+        for status in [
+            [Free, Free, Basic, Lower, Upper],
+            [Lower, Free, Basic, Free, Upper],
+            [Lower, Free, Basic, Lower, Lower],
+        ] {
+            let bad = start(status);
+            assert!(
+                from_basis(&c, &a, &b, &lower, &upper, &bad).is_none(),
+                "{status:?}"
+            );
+            let (outcome, _) = solve_warm(&c, &a, &b, &lower, &upper, Some(&bad)).unwrap();
+            assert_eq!(optimal(outcome).objective, cold.objective, "{status:?}");
+        }
+        // A status for each of too few variables, with the right number of rows.
+        let short = Basis {
+            basis: vec![2],
+            status: vec![Lower, Free, Basic],
+        };
+        assert!(from_basis(&c, &a, &b, &lower, &upper, &short).is_none());
+        // No rows at all.
+        let none = Basis {
+            basis: vec![],
+            status: vec![Lower, Free, Lower, Lower, Upper],
+        };
+        let rowless = DMatrix::zeros(0, 5);
+        assert!(from_basis(&c, &rowless, &dvector![], &lower, &upper, &none).is_none());
+    }
+
+    #[test]
+    fn a_basis_with_an_artificial_variable_is_no_start() {
+        // The problem's own variables are 0 and 1; 2 is the first artificial one.
+        let problem = |basis: Vec<usize>| Problem {
+            a: DMatrix::zeros(1, 3),
+            a_abs: DMatrix::zeros(1, 3),
+            b: dvector![0.0],
+            lower: dvector![0.0, 0.0, 0.0],
+            upper: dvector![INF, INF, INF],
+            x: dvector![0.0, 0.0, 0.0],
+            basis,
+            status: vec![Status::Basic, Status::Basic, Status::Basic],
+            perturbation: PERTURBATION,
+        };
+        assert!(problem(vec![2]).basis_of(2).is_none());
+        let own = problem(vec![1]).basis_of(2).unwrap();
+        assert_eq!(own.basis, [1]);
+        assert_eq!(own.status.len(), 2);
     }
 
     #[test]
