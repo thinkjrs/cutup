@@ -141,70 +141,131 @@ impl Portfolios {
         Ok((normalized(weights), -solution.objective / unit))
     }
 
-    /// The portfolio whose largest `cutᵀw` over `cuts` is least, and that largest value.
-    ///
-    /// The same min-max as [`Portfolios::min_max`], with the cuts as the scenarios and their
-    /// weighting any probability, but solved as the primal, `min η` subject to `cutᵀw ≤ η` for
-    /// each cut, a row per cut rather than per asset: the bounds are the weights' own, so
-    /// with few cuts the program is small however many assets there are. The cuts are
-    /// multiplied by `unit`, as the scenarios are, and so is the largest value: unscaling it
-    /// could take it out of the normal range, and the caller compares it with scaled values.
+    /// The portfolio whose largest `cutᵀw` over `cuts` is least, and that largest value, from
+    /// scratch: see [`Master`]. For the tests, which check it against [`Portfolios::min_max`].
     ///
     /// # Errors
     ///
     /// [`CutupError::NotConverged`] if the linear program stops early.
+    #[cfg(test)]
     pub(crate) fn min_of_max(
         &self,
         cuts: &[DVector<f64>],
         unit: f64,
     ) -> Result<(Vec<f64>, f64), CutupError> {
-        let bounds = &self.bounds;
+        let mut master = self.master(unit);
+        for cut in cuts {
+            master.add(cut.clone());
+        }
+        master.solve()
+    }
+
+    /// The program for the portfolio whose largest `cutᵀw` over some cuts is least, with no
+    /// cuts yet. The cuts are multiplied by `unit`, as the scenarios are.
+    pub(crate) fn master(&self, unit: f64) -> Master<'_> {
+        Master {
+            portfolios: self,
+            unit,
+            cuts: Vec::new(),
+            basis: None,
+        }
+    }
+}
+
+/// The portfolio whose largest `cutᵀw` over the cuts so far is least, for cutting planes,
+/// which add a cut a round.
+///
+/// The same min-max as [`Portfolios::min_max`], with the cuts as the scenarios and their
+/// weighting any probability, but solved as the primal, `min η` subject to `cutᵀw ≤ η` for
+/// each cut, a row per cut rather than per asset: the bounds are the weights' own, so with
+/// few cuts the program is small however many assets there are.
+///
+/// Each cut is a row and a slack variable, both last, so the program after a new cut is the
+/// last one with a row more, whose slack is basic in it. Each solve starts from the basis the
+/// last ended at, the new slack added, with [`lp::solve_warm`]: a few dual pivots repair the
+/// cut the last optimum violates, rather than solving from scratch.
+pub(crate) struct Master<'a> {
+    portfolios: &'a Portfolios,
+    unit: f64,
+    cuts: Vec<DVector<f64>>,
+    /// Where the last solve ended, with a row for each cut added since, if it can be a start.
+    basis: Option<lp::Basis>,
+}
+
+impl Master<'_> {
+    /// Adds `cut`, a row the next solve has to meet.
+    pub(crate) fn add(&mut self, cut: DVector<f64>) {
+        self.cuts.push(cut);
+        if let Some(basis) = &mut self.basis {
+            basis.add_row();
+        }
+    }
+
+    /// Whether `cut` is one the program already has.
+    pub(crate) fn contains(&self, cut: &DVector<f64>) -> bool {
+        self.cuts.contains(cut)
+    }
+
+    /// The portfolio whose largest `cutᵀw` is least, and that largest value, in the units of
+    /// the cuts: unscaling it could take it out of the normal range, and the caller compares it
+    /// with scaled values.
+    ///
+    /// # Errors
+    ///
+    /// [`CutupError::NotConverged`] if the linear program stops early.
+    pub(crate) fn solve(&mut self) -> Result<(Vec<f64>, f64), CutupError> {
+        let portfolios = self.portfolios;
+        let bounds = &portfolios.bounds;
         let n = bounds.lower.len();
         let groups = bounds.rows.a.ncols();
-        let target = usize::from(self.target.is_some());
-        // Columns: w (n), η, a slack for each cut, and one for each group's total. Rows: each
-        // cut, the budget, the target, then each group.
-        let (eta, slacks) = (n, n + 1);
-        let totals = slacks + cuts.len();
-        let rows = cuts.len() + 1 + target + groups;
-        let mut a = DMatrix::zeros(rows, totals + groups);
+        let target = usize::from(portfolios.target.is_some());
+        // Columns: w (n), η, each group's total, then a slack for each cut. Rows: the budget,
+        // the target, each group, then each cut. The cuts come last, so a new one adds a row and
+        // a column after the others.
+        let (eta, totals) = (n, n + 1);
+        let slacks = totals + groups;
+        let cols = slacks + self.cuts.len();
+        let first_cut = 1 + target + groups;
+        let rows = first_cut + self.cuts.len();
+        let mut a = DMatrix::zeros(rows, cols);
         let mut b = DVector::zeros(rows);
-        for (k, cut) in cuts.iter().enumerate() {
-            // cutᵀw − η + s = 0, s ≥ 0.
-            a.view_mut((k, 0), (1, n)).copy_from(&cut.transpose());
-            a[(k, eta)] = -1.0;
-            a[(k, slacks + k)] = 1.0;
+        a.view_mut((0, 0), (1, n)).fill(1.0);
+        b[0] = 1.0;
+        if let Some((rho, mu)) = &portfolios.target {
+            a.view_mut((1, 0), (1, n))
+                .copy_from(&(mu * self.unit).transpose());
+            b[1] = rho * self.unit;
         }
-        let budget = cuts.len();
-        a.view_mut((budget, 0), (1, n)).fill(1.0);
-        b[budget] = 1.0;
-        if let Some((rho, mu)) = &self.target {
-            a.view_mut((budget + 1, 0), (1, n))
-                .copy_from(&(mu * unit).transpose());
-            b[budget + 1] = rho * unit;
-        }
-        let first = budget + 1 + target;
         for (g, members) in bounds.rows.a.column_iter().enumerate() {
             // Gᵀw − t = 0, with t within the group's limits.
-            a.view_mut((first + g, 0), (1, n))
-                .copy_from(&members.transpose());
-            a[(first + g, totals + g)] = -1.0;
+            let row = 1 + target + g;
+            a.view_mut((row, 0), (1, n)).copy_from(&members.transpose());
+            a[(row, totals + g)] = -1.0;
         }
-        let cols = totals + groups;
+        for (k, cut) in self.cuts.iter().enumerate() {
+            // cutᵀw − η + s = 0, s ≥ 0.
+            let row = first_cut + k;
+            a.view_mut((row, 0), (1, n)).copy_from(&cut.transpose());
+            a[(row, eta)] = -1.0;
+            a[(row, slacks + k)] = 1.0;
+        }
         let mut c = DVector::zeros(cols);
         c[eta] = 1.0;
         let lower = DVector::from_fn(cols, |j, _| match j {
             j if j < n => bounds.lower[j],
             j if j == eta => f64::NEG_INFINITY,
-            j if j < totals => 0.0,
-            j => bounds.rows.lower[j - totals],
+            j if j < slacks => bounds.rows.lower[j - totals],
+            _ => 0.0,
         });
         let upper = DVector::from_fn(cols, |j, _| match j {
             j if j < n => bounds.upper[j],
-            j if j >= totals => bounds.rows.upper[j - totals],
+            j if j == eta => f64::INFINITY,
+            j if j < slacks => bounds.rows.upper[j - totals],
             _ => f64::INFINITY,
         });
-        let lp::Outcome::Optimal(solution) = lp::solve(&c, &a, &b, &lower, &upper)? else {
+        let (outcome, basis) = lp::solve_warm(&c, &a, &b, &lower, &upper, self.basis.as_ref())?;
+        self.basis = basis;
+        let lp::Outcome::Optimal(solution) = outcome else {
             return Err(CutupError::NotConverged);
         };
         let weights = DVector::from_fn(n, |i, _| {
@@ -344,6 +405,34 @@ mod tests {
                     assert!((achieved - target).abs() <= 1e-17, "{achieved} vs {target}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn each_round_from_the_last_matches_solving_from_scratch() {
+        // Cuts added one at a time, each solve starting from the last, within bounds, a group
+        // and a target, against the same cuts solved from scratch each time.
+        let returns = crate::test_support::factor_returns(5, 30, 4);
+        let data = Returns::returns_matrix(returns.clone()).unwrap();
+        let unit = unit_scale(data.returns.amax());
+        let mu = data.returns.row_mean();
+        let bounds = WeightBounds::uniform(0.0, 0.5).group([1, 2], 0.2, 0.6);
+        let target = Some(0.3 * mu[0] + 0.4 * mu[1] + 0.3 * mu[3]);
+        let portfolios = Portfolios::new(&data, &bounds, target).unwrap();
+        let mut master = portfolios.master(unit);
+        let mut cuts = Vec::new();
+        for k in 0..12 {
+            let cut = (returns.row(k).transpose() - returns.row(k + 12).transpose()) * unit;
+            assert!(!master.contains(&cut));
+            master.add(cut.clone());
+            cuts.push(cut);
+            let (weights, worst) = master.solve().unwrap();
+            let (_, scratch) = portfolios.min_of_max(&cuts, unit).unwrap();
+            assert!(
+                (worst - scratch).abs() <= 1e-15 * scratch.abs().max(1.0),
+                "{k}: {worst} vs {scratch}"
+            );
+            assert!(weights.iter().all(|&w| (-1e-15..=0.5 + 1e-15).contains(&w)));
         }
     }
 

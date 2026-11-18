@@ -129,10 +129,12 @@ impl Allocation for MinCdar {
     /// a cut: at a point halfway from the best portfolio so far to the minimizer if that cut
     /// rules the minimizer out, otherwise at the minimizer, which always does. It stops when
     /// the best portfolio's CDaR meets the bound, to rounding, which makes it the optimum.
+    /// Each round's program is the last's with a row more, so it starts from the basis the last
+    /// ended at, and a few dual simplex pivots bring in the new cut.
     ///
     /// The full program, with rows for every period's peak and drawdown, takes about 90
-    /// seconds at 1,000 periods. This way it's milliseconds there for tens of assets, and a
-    /// few seconds for 500.
+    /// seconds at 1,000 periods. This way it's milliseconds there for tens of assets, and about
+    /// 0.16 seconds for 500.
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         let (weights, _) = self.solve(data)?;
         Ok(data.weights(weights))
@@ -152,10 +154,11 @@ impl MinCdar {
         let scaled = returns * unit;
         let drawdowns = Drawdowns::new(&scaled, cap);
         // Everything below is in the scaled returns' units: the cuts, the CDaRs and the bound.
-        let mut cuts = vec![drawdowns.cut(&vec![1.0 / n as f64; n]).0];
+        let mut program = portfolios.master(unit);
+        program.add(drawdowns.cut(&vec![1.0 / n as f64; n]).0);
         let mut best: Option<(Vec<f64>, f64)> = None;
         for round in 1..=MAX_ROUNDS {
-            let (master, bound) = portfolios.min_of_max(&cuts, unit)?;
+            let (master, bound) = program.solve()?;
             let (master_cut, master_cdar) = drawdowns.cut(&master);
             let (best_weights, best_cdar) = match best.take() {
                 Some((weights, cdar)) if cdar <= master_cdar => (weights, cdar),
@@ -179,7 +182,7 @@ impl MinCdar {
                 .collect();
             let (query_cut, query_cdar) = drawdowns.cut(&query);
             let separates = query_cut.dot(&DVector::from_column_slice(&master)) > bound + tolerance;
-            let cut = if separates && !cuts.contains(&query_cut) {
+            let cut = if separates && !program.contains(&query_cut) {
                 query_cut
             } else {
                 master_cut
@@ -189,13 +192,13 @@ impl MinCdar {
             } else {
                 (best_weights, best_cdar)
             });
-            if cuts.contains(&cut) {
+            if program.contains(&cut) {
                 // The minimizer's cut is one the bound already has, so the bound is its CDaR,
                 // and the best so far is no worse.
                 let (weights, _) = best.unwrap();
                 return Ok((weights, round));
             }
-            cuts.push(cut);
+            program.add(cut);
         }
         Err(CutupError::NotConverged)
     }
@@ -529,10 +532,11 @@ mod tests {
     fn the_rounds_follow_the_stabilized_path() {
         // Each cut is chosen between the query's and the minimizer's, and the best portfolio
         // kept, so that the rounds are few; any other choice ends at the same optimum but takes
-        // more of them here. Natively they take 4 and 3, 12 and 7, and 21 and 22 rounds. The
-        // generated returns use `ln` and `cos`, which round differently on wasm, where one
-        // takes 13, so each is held within two rounds of those counts: the other choices took
-        // from 16 to 31.
+        // more of them here. Natively they take 4 and 3, 13 and 7, and 21 and 22 rounds. Where
+        // the program ties, which optimal vertex a solve lands on moves a count by one: the
+        // generated returns use `ln` and `cos`, which round differently on wasm, and the warm
+        // start lands on a different vertex from a cold one. So each is held within a round or
+        // two of 4 and 3, 12 and 7, and 21 and 22: the other choices took from 16 to 31.
         for ((n, t, seed), most) in [
             ((5, 60, 11), [6, 5]),
             ((8, 120, 3), [14, 9]),

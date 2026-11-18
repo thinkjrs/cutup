@@ -98,7 +98,7 @@ pub(crate) fn solve_from(
     upper: &DVector<f64>,
     at_upper: &[usize],
 ) -> Result<Outcome, CutupError> {
-    solve_perturbing(c, a, b, lower, upper, at_upper, PERTURBATION)
+    Ok(solve_perturbing(c, a, b, lower, upper, at_upper, PERTURBATION)?.0)
 }
 
 /// [`solve_from`], widening bounds on a degenerate vertex by `perturbation` rather than
@@ -111,20 +111,13 @@ fn solve_perturbing(
     upper: &DVector<f64>,
     at_upper: &[usize],
     perturbation: f64,
-) -> Result<Outcome, CutupError> {
+) -> Result<(Outcome, Option<Basis>), CutupError> {
     let (m, n) = a.shape();
     if m == 0 {
-        return Ok(unconstrained(c, lower, upper));
+        return Ok((unconstrained(c, lower, upper), None));
     }
-    // Each row divided by its largest entry, so that the tolerances below compare like with
-    // like whatever A's scale: row i of Ax = b becomes (aᵢ/sᵢ)x = bᵢ/sᵢ, and its multiplier is
-    // divided by sᵢ to undo it. An all-zero row keeps scale 1.
-    let scales = DVector::from_fn(m, |i, _| match a.row(i).amax() {
-        s if s > 0.0 => s,
-        _ => 1.0,
-    });
-    let a = &DMatrix::from_fn(m, n, |i, j| a[(i, j)] / scales[i]);
-    let b = &b.component_div(&scales);
+    let (a, b, scales) = scaled(a, b);
+    let (a, b) = (&a, &b);
     // Nonbasic variables start at a finite bound, the upper one if asked and it's finite, or at
     // zero if they have none. One rule gives both the value and the status, so they agree.
     let mut asked_upper = vec![false; n];
@@ -168,13 +161,13 @@ fn solve_perturbing(
     // Phase 1 is bounded below by zero, and the ratio test never lets a variable past a
     // finite bound, so it always ends at an optimum: running off without limit would take
     // an artificial variable below zero.
-    let Some(_) = problem.minimize(&phase_one)? else {
+    let Some(_) = problem.minimize(&phase_one, Perturbation::Off)? else {
         return Err(CutupError::NotConverged);
     };
     let infeasibility: f64 = problem.x.rows(n, m).sum();
     let scale = a.amax() * problem.x.rows(0, n).amax() + b.amax();
     if infeasibility > 1e-9 * scale.max(f64::MIN_POSITIVE) {
-        return Ok(Outcome::Infeasible);
+        return Ok((Outcome::Infeasible, None));
     }
     for j in n..n + m {
         problem.upper[j] = 0.0;
@@ -184,16 +177,124 @@ fn solve_perturbing(
     }
 
     let cost = c.clone().resize_vertically(n + m, 0.0);
-    match problem.minimize(&cost)? {
-        None => Ok(Outcome::Unbounded),
-        Some(y) => {
-            let x = problem.x.rows(0, n).into_owned();
-            Ok(Outcome::Optimal(Solution {
-                objective: c.dot(&x),
-                x,
-                y: y.component_div(&scales),
-            }))
+    match problem.minimize(&cost, Perturbation::Off)? {
+        None => Ok((Outcome::Unbounded, None)),
+        Some(y) => Ok((
+            Outcome::Optimal(problem.solution(c, &y, &scales)),
+            problem.basis_of(n),
+        )),
+    }
+}
+
+/// [`solve`], from `warm`, an earlier optimum's [`Basis`] for this problem, if it can start
+/// there, returning the basis it ends at, if it can be a later start.
+///
+/// The warm start fits a problem grown from an earlier one by rows, each with a variable of
+/// its own that's basic in it, such as a slack for a new inequality: see [`Basis::add_row`].
+/// The costs and the earlier rows haven't changed, so the earlier basis is still optimal for
+/// them, if not feasible: the new rows' variables can start beyond their bounds. Dual simplex
+/// pivots bring them back, keeping it optimal, as after restoring perturbed bounds, and then
+/// the primal method carries on from there. Far fewer pivots than from scratch, which starts
+/// from a basis of artificial variables.
+///
+/// Anything that goes wrong from the warm start, such as a basis that can't be factored or a
+/// variable nothing can bring back, falls back to solving from scratch, so a warm start can
+/// only be slower, never wrong.
+///
+/// # Errors
+///
+/// As for [`solve`].
+pub(crate) fn solve_warm(
+    c: &DVector<f64>,
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    lower: &DVector<f64>,
+    upper: &DVector<f64>,
+    warm: Option<&Basis>,
+) -> Result<(Outcome, Option<Basis>), CutupError> {
+    // Nested rather than a let chain, which takes Rust 1.88.
+    if let Some(warm) = warm {
+        if let Some(solved) = from_basis(c, a, b, lower, upper, warm) {
+            return Ok(solved);
         }
+    }
+    solve_perturbing(c, a, b, lower, upper, &[], PERTURBATION)
+}
+
+/// [`solve_warm`] from `warm`, or `None` if it can't start or finish there.
+fn from_basis(
+    c: &DVector<f64>,
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    lower: &DVector<f64>,
+    upper: &DVector<f64>,
+    warm: &Basis,
+) -> Option<(Outcome, Option<Basis>)> {
+    let (m, n) = a.shape();
+    if m == 0 || warm.basis.len() != m || warm.status.len() != n {
+        return None;
+    }
+    // Each nonbasic variable at the bound its status says, which must be finite.
+    let mut x = DVector::zeros(n);
+    for j in 0..n {
+        x[j] = match warm.status[j] {
+            Status::Lower if lower[j].is_finite() => lower[j],
+            Status::Upper if upper[j].is_finite() => upper[j],
+            Status::Free if !lower[j].is_finite() && !upper[j].is_finite() => 0.0,
+            Status::Basic => 0.0,
+            _ => return None,
+        };
+    }
+    let (a, b, scales) = scaled(a, b);
+    let mut problem = Problem {
+        a_abs: a.abs(),
+        a,
+        b,
+        lower: lower.clone(),
+        upper: upper.clone(),
+        x,
+        basis: warm.basis.clone(),
+        status: warm.status.clone(),
+        perturbation: PERTURBATION,
+    };
+    match problem.minimize(c, Perturbation::Repairing).ok()? {
+        None => Some((Outcome::Unbounded, None)),
+        Some(y) => Some((
+            Outcome::Optimal(problem.solution(c, &y, &scales)),
+            problem.basis_of(n),
+        )),
+    }
+}
+
+/// Each row of `a` and `b` divided by the row's largest entry in `a`, and those entries, so
+/// that the tolerances compare like with like whatever A's scale: row i of Ax = b becomes
+/// (aᵢ/sᵢ)x = bᵢ/sᵢ, and its multiplier is divided by sᵢ to undo it. An all-zero row keeps
+/// scale 1.
+fn scaled(a: &DMatrix<f64>, b: &DVector<f64>) -> (DMatrix<f64>, DVector<f64>, DVector<f64>) {
+    let (m, n) = a.shape();
+    let scales = DVector::from_fn(m, |i, _| match a.row(i).amax() {
+        s if s > 0.0 => s,
+        _ => 1.0,
+    });
+    let a = DMatrix::from_fn(m, n, |i, j| a[(i, j)] / scales[i]);
+    let b = b.component_div(&scales);
+    (a, b, scales)
+}
+
+/// Where a solve ended: each row's basic variable and every variable's status, to start a later
+/// solve from with [`solve_warm`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Basis {
+    basis: Vec<usize>,
+    status: Vec<Status>,
+}
+
+impl Basis {
+    /// The basis for the problem with one more row, last, and one more variable, last, that's
+    /// basic in it: such as a slack for a new inequality.
+    pub(crate) fn add_row(&mut self) {
+        self.basis.push(self.status.len());
+        self.status.push(Status::Basic);
     }
 }
 
@@ -337,9 +438,37 @@ struct Problem {
 }
 
 impl Problem {
+    /// The solution in the problem's first `n` variables, with the multipliers `y` of the rows
+    /// as [`scaled`] scaled them, unscaled.
+    fn solution(&self, c: &DVector<f64>, y: &DVector<f64>, scales: &DVector<f64>) -> Solution {
+        let x = self.x.rows(0, c.len()).into_owned();
+        Solution {
+            objective: c.dot(&x),
+            x,
+            y: y.component_div(scales),
+        }
+    }
+
+    /// The basis as a start for a later solve, if every basic variable is one of the problem's
+    /// first `n`, rather than an artificial one, which a later solve wouldn't have.
+    fn basis_of(&self, n: usize) -> Option<Basis> {
+        self.basis.iter().all(|&j| j < n).then(|| Basis {
+            basis: self.basis.clone(),
+            status: self.status[..n].to_vec(),
+        })
+    }
+
     /// Minimizes `costᵀx` from the current basis, returning the multipliers `y` at the
     /// optimum, or `None` if the objective decreases without limit.
-    fn minimize(&mut self, cost: &DVector<f64>) -> Result<Option<DVector<f64>>, CutupError> {
+    /// From [`Perturbation::Repairing`], it first brings each basic variable beyond its bounds
+    /// back with dual simplex pivots, as after restoring perturbed bounds: so a basis that's
+    /// optimal for the costs but not feasible, such as an earlier optimum with a new row, is a
+    /// start.
+    fn minimize(
+        &mut self,
+        cost: &DVector<f64>,
+        start: Perturbation,
+    ) -> Result<Option<DVector<f64>>, CutupError> {
         let (m, total) = self.a.shape();
         // Pivots in a row that didn't move x. Past a few, the bounds are widened, or if they
         // can't be, Bland's rule takes over until one does: only a run of such pivots can
@@ -350,7 +479,7 @@ impl Problem {
         // bounds are widened.
         let (lower, upper) = (self.lower.clone(), self.upper.clone());
         let mut perturbed = vec![false; total];
-        let mut perturbation = Perturbation::Off;
+        let mut perturbation = start;
         for _ in 0..iteration_cap(m, total) {
             // The basic variables from the nonbasic ones, which sit exactly at their bounds.
             let nonbasic = DVector::from_fn(total, |j, _| {
@@ -921,7 +1050,11 @@ mod tests {
         let solution = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
         assert!((solution.objective + 0.05).abs() < 1e-14);
         // So does Bland's rule, which takes over when widening the bounds by nothing doesn't.
-        let solution = optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0).unwrap());
+        let solution = optimal(
+            solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0)
+                .unwrap()
+                .0,
+        );
         assert!((solution.objective + 0.05).abs() < 1e-14);
     }
 
@@ -1130,11 +1263,18 @@ mod tests {
             0.0, 0.25, -1.0, 0.0, 0.75, 0.75, -0.5, -0.5, -0.25, 0.25, -0.5
         ];
         let upper = dvector![2.0, INF, 0.0, INF, 2.75, INF, INF, -0.5, INF, INF, 0.5];
-        let plain = optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0).unwrap());
+        let plain = optimal(
+            solve_perturbing(&c, &a, &b, &lower, &upper, &[], 0.0)
+                .unwrap()
+                .0,
+        );
         assert_optimal(&plain, (&c, &a, &b), (&lower, &upper));
         for perturbation in [PERTURBATION, 1e-2] {
-            let solution =
-                optimal(solve_perturbing(&c, &a, &b, &lower, &upper, &[], perturbation).unwrap());
+            let solution = optimal(
+                solve_perturbing(&c, &a, &b, &lower, &upper, &[], perturbation)
+                    .unwrap()
+                    .0,
+            );
             assert_optimal(&solution, (&c, &a, &b), (&lower, &upper));
             assert!((solution.objective - plain.objective).abs() < 1e-12);
         }
@@ -1331,6 +1471,86 @@ mod tests {
             dual += reduced[j] * x[j];
         }
         assert!((dual - solution.objective).abs() <= 1e-9 * scale * c.amax().max(1.0));
+    }
+
+    /// A program: its costs, rows, right-hand sides, and lower and upper bounds.
+    type Program = (
+        DVector<f64>,
+        DMatrix<f64>,
+        DVector<f64>,
+        DVector<f64>,
+        DVector<f64>,
+    );
+
+    /// The small program above, then the same with a row more, `y ≤ 0.5` with its slack: its
+    /// optimum moves from (3, 1) to (3, 0.5).
+    fn grown() -> [Program; 2] {
+        [
+            (
+                dvector![-3.0, -2.0, 0.0, 0.0],
+                dmatrix![1.0, 1.0, 1.0, 0.0; 1.0, 3.0, 0.0, 1.0],
+                dvector![4.0, 6.0],
+                dvector![0.0, 0.0, 0.0, 0.0],
+                dvector![3.0, INF, INF, INF],
+            ),
+            (
+                dvector![-3.0, -2.0, 0.0, 0.0, 0.0],
+                dmatrix![
+                    1.0, 1.0, 1.0, 0.0, 0.0;
+                    1.0, 3.0, 0.0, 1.0, 0.0;
+                    0.0, 1.0, 0.0, 0.0, 1.0
+                ],
+                dvector![4.0, 6.0, 0.5],
+                dvector![0.0, 0.0, 0.0, 0.0, 0.0],
+                dvector![3.0, INF, INF, INF, INF],
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_warm_start_from_an_earlier_optimum_with_a_new_row_reaches_the_new_optimum() {
+        let [(c, a, b, lower, upper), (c2, a2, b2, lower2, upper2)] = grown();
+        let (first, basis) = solve_warm(&c, &a, &b, &lower, &upper, None).unwrap();
+        assert!((optimal(first).objective + 11.0).abs() < 1e-14);
+        let mut basis = basis.expect("the optimum's basis has no artificial variable");
+        basis.add_row();
+        // The earlier optimum violates the new row, y = 1 > 0.5, so its slack starts at −0.5,
+        // and the warm start itself, not the fallback, repairs it.
+        let (warm, next) = from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis).unwrap();
+        let warm = optimal(warm);
+        assert!((warm.x[0] - 3.0).abs() < 1e-14 && (warm.x[1] - 0.5).abs() < 1e-14);
+        assert!((warm.objective + 10.0).abs() < 1e-14);
+        assert_optimal(&warm, (&c2, &a2, &b2), (&lower2, &upper2));
+        assert!(next.is_some());
+        let cold = optimal(solve(&c2, &a2, &b2, &lower2, &upper2).unwrap());
+        assert!((warm.objective - cold.objective).abs() < 1e-14);
+    }
+
+    #[test]
+    fn a_basis_that_cant_start_falls_back_to_solving_from_scratch() {
+        let [(c, a, b, lower, upper), (c2, a2, b2, lower2, upper2)] = grown();
+        let (_, basis) = solve_warm(&c, &a, &b, &lower, &upper, None).unwrap();
+        let basis = basis.unwrap();
+        let cold = optimal(solve(&c2, &a2, &b2, &lower2, &upper2).unwrap());
+        // Without the new row's slack, the basis has a row too few for the grown program.
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis).is_none());
+        let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&basis)).unwrap();
+        assert_eq!(optimal(outcome).objective, cold.objective);
+        // A variable at a bound it doesn't have.
+        let mut unbounded = basis.clone();
+        unbounded.add_row();
+        let at_upper = (0..4).find(|&j| unbounded.status[j] != Status::Basic && j != 0);
+        if let Some(j) = at_upper {
+            unbounded.status[j] = Status::Upper;
+            assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded).is_none());
+        }
+        // A singular basis: one column twice.
+        let mut singular = basis;
+        singular.add_row();
+        singular.basis[1] = singular.basis[0];
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &singular).is_none());
+        let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&singular)).unwrap();
+        assert_eq!(optimal(outcome).objective, cold.objective);
     }
 
     #[test]
