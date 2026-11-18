@@ -1565,6 +1565,16 @@ mod tests {
             .expect("a nonbasic variable with no upper bound");
         unbounded.status[j] = Status::Upper;
         assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded).is_none());
+        // A basic variable marked at a bound, with a nonbasic one marked basic in its place: the
+        // basis itself is fine and the count of basic variables right, but the two disagree.
+        let mut mislabeled = basis.clone();
+        mislabeled.add_row();
+        let k = (0..5)
+            .find(|&k| mislabeled.status[k] != Status::Basic)
+            .expect("a nonbasic variable");
+        mislabeled.status[k] = Status::Basic;
+        mislabeled.status[mislabeled.basis[0]] = Status::Lower;
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &mislabeled).is_none());
         // A basis with one column twice, and so a variable marked basic outside it.
         let mut repeated = basis;
         repeated.add_row();
