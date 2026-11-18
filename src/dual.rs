@@ -161,7 +161,8 @@ impl Portfolios {
     }
 
     /// The program for the portfolio whose largest `cutᵀw` over some cuts is least, with no
-    /// cuts yet. The cuts are multiplied by `unit`, as the scenarios are.
+    /// cuts yet. The cuts it's given must already be multiplied by `unit`, as the scenarios
+    /// are; `unit` scales the target to match.
     pub(crate) fn master(&self, unit: f64) -> Master<'_> {
         Master {
             portfolios: self,
@@ -425,8 +426,12 @@ mod tests {
             let cut = (returns.row(k).transpose() - returns.row(k + 12).transpose()) * unit;
             assert!(!master.contains(&cut));
             master.add(cut.clone());
+            assert!(master.contains(&cut));
             cuts.push(cut);
             let (weights, worst) = master.solve().unwrap();
+            // Each solve leaves a basis for the next to start from, so the rounds after the
+            // first are warm starts.
+            assert!(master.basis.is_some(), "{k}");
             let (_, scratch) = portfolios.min_of_max(&cuts, unit).unwrap();
             assert!(
                 (worst - scratch).abs() <= 1e-15 * scratch.abs().max(1.0),
