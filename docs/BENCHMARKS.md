@@ -90,6 +90,7 @@ got fast enough.
 | As the primal, a row per cut | | | 10.8 s |
 | Each cut halfway from the best so far | 59 µs | 0.15 s | 5.5 s |
 | Sorting only the tail, with no temporaries | 29 µs | 77 ms | 2.8 s |
+| Each round from the last's basis | 24 µs | 8.7 ms | 0.16 s |
 
 - **The dual form** has a row per asset whatever the rounds, so at 500 assets
   each round took about 2 seconds, from the first.
@@ -102,6 +103,12 @@ got fast enough.
 - **Each cut** sorts only the worst drawdowns that can be in the tail, as
   `tail_loss` does for CVaR, rather than all `T`, and adds each one's gap into
   the cut in place rather than through temporary vectors.
+- **Warm starts:** each round's program is the last's with a row more, for the
+  new cut, and a slack basic in it, so the last basis is still optimal for the
+  costs, if not feasible. The simplex solver starts from it, and a few dual
+  pivots bring the new cut in, where each round had solved from scratch, from a
+  basis of artificial variables. Anything the warm start can't do falls back to
+  that, so it can only be slower, never wrong.
 
 The 10.8 s row is from a test with other generated returns at that size, which
 took 2.2 s with the stabilization, so the last two rows aren't measured alike.
