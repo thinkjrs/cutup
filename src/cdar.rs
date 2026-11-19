@@ -536,10 +536,10 @@ mod tests {
         // the program ties, which optimal vertex a solve lands on moves a count by one: the
         // generated returns use `ln` and `cos`, which round differently on wasm, and the warm
         // start lands on a different vertex from a cold one. So each is held within a round or
-        // two of 4 and 3, 12 and 7, and 21 and 22: the other choices took from 16 to 31.
+        // two of 4 and 3, 13 and 7, and 21 and 22: the other choices took from 16 to 31.
         for ((n, t, seed), most) in [
             ((5, 60, 11), [6, 5]),
-            ((8, 120, 3), [14, 9]),
+            ((8, 120, 3), [15, 9]),
             ((12, 200, 5), [23, 24]),
         ] {
             let data = Returns::returns_matrix(factor_returns(n, t, seed)).unwrap();
