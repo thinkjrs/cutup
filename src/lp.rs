@@ -1575,6 +1575,11 @@ mod tests {
         mislabeled.status[k] = Status::Basic;
         mislabeled.status[mislabeled.basis[0]] = Status::Lower;
         assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &mislabeled).is_none());
+        // A basis naming a column the program doesn't have.
+        let mut beyond = basis.clone();
+        beyond.add_row();
+        beyond.basis[0] = 5;
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &beyond).is_none());
         // A basis with one column twice, and so a variable marked basic outside it.
         let mut repeated = basis;
         repeated.add_row();
