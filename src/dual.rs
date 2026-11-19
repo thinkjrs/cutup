@@ -432,9 +432,11 @@ mod tests {
             // Each solve leaves a basis for the next to start from, so the rounds after the
             // first are warm starts.
             assert!(master.basis.is_some(), "{k}");
+            // Where the program ties, the two can land on different vertices, whose values
+            // round differently, and differently again on wasm.
             let (_, scratch) = portfolios.min_of_max(&cuts, unit).unwrap();
             assert!(
-                (worst - scratch).abs() <= 1e-15 * scratch.abs().max(1.0),
+                (worst - scratch).abs() <= 1e-12 * scratch.abs().max(1.0),
                 "{k}: {worst} vs {scratch}"
             );
             assert!(weights.iter().all(|&w| (-1e-15..=0.5 + 1e-15).contains(&w)));
