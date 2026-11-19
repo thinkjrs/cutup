@@ -474,6 +474,7 @@ impl Problem {
 
     /// Minimizes `costᵀx` from the current basis, returning the multipliers `y` at the
     /// optimum, or `None` if the objective decreases without limit.
+    ///
     /// From [`Perturbation::Repairing`], it first brings each basic variable beyond its bounds
     /// back with dual simplex pivots, as after restoring perturbed bounds: so a basis that's
     /// optimal for the costs but not feasible, such as an earlier optimum with a new row, is a
