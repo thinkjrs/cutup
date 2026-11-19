@@ -10,9 +10,10 @@ All notable changes to this project are documented here. The format follows
 
 - `MinCdar` starts each round of cutting planes from where the last ended. Each round's
   program is the last's with a row for the new cut, so the simplex solver starts from the last
-  basis and a few dual pivots bring the cut in, rather than solving from scratch. The weights
-  are the same optimum: about 9 times faster at 100 assets and 18 at 500 in the benchmark,
-  8.7 ms and 0.16 s. Anything the warm start can't do falls back to solving from scratch.
+  basis and a few dual pivots bring the cut in, rather than solving from scratch. It reaches
+  the same least CDaR, though where several portfolios tie for it, it can land on another of
+  them. It's about 9 times faster at 100 assets and 18 at 500 in the benchmark, 8.7 ms and
+  0.16 s. Anything the warm start can't do falls back to solving from scratch.
 - The sample campaign app, which isn't part of the published crate:
   - **`MinMad` and `MinCdar`:** in its engine and form, with min MAD's shortfall threshold and
     min CVaR's and min CDaR's confidence.
