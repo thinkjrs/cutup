@@ -707,6 +707,17 @@ the internals. Its scope is settled when it starts.
   - consistent names, docs and errors across the methods, where that doesn't
     change the API;
   - anything the analysis turns up.
+- **From the 0.3.12 reviews,** in `lp.rs`:
+  - the dual pivots that repair a basis have no stall count or Bland's rule,
+    as the primal ones do, so a dual-degenerate basis could cycle to the
+    iteration cap. A warm start then falls back to a cold solve, so the
+    result is right but slow. Measure how many repair pivots warm starts
+    take, then bound them or add anti-cycling;
+  - an artificial variable left basic at zero after phase 1 gives no basis
+    to start from, which turns `MinCdar`'s warm start off for that round.
+    Pivot leftover artificials out at the end of phase 1;
+  - `from_basis` repeats `solve_perturbing`'s setup of the `Problem` and its
+    finish: share them.
 
 ## Later 0.3.x or 1.x
 
