@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-11-23
+
 ### Added
 
 - **Examples:** `rebalance`, `black_litterman`, `tail_risk` for `MinCvar`, and `drawdown` for
@@ -1001,7 +1003,8 @@ let first = weights[0];
 
 Initial releases. See the [tags](https://github.com/thinkjrs/cutup/tags).
 
-[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.11...HEAD
+[Unreleased]: https://github.com/thinkjrs/cutup/compare/0.3.12...HEAD
+[0.3.12]: https://github.com/thinkjrs/cutup/compare/0.3.11...0.3.12
 [0.3.11]: https://github.com/thinkjrs/cutup/compare/0.3.10...0.3.11
 [0.3.10]: https://github.com/thinkjrs/cutup/compare/0.3.9...0.3.10
 [0.3.9]: https://github.com/thinkjrs/cutup/compare/0.3.8...0.3.9
