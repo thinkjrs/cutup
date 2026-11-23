@@ -275,7 +275,9 @@ impl Master<'_> {
 /// the budget's row only to its tolerance, so `x` can sum to a little more or less than 1, and
 /// scaling it to 1 could move a weight at its cap past it, or one at its floor below. Instead,
 /// what the clamped weights miss of 1 goes to those with the most room toward it, each only as
-/// far as its bounds. Bounds that a portfolio meets have room for all of it.
+/// far as its bounds. Bounds that a portfolio meets have room for all of it. Each weight then
+/// holds its own bounds exactly. Groups and a target hold to the rounding of their sums, as
+/// they did when the weights were scaled: what moves is rounding, about `1e-15`.
 fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
     let (lower, upper) = (&bounds.lower, &bounds.upper);
     let mut weights: Vec<f64> = x
@@ -296,13 +298,9 @@ fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
         missing -= moved - weights[i];
         weights[i] = moved;
     }
-    // A weight of -0.0, from the program or the clamp, is 0.0, which prints without a sign.
-    for w in &mut weights {
-        if *w == 0.0 {
-            *w = 0.0;
-        }
-    }
-    weights
+    // A weight of -0.0, from the program or the clamp, is 0.0, which prints without a sign:
+    // adding 0.0 makes it so and leaves every other weight as it is.
+    weights.iter().map(|w| w + 0.0).collect()
 }
 
 /// The columns of the dual linear program, each with its cost and bounds, in the order
