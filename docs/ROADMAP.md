@@ -714,7 +714,12 @@ the internals. Its scope is settled when it starts.
     result is right but slow. Measure how many repair pivots warm starts
     take, then bound them or add anti-cycling;
   - `from_basis` repeats `solve_perturbing`'s setup of the `Problem` and its
-    finish: share them.
+    finish: share them;
+  - the QP methods' weights are clamped to their bounds and then scaled to
+    sum to 1, as the LP methods' were until 0.3.12, which can put a capped
+    weight a unit in the last place past its cap. Their property tests have
+    held at `1e-15`, but `within_bounds` belongs next to `normalized`, for
+    every method whose weights have bounds.
 
 ## Later 0.3.x or 1.x
 
