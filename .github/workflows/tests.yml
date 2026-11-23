@@ -36,6 +36,15 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --all-targets
 
+      # The examples print rather than assert, so this checks each one runs to the end without
+      # an error. Building them is part of --all-targets above. Once is enough.
+      - name: Run examples
+        if: matrix.rust == 'stable'
+        run: |
+          for example in examples/*.rs; do
+            cargo run --all-features --example "$(basename "$example" .rs)" > /dev/null
+          done
+
       - name: Run doctests
         run: cargo test --all-features --doc
 
