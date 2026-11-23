@@ -169,6 +169,7 @@ fn solve_perturbing(
     if infeasibility > 1e-9 * scale.max(f64::MIN_POSITIVE) {
         return Ok((Outcome::Infeasible, None));
     }
+    problem.drive_out_artificials(n)?;
     for j in n..n + m {
         problem.upper[j] = 0.0;
         if problem.status[j] != Status::Basic {
@@ -472,6 +473,44 @@ impl Problem {
         })
     }
 
+    /// Pivots each artificial variable still basic after phase 1, the first `n` variables being
+    /// the problem's own, out of the basis for one of those with an entry in its row of `B⁻¹A`.
+    /// Phase 1 ended feasible, so the artificial is at zero to within its tolerance, and the
+    /// pivot moves nothing. Left in, it would be basic and fixed at zero in phase 2, where a
+    /// change in its row that's only rounding can be the one thing to block a step, and
+    /// pivoting on it leaves the basis singular. Nor could a later solve start from a basis
+    /// with it, as [`Problem::basis_of`] says. The entry largest in size enters, for the
+    /// steadiest pivot. A row with no entry beyond rounding is a combination of the others, and
+    /// keeps its artificial, which nothing then moves.
+    fn drive_out_artificials(&mut self, n: usize) -> Result<(), CutupError> {
+        let m = self.basis.len();
+        let mut factors = Factors::new(&self.a, &self.basis);
+        for row in 0..m {
+            let k = self.basis[row];
+            if k < n {
+                continue;
+            }
+            // Row `row` of `B⁻¹A`, from `B⁻ᵀeᵣ`. The artificial's own entry is 1.
+            let alpha = self
+                .a
+                .tr_mul(&factors.solve_transpose(DVector::from_fn(m, |i, _| f64::from(i == row)))?);
+            let pivot = 1e-9 * alpha.amax();
+            let Some(entering) = (0..n)
+                .filter(|&j| self.status[j] != Status::Basic && alpha[j].abs() > pivot)
+                .max_by(|&p, &q| alpha[p].abs().total_cmp(&alpha[q].abs()).then(q.cmp(&p)))
+            else {
+                continue;
+            };
+            let d = factors.solve(&self.a.column(entering).into_owned())?;
+            self.status[k] = Status::Lower;
+            self.x[k] = 0.0;
+            self.status[entering] = Status::Basic;
+            self.basis[row] = entering;
+            factors.update(&self.a, &self.basis, row, d);
+        }
+        Ok(())
+    }
+
     /// Minimizes `costᵀx` from the current basis, returning the multipliers `y` at the
     /// optimum, or `None` if the objective decreases without limit.
     ///
@@ -634,6 +673,14 @@ impl Problem {
                 change[i] != 0.0 && (next < self.lower[k] - slack || next > self.upper[k] + slack)
             };
             if (0..m).any(|i| change[i].abs() <= pivot && overshoots(i)) {
+                // With nothing else to block the step, only a change that small stops it
+                // running off without limit, and the eta matrices' rounding can make one where
+                // the change is nothing: then pivoting on it leaves the basis singular. So such
+                // a block, like unboundedness, counts only from fresh factors.
+                if blocking.is_none() && !factors.etas.is_empty() {
+                    factors = Factors::new(&self.a, &self.basis);
+                    continue;
+                }
                 blocking = smallest(
                     (0..m)
                         .filter_map(|i| ratio(i, &|d| d.abs() > pivot || overshoots(i)))
@@ -1461,6 +1508,73 @@ mod tests {
         );
         assert!((solution.x[0] - 1.0).abs() < 1e-15);
         assert!((solution.objective - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn a_redundant_row_keeps_its_artificial_variable() {
+        // The second row is twice the first, so nothing can take its artificial variable's
+        // place, and the basis isn't a start for a later solve.
+        let (outcome, basis) = solve_warm(
+            &dvector![1.0, 2.0],
+            &dmatrix![1.0, 1.0; 2.0, 2.0],
+            &dvector![1.0, 2.0],
+            &dvector![0.0, 0.0],
+            &dvector![INF, INF],
+            None,
+        )
+        .unwrap();
+        assert!((optimal(outcome).objective - 1.0).abs() < 1e-15);
+        assert!(basis.is_none());
+    }
+
+    #[test]
+    fn rows_met_at_bounds_leave_no_artificial_variable_basic() {
+        // MinCdar's program at a target only one portfolio reaches, from the CI case: the
+        // budget and the target pin the weights at (1, 0), each at a bound, so phase 1 ends
+        // with both rows' artificial variables basic at zero. In phase 2, a change of 1e-14 in
+        // the target's row, only rounding, was all that blocked a step, and pivoting on it left
+        // the basis singular.
+        let mu = [0.010448579610984887, -0.015468362554214288];
+        let a = dmatrix![
+            1.0, 1.0, 0.0, 0.0, 0.0;
+            mu[0], mu[1], 0.0, 0.0, 0.0;
+            0.36147408335656184, 0.6526561616879752, -1.0, 1.0, 0.0;
+            0.374356670354395, 0.5057168653383007, -1.0, 0.0, 1.0
+        ];
+        let (outcome, basis) = solve_warm(
+            &dvector![0.0, 0.0, 1.0, 0.0, 0.0],
+            &a,
+            &dvector![1.0, mu[0], 0.0, 0.0],
+            &dvector![0.0, 0.0, -INF, 0.0, 0.0],
+            &dvector![1.0, 1.0, INF, INF, INF],
+            None,
+        )
+        .unwrap();
+        let solution = optimal(outcome);
+        assert_eq!(solution.x.rows(0, 2).as_slice(), [1.0, 0.0]);
+        assert!((solution.objective - 0.374356670354395).abs() <= 1e-15);
+        // Every basic variable is the problem's own, so a later round can start here.
+        assert!(basis.unwrap().basis.iter().all(|&j| j < 5));
+    }
+
+    #[test]
+    fn the_largest_entry_takes_an_artificial_variables_place() {
+        // x₀ + 4x₁ = 5 within [0, 1]: phase 1 raises x₁ to its cap and then x₀ to its own,
+        // where the row is met, and leaves the row's artificial variable basic at zero, with
+        // nothing that could lower it further. Either could take its place, and x₁, with the
+        // larger entry, does. With no costs, nothing moves after. The row is scaled to
+        // x₀/4 + x₁ = 5/4, so each step is exact.
+        let (outcome, basis) = solve_warm(
+            &dvector![0.0, 0.0],
+            &dmatrix![1.0, 4.0],
+            &dvector![5.0],
+            &dvector![0.0, 0.0],
+            &dvector![1.0, 1.0],
+            None,
+        )
+        .unwrap();
+        assert_eq!(optimal(outcome).x.as_slice(), [1.0, 1.0]);
+        assert_eq!(basis.unwrap().basis, [1]);
     }
 
     /// Checks that `solution` is optimal for the problem: feasible, with reduced costs of the
