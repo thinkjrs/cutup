@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Examples:** `rebalance`, `black_litterman`, `tail_risk` for `MinCvar`, and `drawdown` for
+  `MinMad` and `MinCdar`. `compare` now runs those three too, and `groups` sets a floor on one
+  asset. CI runs every example.
+- **README:**
+  - a guide to choosing a method by the question you're asking;
+  - size limits: how long each method takes by assets and by periods, from the benchmarks;
+  - a table of what each method is verified against;
+  - the MSRV policy.
+- **Benchmarks:** `MeanVariance`, `MaxSharpe`, `MaxDiversification` and `MinMad`, and
+  `MinCvar`, `MinMad` and `MinCdar` at 20 assets from 250 to 5,000 periods.
+
+### Fixed
+
+- `WeightBounds`' docs list `MinMad` and `MinCdar` among the methods that take bounds and
+  groups.
+
 ### Changed
 
 - `MinCdar` starts each round of cutting planes from where the last ended. Each round's
