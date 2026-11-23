@@ -565,4 +565,82 @@ mod tests {
         let equal = data.allocate(&EqualWeight).unwrap();
         assert!(data.cdar(&weights, 0.95).unwrap() < data.cdar(&equal, 0.95).unwrap());
     }
+
+    #[test]
+    fn a_weight_at_its_cap_stays_there_with_a_target() {
+        // Proptest's case from CI: the program's weights summed to a little under 1, and
+        // scaling them to 1 put the first 1.6e-15 past its cap.
+        let returns = [
+            [-0.004488634254980613, -0.025235570082166623],
+            [-0.04250847420245197, 0.018577806946655492],
+            [-0.016875579216448864, 0.04881471339713651],
+            [0.036857007786115656, -0.006636398428428955],
+            [-0.019839951177039437, -0.015499847057081685],
+            [-0.024274187629390428, 0.0072066577036488805],
+            [-0.02880211278690039, 0.022656306794358157],
+            [-0.011130785460424909, -0.04911616657738737],
+            [0.0076847315851126955, -0.018617761616031733],
+            [-0.04672068986523843, 0.049183282025804506],
+            [0.03194124607024602, -0.04333121902449858],
+            [0.025410562439138615, 0.02931485370662247],
+            [0.0019549081131279944, 0.015024892535261944],
+            [0.028216607568658878, -0.040341019016731754],
+            [-0.009565435481223855, -0.045006851127288534],
+            [-0.006968368665694399, -0.005087350555409817],
+            [-0.009582530628287554, -0.020023052421969716],
+            [-0.03343029955232273, -0.01610896907456899],
+            [0.011759545380343971, 0.038022150223539795],
+            [-0.015408867420474625, -0.022309637192845327],
+            [0.00941389723387038, -0.043158154294048214],
+            [0.002676433055391128, -0.0454979032628847],
+            [0.0341259386258664, 0.034290236102548576],
+            [-0.04079699509280011, -0.030426203828473185],
+            [1.6351234893723582e-5, 0.04431730476824647],
+            [0.03401438014250109, -0.008522770068222697],
+            [0.002500993473234479, -0.012774418947896955],
+            [0.022784883421026216, 0.0008775365914696898],
+            [-0.011611128661065005, -0.022695960185870733],
+            [0.012495465667183717, 0.006175486686930921],
+            [-0.04826974609615568, 0.04540727900255231],
+        ];
+        let data = Returns::new(&returns).unwrap();
+        let (lower, upper) = (
+            [0.18536871586158077, 0.043184018938788926],
+            [0.8278326826187941, 0.6520725460275756],
+        );
+        let bounded = MinCdar::default()
+            .confidence(0.9111411595350508)
+            .bounds(WeightBounds::per_asset(lower.to_vec(), upper.to_vec()));
+        let weights = data
+            .allocate(&bounded.target_return(-0.003509108728703027))
+            .unwrap();
+        for i in 0..2 {
+            assert!((lower[i]..=upper[i]).contains(&weights[i]), "{weights:?}");
+        }
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn the_highest_target_is_reached() {
+        // Proptest's case: the highest return any portfolio has is asset 0's, which only all
+        // of the weight on it reaches, so the target and the budget pin the weights at their
+        // bounds. The second round's program then failed with `NotConverged`: see the simplex
+        // solver's `rows_met_at_bounds_leave_no_artificial_variable_basic`.
+        let returns = [
+            [-0.004176180274313767, 0.04763367722960217],
+            [0.005646166605962695, 0.016558206500013054],
+            [0.01633464374926477, 0.0],
+            [-0.041436990276956485, -0.03204199103298189],
+            [0.02689754132447556, -0.0369837559948253],
+        ];
+        let data = Returns::new(&returns).unwrap();
+        let top = data
+            .stats(&Weights::from(vec![1.0, 0.0]))
+            .unwrap()
+            .expected_return();
+        let method = MinCdar::default()
+            .confidence(0.5044607240693676)
+            .target_return(top);
+        assert_eq!(data.allocate(&method).unwrap().as_slice(), [1.0, 0.0]);
+    }
 }
