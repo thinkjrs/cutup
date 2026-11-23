@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-11-17 · Current release: 0.3.11
+Status: draft · Last updated: 2026-11-23 · Current release: 0.3.12
 
 This plans the releases from 0.3.0 to 1.0.0.
 
@@ -680,6 +680,31 @@ Moved here from "Later 0.3.x or 1.x" and the 1.0.0 list.
   - after 1.0, an MSRV bump is a minor release, never a patch;
   - the MSRV stays at least six months behind the latest stable Rust.
 
+### As built
+
+- **The campaign app (#89):** `MinMad` and `MinCdar` in its engine and form,
+  and the new statistics in a table of losses and drawdowns. Its returns
+  became each yield's excess over the average yield, measured per rolling
+  window, so drawdowns are no longer all 0 and no window sees later days.
+- **The warm start (#90):** 18 times faster at 500 assets, 0.16 s against
+  2.8 s, and 9 at 100, past the bar the roadmap set. Where the program ties,
+  it can land on another optimal portfolio with the same least CDaR.
+- **The docs (#91):** all five pieces as planned, with four new examples, and
+  the existing `groups` example covering bounds and groups. The size limits
+  came from a fresh benchmark of every solver method, and of the three linear
+  programs by periods, and CI now runs every example.
+- **Two fixes (#92),** which property tests found while #91's CI ran, both
+  from before the warm start:
+  - `MinCvar`, `MinMad` and `MinCdar` scaled their weights to sum to 1, which
+    could put a weight at its cap a few units in the last place past it. What
+    the sum misses now goes to the weights with room;
+  - `MinCdar` returned `NotConverged` at the highest target the bounds allow.
+    The simplex solver now takes a pivot that only rounding blocks only from
+    fresh factors, and pivots leftover artificial variables out after phase 1,
+    which was planned for 0.3.13.
+- **The release's mutation run:** 142 of about 3,000 viable mutants survived,
+  against 106 at 0.3.11. See 0.3.13's analysis for what that showed.
+
 ## 0.3.13: security, analysis and refactoring
 
 The last release before the freeze: a review of the whole crate, so that
@@ -697,7 +722,16 @@ the internals. Its scope is settled when it starts.
   - a `SECURITY.md` with how to report a vulnerability.
 - **Analysis:**
   - the known mutation survivors in `docs/MUTATION.md` revisited, each either
-    caught by a new test or confirmed as unable to change a result;
+    caught by a new test or confirmed as unable to change a result, and the
+    baseline there, from 0.3.2, brought up to date;
+  - a full mutation run that can be compared with the last: 0.3.12's had
+    about 20 survivors in files that hadn't changed since 0.3.11, where they
+    were caught. The property tests aren't seeded, so a mutant only they
+    catch is caught in some runs and not others. Seed them in the mutants
+    job, or catch those mutants with fixed tests;
+  - cargo-mutants' return-value replacements for `lp::scaled`, which returns
+    a tuple of matrices: 633 of them, none of which compile, filled a shard
+    of 0.3.12's run. Skip them;
   - coverage gaps, from the coverage job, closed or explained;
   - longer fuzz campaigns, and fuzz targets for anything new since 0.3.2;
   - clippy's pedantic lints, adopted where they find something real.
