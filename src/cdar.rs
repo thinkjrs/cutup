@@ -641,6 +641,12 @@ mod tests {
         let method = MinCdar::default()
             .confidence(0.5044607240693676)
             .target_return(top);
-        assert_eq!(data.allocate(&method).unwrap().as_slice(), [1.0, 0.0]);
+        // A weight that ends basic is solved for, and can be a unit in the last place off.
+        let weights = data.allocate(&method).unwrap();
+        assert!(
+            (weights[0] - 1.0).abs() <= 2.0 * f64::EPSILON,
+            "{weights:?}"
+        );
+        assert!(weights[1].abs() <= 2.0 * f64::EPSILON, "{weights:?}");
     }
 }
