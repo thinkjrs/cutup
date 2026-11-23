@@ -713,9 +713,6 @@ the internals. Its scope is settled when it starts.
     iteration cap. A warm start then falls back to a cold solve, so the
     result is right but slow. Measure how many repair pivots warm starts
     take, then bound them or add anti-cycling;
-  - an artificial variable left basic at zero after phase 1 gives no basis
-    to start from, which turns `MinCdar`'s warm start off for that round.
-    Pivot leftover artificials out at the end of phase 1;
   - `from_basis` repeats `solve_perturbing`'s setup of the `Problem` and its
     finish: share them.
 
