@@ -6,7 +6,8 @@
 
 use cutup::{
     Allocation, CutupError, EqualWeight, Herc, Hrp, InverseVariance, InverseVolatility, Linkage,
-    MaxDiversification, MaxSharpe, MeanVariance, MinVariance, Returns, RiskParity, WeightBounds,
+    MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad, MinVariance, Returns,
+    RiskParity, WeightBounds,
 };
 
 fn main() -> Result<(), CutupError> {
@@ -60,6 +61,17 @@ fn main() -> Result<(), CutupError> {
         (
             "Long-only max Sharpe, r_f = 0",
             Box::new(MaxSharpe::default()),
+        ),
+        // 12 periods of returns are too few for a tail of 5%, the default, so these look at the
+        // worst 25%: 3 periods, or for CDaR 3 drawdowns.
+        (
+            "Min CVaR, worst 25%",
+            Box::new(MinCvar::default().confidence(0.75)),
+        ),
+        ("Min MAD", Box::new(MinMad::default())),
+        (
+            "Min CDaR, worst 25%",
+            Box::new(MinCdar::default().confidence(0.75)),
         ),
         (
             "Max diversification",
