@@ -56,7 +56,15 @@ Inputs are plain Rust slices, so you don't need a matrix library. cutup uses `na
 
 ## Choosing a method
 
-Each method is a value you pass to `Returns::allocate`. Methods that can short are long-only unless you call `.allow_short()`.
+Start from the question you're asking:
+
+- **What's a baseline that needs no estimates?** `EqualWeight`, or `InverseVolatility` to give riskier assets less.
+- **What's the least risk?** `MinVariance` by variance, `MinCvar` by the average loss in the worst periods, `MinMad` by the mean absolute deviation or the shortfall below a threshold, and `MinCdar` by drawdowns, the one that depends on the order of the periods.
+- **What's the best return for the risk, from expected returns I trust?** `MeanVariance` for a risk aversion, a target return or a target volatility, and `MaxSharpe` for the best ratio. With views rather than a full set of returns, blend them into the market's with `BlackLitterman` first.
+- **How do I spread the risk without expected returns?** `RiskParity` for equal risk from each asset, `MaxDiversification` for the most diversified, and `Hrp` or `Herc` when the data is short or the covariance is near singular, since they never invert it.
+- **How do I trade from what I hold?** `MinVariance` or `MeanVariance` with `.current_weights(..)`, then a turnover cap, a penalty or transaction costs.
+
+Each method is a value you pass to `Returns::allocate`. Methods that can short are long-only unless you call `.allow_short()`. [Size limits](#size-limits) says how many assets and periods each handles.
 
 | Method | Uses | Long-only | Notes |
 | --- | --- | --- | --- |
@@ -80,6 +88,41 @@ Long-only methods never return negative weights. The others can. To see every me
 cargo run --example compare
 ```
 
+### Size limits
+
+How long one `allocate` takes, from `cargo bench` on an Apple M5, on generated daily returns with twice as many periods as assets. The same code can take twice as long on a busy machine as on an idle one, so read these as orders of magnitude. [`docs/BENCHMARKS.md`](https://github.com/thinkjrs/cutup/blob/main/docs/BENCHMARKS.md) has the setup.
+
+| Method | 10 assets | 100 assets | 500 assets |
+| --- | --- | --- | --- |
+| `Hrp` | 3 µs | 0.12 ms | 2.6 ms |
+| `Herc` | 4 µs | 0.38 ms | 8.5 ms |
+| `RiskParity` | 5 µs | 0.46 ms | 40 ms |
+| `MaxSharpe` | 9 µs | 0.36 ms | 9.2 ms |
+| `MaxDiversification` | 14 µs | 0.75 ms | 23 ms |
+| `MinVariance` | 23 µs | 4.7 ms | 0.45 s |
+| `MinVariance`, with two groups that bind | 33 µs | 0.59 ms | 14 ms |
+| `MeanVariance` | 27 µs | 4.9 ms | 0.45 s |
+| `MinCdar` | 23 µs | 8.7 ms | 0.15 s |
+| `MinCvar` | 78 µs | 15 ms | 1.9 s |
+| `MinMad` | 85 µs | 19 ms | 2.4 s |
+
+The three methods whose programs grow with the periods, at 20 assets:
+
+| Method | 250 periods | 1,000 periods | 5,000 periods |
+| --- | --- | --- | --- |
+| `MinCdar` | 1.0 ms | 3.2 ms | 11 ms |
+| `MinCvar` | 0.96 ms | 5.4 ms | 69 ms |
+| `MinMad` | 1.4 ms | 10 ms | 0.21 s |
+
+In practice:
+
+- **Up to 500 assets:** every method answers within a few seconds, and most within milliseconds.
+- **Clustering** (`Hrp`, `Herc`) grows the slowest: 500 assets take milliseconds.
+- **`MinVariance` and `MeanVariance`** grow about as the cube of the assets, so 1,000 would take a few seconds at that rate. Bounds and groups that bind leave the solver fewer free weights, and make it faster. `MaxSharpe` and `MaxDiversification`, on the same solver, are faster on these returns.
+- **`MinCvar` and `MinMad`** grow with the assets and the periods together: about as the cube of the assets at two periods each. `MinCdar` solves its program by cutting planes, and grows the slowest of the three with either.
+- **Rolling allocation** runs the method once per window, so multiply by the number of windows.
+- **`EqualWeight`, `InverseVolatility` and `InverseVariance`** aren't benchmarked: they solve nothing.
+
 ## Installation
 
 Add `cutup` to your `Cargo.toml`:
@@ -89,7 +132,11 @@ Add `cutup` to your `Cargo.toml`:
 cutup = "0.3.11"
 ```
 
-cutup 0.3 needs Rust 1.85 or newer. cutup 0.2 needs 1.78.
+cutup 0.3 needs Rust 1.85 or newer, and CI tests every change on 1.85 with every feature and with none. cutup 0.2 needs 1.78. The minimum supported Rust version (MSRV) changes only by these rules:
+
+- **Through 0.3.x and 1.0.0:** it stays at 1.85.
+- **After 1.0:** raising it is a minor release, never a patch, and the CHANGELOG says so.
+- **How far back:** it stays at least six months behind the latest stable Rust, so any toolchain from the last six months builds cutup.
 
 To pass nalgebra matrices in and get `DVector` weights out, turn on the `nalgebra` feature. It tracks the nalgebra version cutup depends on, currently 0.33:
 
@@ -863,6 +910,21 @@ Seven other changes in 0.3.0:
 | `Hrp` and `Herc` are `Copy` and `Eq` | They're `Clone` and `PartialEq`, since they now take `.covariance(..)`, `.shrinkage(λ)` and `.regularization(ε)`. Clone a value to reuse it. |
 | Rust 1.78 or newer | Rust 1.85 or newer. cutup itself moves to edition 2024, which doesn't affect crates that depend on it. |
 
+## Examples
+
+Each runs with `cargo run --example <name>` and prints a table to compare.
+
+| Example | What it shows |
+| --- | --- |
+| [`basic`](https://github.com/thinkjrs/cutup/blob/main/examples/basic.rs) | Min variance from prices. |
+| [`compare`](https://github.com/thinkjrs/cutup/blob/main/examples/compare.rs) | Every method's weights on the same prices, side by side. |
+| [`groups`](https://github.com/thinkjrs/cutup/blob/main/examples/groups.rs) | Caps and a floor on single assets and on groups of them, with min variance, mean-variance and min CVaR, and the errors for groups no portfolio can meet. |
+| [`rebalance`](https://github.com/thinkjrs/cutup/blob/main/examples/rebalance.rs) | Trading from current weights: min variance with no limit, a turnover cap and a turnover penalty, and mean-variance net of transaction costs. |
+| [`black_litterman`](https://github.com/thinkjrs/cutup/blob/main/examples/black_litterman.rs) | The sample mean, the market-implied returns and both blended with views, and mean-variance on each. |
+| [`tail_risk`](https://github.com/thinkjrs/cutup/blob/main/examples/tail_risk.rs) | Min CVaR against min variance on an asset with rare large losses, at two confidences and with a target return. |
+| [`drawdown`](https://github.com/thinkjrs/cutup/blob/main/examples/drawdown.rs) | Min MAD, the least shortfall and min CDaR against min variance, on two assets with the same returns in a different order. |
+| [`rolling`](https://github.com/thinkjrs/cutup/blob/main/examples/rolling.rs) | Min variance weights over rolling windows as one asset turns volatile. |
+
 ## Sample app
 
 [`apps/campaigns`](https://github.com/thinkjrs/cutup/tree/main/apps/campaigns) is a Next.js app that splits an ad budget across six ad platforms with cutup. Each platform is an asset, and its return on a day is what a unit of spend bought there: impressions, clicks, link clicks or views.
@@ -876,13 +938,41 @@ Seven other changes in 0.3.0:
 cargo test
 ```
 
-Besides unit tests and doctests, `tests/reference.rs` checks every allocation method against independent Python implementations: NumPy closed forms for minimum variance, mean-variance and max Sharpe, support enumeration for long-only minimum variance, mean-variance and max Sharpe and for max diversification (with weight bounds, and for minimum variance and mean-variance with groups, cross-checked against PyPortfolioOpt), coordinate descent for risk parity, linear programs from SciPy's HiGHS for minimum CVaR, with and without groups (cross-checked against PyPortfolioOpt and riskfolio-lib) and for the simplex solver itself, support enumeration for rebalancing with turnover caps, penalties, transaction costs and target returns, gross or net of costs (cross-checked against PyPortfolioOpt), PyPortfolioOpt for HRP and Black-Litterman, and riskfolio-lib for HERC and for HRP and HERC with shrinkage and regularization. These run on fixed datasets, including singular and ill-conditioned ones. The expected weights are committed, so `cargo test` doesn't need Python. See [`reference/README.md`](reference/README.md) to regenerate them.
+Besides unit tests and doctests, `tests/reference.rs` and the solvers' unit tests check every method and estimator against independent Python implementations, on fixed datasets that include singular and ill-conditioned ones.
 
-`cargo bench` times the solver and clustering methods at 10, 100 and 500 assets. [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) has the baseline numbers.
+`cargo bench` times the solver and clustering methods at 10, 100 and 500 assets, and the linear programs at 250 to 5,000 periods: [size limits](#size-limits) sums them up. [`docs/BENCHMARKS.md`](https://github.com/thinkjrs/cutup/blob/main/docs/BENCHMARKS.md) has the baseline numbers.
 
-`fuzz/` holds fuzz targets for the constructors, every allocation method and `Weights`, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](docs/FUZZING.md) describes them.
+`fuzz/` holds fuzz targets for the constructors, every allocation method and `Weights`, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](https://github.com/thinkjrs/cutup/blob/main/docs/FUZZING.md) describes them.
 
-`cargo mutants` checks that the tests notice small changes to the code. [`docs/MUTATION.md`](docs/MUTATION.md) describes the setup and the mutants known to survive.
+`cargo mutants` checks that the tests notice small changes to the code. [`docs/MUTATION.md`](https://github.com/thinkjrs/cutup/blob/main/docs/MUTATION.md) describes the setup and the mutants known to survive.
+
+### Verified against
+
+Each is checked against the reference, and where a library implements the same thing, cross-checked against it too. Where an optimum needn't be unique, as for the linear programs, the test compares the objective rather than the weights.
+
+| What | Reference | Cross-checked against |
+| --- | --- | --- |
+| `EqualWeight`, `InverseVolatility`, `InverseVariance` | Closed forms in NumPy | |
+| `MinVariance`, `MeanVariance` and `MaxSharpe`, long-short | Closed forms in NumPy, minimum-norm when Σ is singular | |
+| `MinVariance` and `MeanVariance`, long-only, with bounds and groups | Support enumeration: the exact solution on every subset of assets | PyPortfolioOpt |
+| Target volatility and the efficient frontier | Closed forms, or support enumeration and SciPy's `brentq` long-only | PyPortfolioOpt |
+| `MaxSharpe` long-only, `MaxDiversification` | Support enumeration, and SciPy's `linprog` for unbounded ratios | |
+| `RiskParity` | Cyclical coordinate descent | |
+| `Hrp` | PyPortfolioOpt, and riskfolio-lib with shrinkage or regularization | PyPortfolioOpt |
+| `Herc` | riskfolio-lib | |
+| Rebalancing: turnover caps, penalties and costs | Support enumeration, and SciPy's `linprog` for the reachable range | PyPortfolioOpt |
+| `MinCvar` | SciPy's `linprog` (HiGHS) on the primal program | PyPortfolioOpt, riskfolio-lib |
+| `MinMad` | SciPy's `linprog` (HiGHS) on the primal program | riskfolio-lib |
+| `MinCdar` | SciPy's `linprog` (HiGHS) on the full program | riskfolio-lib |
+| The simplex solver | SciPy's `linprog` (HiGHS) on random programs | |
+| `BlackLitterman` | PyPortfolioOpt for the returns, and the posterior covariance written out in NumPy | PyPortfolioOpt and riskfolio-lib, for the posterior covariance |
+| Ledoit-Wolf shrinkage | scikit-learn, and the constant-correlation estimate written out from Ledoit and Wolf's code | PyPortfolioOpt |
+| Exponentially weighted and semi covariances | Their definitions in NumPy | pandas, riskfolio-lib, PyPortfolioOpt |
+| Exponentially weighted, CAPM, James-Stein and Bayes-Stein means | Their definitions in NumPy | pandas, riskfolio-lib, PyPortfolioOpt |
+| `PortfolioStats` | Closed forms in NumPy | PyPortfolioOpt, riskfolio-lib |
+| Log returns | NumPy's `log1p` | PyPortfolioOpt |
+
+[`reference/README.md`](https://github.com/thinkjrs/cutup/blob/main/reference/README.md) gives each reference and its tolerance in full. The expected values are committed, so `cargo test` doesn't need Python, and when either side changes, CI checks the Python still reproduces them.
 
 ## License
 
