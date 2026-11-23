@@ -114,11 +114,47 @@ got fast enough.
 The 10.8 s row is from a test with other generated returns at that size, which
 took 2.2 s with the stabilization, so the last two rows aren't measured alike.
 
+## Every solver method, and periods
+
+Measured on 2026-11-19, on the same machine, when the README's size limits were
+written from these. `MeanVariance` (at a risk aversion of 10), `MaxSharpe`,
+`MaxDiversification` and `MinMad` were added to the benchmarks, and so were
+`MinCvar`, `MinMad` and `MinCdar` at 20 assets and 250, 1,000 and 5,000 periods,
+since their programs grow with the periods.
+
+| Method | 10 assets | 100 assets | 500 assets |
+| --- | --- | --- | --- |
+| `MinVariance` | 23 µs | 4.7 ms | 0.45 s |
+| `MinVarianceGroups` | 33 µs | 0.59 ms | 14 ms |
+| `MeanVariance` | 27 µs | 4.9 ms | 0.45 s |
+| `MaxSharpe` | 9.0 µs | 0.36 ms | 9.2 ms |
+| `MaxDiversification` | 14 µs | 0.75 ms | 23 ms |
+| `MinCvar` | 78 µs | 15 ms | 1.9 s |
+| `MinMad` | 85 µs | 19 ms | 2.4 s |
+| `MinCdar` | 23 µs | 8.7 ms | 0.15 s |
+| `Hrp` | 3.0 µs | 0.12 ms | 2.6 ms |
+| `Herc` | 3.9 µs | 0.38 ms | 8.5 ms |
+| `RiskParity` | 4.9 µs | 0.46 ms | 40 ms |
+
+| At 20 assets | 250 periods | 1,000 periods | 5,000 periods |
+| --- | --- | --- | --- |
+| `MinCvar` | 0.96 ms | 5.4 ms | 69 ms |
+| `MinMad` | 1.4 ms | 10 ms | 0.21 s |
+| `MinCdar` | 0.99 ms | 3.2 ms | 11 ms |
+
+- **The machine's load:** `MinVariance` and the clustering methods took about
+  twice as long as in the tables above. The commit that measured the groups
+  table, `06a1676`, took 4.55 ms at 100 assets run beside this one, which took
+  4.56 ms, where it had measured 2.4 ms. The code is the same speed and the
+  machine was busier, so compare times from the same run only.
+- **`MinCvar`** takes 1.9 s at 500 assets, where the table of its starting point
+  above has 11 s.
+
 ## Running time
 
-- **`cargo bench`:** about eight minutes, most of it `MinVariance`, `MinCvar`
-  and `MinCdar` at 500 assets. Those sizes, where a solve takes over a tenth of a
-  second, get criterion's minimum of 10 samples rather than its default of 100.
+- **`cargo bench`:** about ten minutes, most of it the solver methods at 500
+  assets and the periods benchmarks at 1,000 and 5,000. Those sizes get
+  criterion's minimum of 10 samples rather than its default of 100.
 - **`cargo test --all-targets`:** runs each benchmark once, unoptimized, at the
   smallest size only, so CI checks that the benchmarks build and run without
   timing them. Timings on shared CI runners are too noisy to compare.

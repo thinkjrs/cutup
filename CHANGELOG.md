@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Examples:** `rebalance`, `black_litterman`, `tail_risk` for `MinCvar`, and `drawdown` for
+  `MinMad` and `MinCdar`. `compare` now runs those three too, and `groups` sets a floor on one
+  asset. CI runs every example.
+- **README:**
+  - a guide to choosing a method by the question you're asking;
+  - size limits: how long each method takes by assets and by periods, from the benchmarks;
+  - a table of what each method is verified against;
+  - the MSRV policy.
+- **Benchmarks:** `MeanVariance`, `MaxSharpe`, `MaxDiversification` and `MinMad`, and
+  `MinCvar`, `MinMad` and `MinCdar` at 20 assets from 250 to 5,000 periods.
+
 ### Fixed
 
 - **Bounds:** `MinCvar`, `MinMad` and `MinCdar` keep every weight within its bounds. The
@@ -17,6 +30,8 @@ All notable changes to this project are documented here. The format follows
   rounding, which left its basis singular. It now takes such a pivot only from fresh factors.
   It also pivots artificial variables still basic after phase 1 out of the basis, which lets
   more of `MinCdar`'s rounds start from the last.
+- **Docs:** `WeightBounds`' docs list `MinMad` and `MinCdar` among the methods that take
+  bounds and groups.
 
 ### Changed
 

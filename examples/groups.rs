@@ -7,7 +7,8 @@
 //!
 //! Each column is a channel's daily return on spend: what a unit spent that day brought back,
 //! less the unit. Search and shopping run on one platform, and video and social on another, so
-//! the groups limit what goes to each platform, on top of a cap on each channel.
+//! the groups limit what goes to each platform, on top of a cap on each channel and a floor on
+//! one.
 
 use cutup::{
     Allocation, CutupError, MeanVariance, MinCvar, MinVariance, Returns, WeightBounds, Weights,
@@ -51,9 +52,10 @@ fn main() -> Result<(), CutupError> {
     ];
     let data = Returns::new(&returns)?.labeled(CHANNELS)?;
 
-    // No channel above 35%. With groups, at most 40% on search and shopping's platform, and
-    // at least 30% on video and social's.
-    let plain = WeightBounds::uniform(0.0, 0.35);
+    // No channel above 35%, and at least 5% on video, a minimum spend agreed with it. With
+    // groups, at most 40% on search and shopping's platform, and at least 30% on video and
+    // social's.
+    let plain = WeightBounds::uniform(0.0, 0.35).asset("video", 0.05, 0.35);
     let grouped =
         plain
             .clone()

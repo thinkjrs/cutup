@@ -1,17 +1,18 @@
 //! Times `allocate` for the methods that run a solver or a clustering step, at 10, 100 and
-//! 500 assets.
+//! 500 assets, and for those whose programs grow with the periods, at 250 to 5,000 periods.
 //!
 //! ```bash
 //! cargo bench
 //! cargo bench -- MinCvar/100
+//! cargo bench -- periods
 //! ```
 //!
-//! The solvers are private, so each one is measured through a method that uses it:
-//! `MinVariance` for the active-set QP solver, `MinCvar` for the LP, `MinCdar` for its cutting
-//! planes on the LP, `Hrp` and `Herc` for the clustering, and `RiskParity` for its Newton
-//! iteration. `MinVarianceGroups` adds groups
-//! that bind, which the QP solver holds at their limits. Each run covers the whole of
-//! `allocate`, including the sample covariance.
+//! The solvers are private, so each one is measured through the methods that use it:
+//! `MinVariance`, `MeanVariance`, `MaxSharpe` and `MaxDiversification` for the active-set QP
+//! solver, `MinCvar` and `MinMad` for the LP, `MinCdar` for its cutting planes on the LP, `Hrp`
+//! and `Herc` for the clustering, and `RiskParity` for its Newton iteration.
+//! `MinVarianceGroups` adds groups that bind, which the QP solver holds at their limits. Each
+//! run covers the whole of `allocate`, including the sample covariance.
 //!
 //! `cargo test --all-targets` runs this file too, once per benchmark and unoptimized, so
 //! there it checks only the smallest size.
@@ -30,7 +31,8 @@ mod native {
 
     use criterion::{BenchmarkId, Criterion, criterion_group};
     use cutup::{
-        Allocation, Herc, Hrp, MinCdar, MinCvar, MinVariance, Returns, RiskParity, WeightBounds,
+        Allocation, Herc, Hrp, MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar,
+        MinMad, MinVariance, Returns, RiskParity, WeightBounds,
     };
 
     /// The sizes each method is timed at, in assets, with how many samples criterion takes at
@@ -39,10 +41,16 @@ mod native {
     /// minute and a half to measure.
     const SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 100)];
 
-    /// The sizes for `MinVariance`, `MinCvar` and `MinCdar`, where a solve at 500 assets takes
-    /// over a tenth of a second: about 0.23 s for `MinVariance`, 11 s for `MinCvar` and 0.16 s
-    /// for `MinCdar`.
+    /// The sizes for the solver methods, where a solve at 500 assets can take over a tenth of
+    /// a second: about 0.45 s for `MinVariance`, 1.9 s for `MinCvar`, 2.4 s for `MinMad` and
+    /// 0.15 s for `MinCdar`.
     const SLOW_SIZES: [(usize, usize); 3] = [(10, 100), (100, 100), (500, 10)];
+
+    /// The assets for the periods benchmarks.
+    const PERIODS_ASSETS: usize = 20;
+
+    /// The periods those are timed at, with how many samples criterion takes at each.
+    const PERIODS: [(usize, usize); 3] = [(250, 100), (1000, 10), (5000, 10)];
 
     /// Periods per asset. Twice as many periods as assets keeps the sample covariance well
     /// conditioned at every size.
@@ -76,10 +84,9 @@ mod native {
         }
     }
 
-    /// Daily-scale returns for `assets` assets from a factor model: each asset has its own
-    /// exposures to the common factors, a positive drift, and its own noise.
-    fn returns(assets: usize) -> Returns {
-        let periods = PERIODS_PER_ASSET * assets;
+    /// Daily-scale returns for `assets` assets over `periods` periods from a factor model: each
+    /// asset has its own exposures to the common factors, a positive drift, and its own noise.
+    fn returns(assets: usize, periods: usize) -> Returns {
         let mut rng = SplitMix64(0x5eed ^ assets as u64);
 
         let exposures: Vec<[f64; FACTORS]> = (0..assets)
@@ -125,12 +132,35 @@ mod native {
             group.sample_size(samples);
             // Generated only if criterion's filter selects this benchmark.
             group.bench_function(BenchmarkId::from_parameter(assets), |b| {
-                let data = returns(assets);
+                let data = returns(assets, PERIODS_PER_ASSET * assets);
                 let method = method(assets);
                 b.iter(|| {
                     black_box(&data)
                         .allocate(&method)
                         .unwrap_or_else(|e| panic!("{name} failed at {assets} assets: {e}"))
+                });
+            });
+        }
+        group.finish();
+    }
+
+    /// Times the `method` at [`PERIODS_ASSETS`] assets for each of [`PERIODS`], under
+    /// `periods/name/periods`.
+    fn bench_periods<M: Allocation>(c: &mut Criterion, name: &str, method: M) {
+        let periods = if benchmarking() {
+            &PERIODS[..]
+        } else {
+            &PERIODS[..1]
+        };
+        let mut group = c.benchmark_group(format!("periods/{name}"));
+        for &(count, samples) in periods {
+            group.sample_size(samples);
+            group.bench_function(BenchmarkId::from_parameter(count), |b| {
+                let data = returns(PERIODS_ASSETS, count);
+                b.iter(|| {
+                    black_box(&data)
+                        .allocate(&method)
+                        .unwrap_or_else(|e| panic!("{name} failed at {count} periods: {e}"))
                 });
             });
         }
@@ -150,11 +180,28 @@ mod native {
     fn allocate(c: &mut Criterion) {
         bench_method(c, "MinVariance", |_| MinVariance::default(), &SLOW_SIZES);
         bench_method(c, "MinVarianceGroups", grouped, &SLOW_SIZES);
+        bench_method(
+            c,
+            "MeanVariance",
+            |_| MeanVariance::risk_aversion(10.0),
+            &SLOW_SIZES,
+        );
+        bench_method(c, "MaxSharpe", |_| MaxSharpe::default(), &SLOW_SIZES);
+        bench_method(
+            c,
+            "MaxDiversification",
+            |_| MaxDiversification::default(),
+            &SLOW_SIZES,
+        );
         bench_method(c, "MinCvar", |_| MinCvar::default(), &SLOW_SIZES);
+        bench_method(c, "MinMad", |_| MinMad::default(), &SLOW_SIZES);
         bench_method(c, "MinCdar", |_| MinCdar::default(), &SLOW_SIZES);
         bench_method(c, "Hrp", |_| Hrp::default(), &SIZES);
         bench_method(c, "Herc", |_| Herc::default(), &SIZES);
         bench_method(c, "RiskParity", |_| RiskParity::default(), &SIZES);
+        bench_periods(c, "MinCvar", MinCvar::default());
+        bench_periods(c, "MinMad", MinMad::default());
+        bench_periods(c, "MinCdar", MinCdar::default());
     }
 
     criterion_group!(benches, allocate);

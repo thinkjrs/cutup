@@ -6,8 +6,9 @@ import type { GroupLimits } from "./GroupLimits";
 /**
  * Lower and upper limits on each asset's weight, for
  * [`MinVariance::bounds`](crate::MinVariance::bounds),
- * [`MeanVariance::bounds`](crate::MeanVariance::bounds) and
- * [`MinCvar::bounds`](crate::MinCvar::bounds).
+ * [`MeanVariance::bounds`](crate::MeanVariance::bounds),
+ * [`MinCvar::bounds`](crate::MinCvar::bounds), [`MinMad::bounds`](crate::MinMad::bounds) and
+ * [`MinCdar::bounds`](crate::MinCdar::bounds).
  *
  * Lower bounds must be finite and nonnegative, and each upper bound at least its lower bound.
  * An upper bound of `f64::INFINITY` means no cap. The default, `0 ≤ w` with no cap, is the
