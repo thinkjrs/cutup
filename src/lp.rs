@@ -475,25 +475,26 @@ impl Problem {
 
     /// Pivots each artificial variable still basic after phase 1, the first `n` variables being
     /// the problem's own, out of the basis for one of those with an entry in its row of `B⁻¹A`.
-    /// Phase 1 ended feasible, so the artificial is at zero to within its tolerance, and the
-    /// pivot moves nothing. Left in, it would be basic and fixed at zero in phase 2, where a
+    /// Phase 1 ended feasible, so the artificial is at zero to within its tolerance, and it
+    /// leaves at zero: the pivot is made only where that moves the entering variable and every
+    /// basic one by no more than rounding, so that it moves nothing. Left in, it would be basic and fixed at zero in phase 2, where a
     /// change in its row that's only rounding can be the one thing to block a step, and
     /// pivoting on it leaves the basis singular. Nor could a later solve start from a basis
     /// with it, as [`Problem::basis_of`] says. The entry largest in size enters, for the
     /// steadiest pivot. A row with no entry beyond rounding is a combination of the others, and
     /// keeps its artificial, which nothing then moves.
     fn drive_out_artificials(&mut self, n: usize) -> Result<(), CutupError> {
-        let m = self.basis.len();
+        // Most solves end phase 1 with none basic, and need no factors for it.
+        if self.basis.iter().all(|&j| j < n) {
+            return Ok(());
+        }
         let mut factors = Factors::new(&self.a, &self.basis);
-        for row in 0..m {
-            let k = self.basis[row];
-            if k < n {
+        for row in 0..self.basis.len() {
+            if self.basis[row] < n {
                 continue;
             }
-            // Row `row` of `B⁻¹A`, from `B⁻ᵀeᵣ`. The artificial's own entry is 1.
-            let alpha = self
-                .a
-                .tr_mul(&factors.solve_transpose(DVector::from_fn(m, |i, _| f64::from(i == row)))?);
+            // The artificial's own entry is 1.
+            let alpha = self.tableau_row(row, &factors)?;
             let pivot = 1e-9 * alpha.amax();
             let Some(entering) = (0..n)
                 .filter(|&j| self.status[j] != Status::Basic && alpha[j].abs() > pivot)
@@ -501,14 +502,41 @@ impl Problem {
             else {
                 continue;
             };
+            // Taking the artificial the rest of the way to zero moves the entering variable by
+            // δ = x_k / d_r, and each basic variable by d_i·δ.
             let d = factors.solve(&self.a.column(entering).into_owned())?;
-            self.status[k] = Status::Lower;
-            self.x[k] = 0.0;
-            self.status[entering] = Status::Basic;
-            self.basis[row] = entering;
-            factors.update(&self.a, &self.basis, row, d);
+            let delta = self.x[self.basis[row]] / d[row];
+            let rounding = |change: f64, x: f64| change.abs() <= 1e-12 * x.abs().max(1.0);
+            let moves_nothing = rounding(delta, self.x[entering])
+                && (0..d.len()).all(|i| rounding(d[i] * delta, self.x[self.basis[i]]));
+            if moves_nothing {
+                self.exchange(row, entering, (Status::Lower, 0.0), d, &mut factors);
+            }
         }
         Ok(())
+    }
+
+    /// Row `row` of `B⁻¹A`, from `B⁻ᵀeᵣ`.
+    fn tableau_row(&self, row: usize, factors: &Factors) -> Result<DVector<f64>, CutupError> {
+        let unit = DVector::from_fn(self.basis.len(), |i, _| f64::from(i == row));
+        Ok(self.a.tr_mul(&factors.solve_transpose(unit)?))
+    }
+
+    /// Brings `entering`, with `d = B⁻¹aⱼ`, into the basis at `row`, the variable it replaces
+    /// leaving with `leaving`'s status and value.
+    fn exchange(
+        &mut self,
+        row: usize,
+        entering: usize,
+        leaving: (Status, f64),
+        d: DVector<f64>,
+        factors: &mut Factors,
+    ) {
+        let k = self.basis[row];
+        (self.status[k], self.x[k]) = leaving;
+        self.status[entering] = Status::Basic;
+        self.basis[row] = entering;
+        factors.update(&self.a, &self.basis, row, d);
     }
 
     /// Minimizes `costᵀx` from the current basis, returning the multipliers `y` at the
@@ -840,12 +868,7 @@ impl Problem {
         // The bound the leaving variable is brought back to, and whether that's up.
         let bound = self.x[k].max(self.lower[k]).min(self.upper[k]);
         let rises = (bound - self.x[k]).is_sign_positive();
-        let alpha = self.a.tr_mul(&factors.solve_transpose(DVector::from_fn(
-            self.basis.len(),
-            |i, _| {
-                if i == row { 1.0 } else { 0.0 }
-            },
-        ))?);
+        let alpha = self.tableau_row(row, factors)?;
         let pivot = 1e-9 * alpha.amax();
         let Some(entering) = (0..self.x.len())
             .filter(|&j| alpha[j].abs() > pivot)
@@ -872,11 +895,8 @@ impl Problem {
         };
 
         let d = factors.solve(&self.a.column(entering).into_owned())?;
-        self.status[k] = if rises { Status::Lower } else { Status::Upper };
-        self.x[k] = bound;
-        self.status[entering] = Status::Basic;
-        self.basis[row] = entering;
-        factors.update(&self.a, &self.basis, row, d);
+        let side = if rises { Status::Lower } else { Status::Upper };
+        self.exchange(row, entering, (side, bound), d, factors);
         Ok(true)
     }
 }
@@ -1551,7 +1571,13 @@ mod tests {
         )
         .unwrap();
         let solution = optimal(outcome);
-        assert_eq!(solution.x.rows(0, 2).as_slice(), [1.0, 0.0]);
+        // A weight that ends basic is solved for, and can be a unit in the last place off.
+        assert!(
+            (solution.x[0] - 1.0).abs() <= 2.0 * f64::EPSILON,
+            "{}",
+            solution.x
+        );
+        assert!(solution.x[1].abs() <= 2.0 * f64::EPSILON, "{}", solution.x);
         assert!((solution.objective - 0.374356670354395).abs() <= 1e-15);
         // Every basic variable is the problem's own, so a later round can start here.
         assert!(basis.unwrap().basis.iter().all(|&j| j < 5));
@@ -1575,6 +1601,39 @@ mod tests {
         .unwrap();
         assert_eq!(optimal(outcome).x.as_slice(), [1.0, 1.0]);
         assert_eq!(basis.unwrap().basis, [1]);
+    }
+
+    #[test]
+    fn an_artificial_variable_leaves_only_if_that_moves_nothing() {
+        // x₀ + cx₁ + a = b with a basic: x₁, with the larger entry, would take a's place, and
+        // move by a / c. Phase 1 can end with a anywhere within its tolerance of zero.
+        let problem = |a: f64, c: f64| Problem {
+            a: dmatrix![1.0, c, 1.0],
+            a_abs: dmatrix![1.0, c, 1.0],
+            b: dvector![a],
+            lower: dvector![0.0, 0.0, 0.0],
+            upper: dvector![INF, INF, INF],
+            x: dvector![0.0, 0.0, a],
+            basis: vec![2],
+            status: vec![Status::Lower, Status::Lower, Status::Basic],
+            perturbation: PERTURBATION,
+        };
+        // At rounding of zero, it leaves, and x₁ moves by nothing that counts.
+        let mut rounding = problem(1e-17, 2.0);
+        rounding.drive_out_artificials(2).unwrap();
+        assert_eq!(rounding.basis, [1]);
+        assert_eq!(rounding.status[2], Status::Lower);
+        assert_eq!(rounding.x[2], 0.0);
+        // At 1e-10, within phase 1's tolerance but not rounding, x₁ would move by 5e-11, and it
+        // stays.
+        let mut tolerance = problem(1e-10, 2.0);
+        tolerance.drive_out_artificials(2).unwrap();
+        assert_eq!(tolerance.basis, [2]);
+        // With c = 2000, x₁ would move by only 5e-14, but a itself would still have 1e-10 to
+        // go to reach zero, and it stays too.
+        let mut steep = problem(1e-10, 2000.0);
+        steep.drive_out_artificials(2).unwrap();
+        assert_eq!(steep.basis, [2]);
     }
 
     /// Checks that `solution` is optimal for the problem: feasible, with reduced costs of the
