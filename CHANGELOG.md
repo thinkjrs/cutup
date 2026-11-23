@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bounds:** `MinCvar`, `MinMad` and `MinCdar` keep every weight within its bounds. The
+  simplex method meets the budget only to its tolerance, and scaling the weights to sum to 1
+  could put one at its cap a few units in the last place past it. What the sum misses now
+  goes to the weights with room for it.
+- **`NotConverged` at a target only one portfolio reaches:** `MinCdar` failed this way at the
+  highest return the bounds allow. The simplex solver could pivot on a change that was only
+  rounding, which left its basis singular. It now takes such a pivot only from fresh factors.
+  It also pivots artificial variables still basic after phase 1 out of the basis, which lets
+  more of `MinCdar`'s rounds start from the last.
+
 ### Changed
 
 - `MinCdar` starts each round of cutting planes from where the last ended. Each round's
