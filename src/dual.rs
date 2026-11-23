@@ -15,7 +15,6 @@
 //! per asset rather than per scenario, and a row more if the weighting must sum to 1.
 
 use crate::bounds::{ReturnRange, feasible_start};
-use crate::methods::normalized;
 use crate::{CutupError, Returns, WeightBounds, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
@@ -135,10 +134,8 @@ impl Portfolios {
         else {
             return Err(CutupError::NotConverged);
         };
-        let weights = DVector::from_fn(n, |i, _| {
-            solution.y[i].clamp(bounds.lower[i], bounds.upper[i])
-        });
-        Ok((normalized(weights), -solution.objective / unit))
+        let weights = within_bounds(&solution.y.as_slice()[..n], bounds);
+        Ok((weights, -solution.objective / unit))
     }
 
     /// The portfolio whose largest `cutᵀw` over `cuts` is least, and that largest value, from
@@ -269,11 +266,43 @@ impl Master<'_> {
         let lp::Outcome::Optimal(solution) = outcome else {
             return Err(CutupError::NotConverged);
         };
-        let weights = DVector::from_fn(n, |i, _| {
-            solution.x[i].clamp(bounds.lower[i], bounds.upper[i])
-        });
-        Ok((normalized(weights), solution.objective))
+        let weights = within_bounds(&solution.x.as_slice()[..n], bounds);
+        Ok((weights, solution.objective))
     }
+}
+
+/// The program's weights `x`, clamped to `bounds` and summing to 1. The simplex method meets
+/// the budget's row only to its tolerance, so `x` can sum to a little more or less than 1, and
+/// scaling it to 1 could move a weight at its cap past it, or one at its floor below. Instead,
+/// what the clamped weights miss of 1 goes to those with the most room toward it, each only as
+/// far as its bounds. Bounds that a portfolio meets have room for all of it.
+fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
+    let (lower, upper) = (&bounds.lower, &bounds.upper);
+    let mut weights: Vec<f64> = x
+        .iter()
+        .enumerate()
+        .map(|(i, w)| w.clamp(lower[i], upper[i]))
+        .collect();
+    let mut missing = 1.0 - weights.iter().sum::<f64>();
+    let up = missing > 0.0;
+    let room = |i: usize, w: f64| if up { upper[i] - w } else { w - lower[i] };
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|&i, &j| room(j, weights[j]).total_cmp(&room(i, weights[i])));
+    for i in order {
+        if missing == 0.0 {
+            break;
+        }
+        let moved = (weights[i] + missing).clamp(lower[i], upper[i]);
+        missing -= moved - weights[i];
+        weights[i] = moved;
+    }
+    // A weight of -0.0, from the program or the clamp, is 0.0, which prints without a sign.
+    for w in &mut weights {
+        if *w == 0.0 {
+            *w = 0.0;
+        }
+    }
+    weights
 }
 
 /// The columns of the dual linear program, each with its cost and bounds, in the order
@@ -334,6 +363,7 @@ pub(crate) fn unit_scale(largest: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::methods::normalized;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -468,5 +498,62 @@ mod tests {
         assert_eq!(unit_scale(f64::MAX), 2f64.powi(-1022));
         assert_eq!(unit_scale(5e-324), 2f64.powi(1022));
         assert_eq!(unit_scale(0.0), 1.0);
+    }
+
+    /// Bounds `lower ≤ w ≤ upper` with no groups, for [`within_bounds`].
+    fn plain(lower: &[f64], upper: &[f64]) -> qp::Bounds {
+        let labels: Vec<String> = (0..lower.len()).map(|i| i.to_string()).collect();
+        WeightBounds::per_asset(lower.to_vec(), upper.to_vec())
+            .resolve(&labels)
+            .unwrap()
+    }
+
+    #[test]
+    fn weights_a_little_short_of_one_keep_a_weight_at_its_cap() {
+        let bounds = plain(&[0.0; 3], &[0.5, 1.0, 1.0]);
+        let x = [0.5, 0.3, 0.2 - 3e-15];
+        // Scaling them to 1 moves the first past its cap.
+        assert!(normalized(DVector::from_column_slice(&x))[0] > 0.5);
+        let weights = within_bounds(&x, &bounds);
+        assert_eq!(weights[0], 0.5);
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
+        // The last, with the most room below its cap, takes what's missing.
+        assert!(weights[1] == 0.3 && weights[2] > 0.2 - 3e-15);
+    }
+
+    #[test]
+    fn weights_a_little_over_one_keep_a_weight_at_its_floor() {
+        let bounds = plain(&[0.2, 0.0, 0.0], &[f64::INFINITY; 3]);
+        let x = [0.2, 0.5, 0.3 + 3e-15];
+        assert!(normalized(DVector::from_column_slice(&x))[0] < 0.2);
+        let weights = within_bounds(&x, &bounds);
+        assert_eq!(weights[0], 0.2);
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
+        // The middle, with the most room above its floor, gives up what's over.
+        assert!(weights[1] < 0.5 && weights[2] == 0.3 + 3e-15);
+    }
+
+    #[test]
+    fn what_one_weight_has_no_room_for_goes_to_the_next() {
+        // 0.375 short: the last has room for 0.3125 and the first for the other 0.0625, taken
+        // in that order. Each is a binary fraction, so the sums are exact.
+        let bounds = plain(&[0.0; 3], &[0.5, 0.25, 0.4375]);
+        let weights = within_bounds(&[0.25, 0.25, 0.125], &bounds);
+        assert_eq!(weights, [0.3125, 0.25, 0.4375]);
+        // A weight past its bounds comes back to them first, and then the rest makes up 1.
+        let weights = within_bounds(&[0.625, 0.25, 0.125], &bounds);
+        assert_eq!(weights, [0.5, 0.25, 0.25]);
+    }
+
+    #[test]
+    fn weights_that_sum_to_one_within_their_bounds_are_left_as_they_are() {
+        let bounds = plain(&[0.0; 3], &[1.0; 3]);
+        assert_eq!(
+            within_bounds(&[0.5, 0.25, 0.25], &bounds),
+            [0.5, 0.25, 0.25]
+        );
+        // But a weight of -0.0 comes back as 0.0.
+        let weights = within_bounds(&[1.0, -0.0, 0.0], &bounds);
+        assert!(weights.iter().all(|w| w.is_sign_positive()), "{weights:?}");
     }
 }
