@@ -1605,35 +1605,46 @@ mod tests {
 
     #[test]
     fn an_artificial_variable_leaves_only_if_that_moves_nothing() {
-        // x₀ + cx₁ + a = b with a basic: x₁, with the larger entry, would take a's place, and
-        // move by a / c. Phase 1 can end with a anywhere within its tolerance of zero.
-        let problem = |a: f64, c: f64| Problem {
-            a: dmatrix![1.0, c, 1.0],
-            a_abs: dmatrix![1.0, c, 1.0],
+        // c₀x₀ + c₁x₁ + a = b with a basic, x₀ at its floor and x₁ at 0: the one with the larger
+        // entry would take a's place, and move by a over its entry. Phase 1 can end with a
+        // anywhere within its tolerance of zero.
+        let problem = |a: f64, c: [f64; 2], floor: f64| Problem {
+            a: dmatrix![c[0], c[1], 1.0],
+            a_abs: dmatrix![c[0].abs(), c[1].abs(), 1.0],
             b: dvector![a],
-            lower: dvector![0.0, 0.0, 0.0],
+            lower: dvector![floor, 0.0, 0.0],
             upper: dvector![INF, INF, INF],
-            x: dvector![0.0, 0.0, a],
+            x: dvector![floor, 0.0, a],
             basis: vec![2],
             status: vec![Status::Lower, Status::Lower, Status::Basic],
             perturbation: PERTURBATION,
         };
-        // At rounding of zero, it leaves, and x₁ moves by nothing that counts.
-        let mut rounding = problem(1e-17, 2.0);
-        rounding.drive_out_artificials(2).unwrap();
-        assert_eq!(rounding.basis, [1]);
-        assert_eq!(rounding.status[2], Status::Lower);
-        assert_eq!(rounding.x[2], 0.0);
+        let basis_after = |a: f64, c: [f64; 2], floor: f64| {
+            let mut problem = problem(a, c, floor);
+            problem.drive_out_artificials(2).unwrap();
+            if problem.basis != [2] {
+                assert_eq!(problem.status[2], Status::Lower);
+                assert_eq!(problem.x[2], 0.0);
+            }
+            problem.basis
+        };
+        // At rounding of zero, it leaves, and x₁ moves by 5e-18.
+        assert_eq!(basis_after(1e-17, [1.0, 2.0], 0.0), [1]);
         // At 1e-10, within phase 1's tolerance but not rounding, x₁ would move by 5e-11, and it
         // stays.
-        let mut tolerance = problem(1e-10, 2.0);
-        tolerance.drive_out_artificials(2).unwrap();
-        assert_eq!(tolerance.basis, [2]);
-        // With c = 2000, x₁ would move by only 5e-14, but a itself would still have 1e-10 to
-        // go to reach zero, and it stays too.
-        let mut steep = problem(1e-10, 2000.0);
-        steep.drive_out_artificials(2).unwrap();
-        assert_eq!(steep.basis, [2]);
+        assert_eq!(basis_after(1e-10, [1.0, 2.0], 0.0), [2]);
+        // With an entry of 2000, x₁ would move by only 5e-14, but a itself would still have
+        // 1e-10 to go to reach zero, and it stays too.
+        assert_eq!(basis_after(1e-10, [1.0, 2000.0], 0.0), [2]);
+        // At 1e-13, a is rounding, but over an entry of 0.01, x₀ would move by 1e-11, which
+        // isn't, and it stays.
+        assert_eq!(basis_after(1e-13, [0.01, 0.001], 0.0), [2]);
+        // Rounding is relative to the variable: x₀ at a floor of 1000 moves by 1e-10, within
+        // rounding of it, and it leaves.
+        assert_eq!(basis_after(1e-13, [0.001, 0.0], 1000.0), [0]);
+        // At exactly zero, nothing moves, but entries within rounding of zero, below 1e-9 of
+        // the artificial's own, don't pivot.
+        assert_eq!(basis_after(0.0, [1e-12, 1e-13], 0.0), [2]);
     }
 
     /// Checks that `solution` is optimal for the problem: feasible, with reduced costs of the
