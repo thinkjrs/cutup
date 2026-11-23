@@ -546,6 +546,21 @@ mod tests {
     }
 
     #[test]
+    fn room_is_the_distance_to_the_bound() {
+        // Short of 1, the first has 0.5 below its cap and the second 0.375, so the first takes
+        // the 0.375: by the ratio to the cap, 2 against 4, the second would.
+        let bounds = plain(&[0.0; 2], &[1.0, 0.5]);
+        assert_eq!(within_bounds(&[0.5, 0.125], &bounds), [0.875, 0.125]);
+        // Over 1, the first has 0.5 above its floor and the second 0.375, so the first gives up
+        // the 0.125: by the sum with the floor, 0.5 against 0.875, the second would.
+        let bounds = plain(&[0.0, 0.25], &[f64::INFINITY; 2]);
+        assert_eq!(within_bounds(&[0.5, 0.625], &bounds), [0.375, 0.625]);
+        // And by the ratio to the floor, 3 against 6, the second would here.
+        let bounds = plain(&[0.25, 0.0625], &[f64::INFINITY; 2]);
+        assert_eq!(within_bounds(&[0.75, 0.375], &bounds), [0.625, 0.375]);
+    }
+
+    #[test]
     fn weights_that_sum_to_one_within_their_bounds_are_left_as_they_are() {
         let bounds = plain(&[0.0; 3], &[1.0; 3]);
         assert_eq!(
