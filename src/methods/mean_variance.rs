@@ -774,6 +774,9 @@ fn target_volatility(
 /// bisection below stopped between two portfolios that held different assets, and the step
 /// along the line between them left the frontier, by 0.06 in a weight. Compared exactly,
 /// rounding hid every lower bound of a solution on wasm, with the same result.
+///
+/// Read back from weights, which round, this is only where the bisection stops early:
+/// [`target_volatility_search`] checks what it finds there against the frontier itself.
 fn held(w: &DVector<f64>, bounds: &qp::Bounds) -> Vec<Option<bool>> {
     let n = w.len();
     let rounding = budget_rounding(n);
@@ -803,6 +806,44 @@ fn bounded_target_volatility(
     bounds: &qp::Bounds,
     sigma: f64,
 ) -> Result<Vec<f64>, CutupError> {
+    let same = |low: &DVector<f64>, high: &DVector<f64>| same_assets(low, high, bounds);
+    Ok(target_volatility_search(cov, mu, bounds, sigma, same)?.0)
+}
+
+/// Whether `low` and `high` hold the same assets at the same bounds, and the same groups at the
+/// same limits, as [`held`] reads them.
+fn same_assets(low: &DVector<f64>, high: &DVector<f64>, bounds: &qp::Bounds) -> bool {
+    held(low, bounds) == held(high, bounds)
+}
+
+/// How far above the frontier's variance at its return, as a fraction of it, a portfolio's can
+/// be and still count as on the frontier. The two are solved for separately, and their returns
+/// agree only to the solver's rounding, which moves the frontier's variance by about `1e-12`
+/// of itself. A line between portfolios that hold different assets is above it by the square of
+/// how far its weights are off: `1e-9` for weights `3e-5` off.
+const ON_FRONTIER: f64 = 1e-9;
+
+/// [`bounded_target_volatility`]'s portfolio, and how many portfolios on the frontier it solved
+/// for on the way, given `same_assets`: whether two of them hold the same assets at the same
+/// bounds, and the same groups at the same limits.
+///
+/// The search bisects the frontier's returns between the minimum variance portfolio's and the
+/// highest. Between two portfolios that hold the same assets, the frontier is the straight
+/// line between them, so it stops there and takes the point on that line at the target. That
+/// saves most of the bisection, but `same_assets` reads what's held from weights, which round,
+/// and a line between portfolios that hold different assets isn't the frontier. So the point is
+/// checked: the frontier's own portfolio at its return has the least variance there, and the
+/// point is on the frontier only if its variance is no higher, to [`ON_FRONTIER`]. If it's
+/// higher, `same_assets` isn't trusted again, and the bisection carries on from the frontier's
+/// portfolio until its ends are an ulp or so apart, where the line between them is as good as
+/// either.
+fn target_volatility_search(
+    cov: &DMatrix<f64>,
+    mu: &DVector<f64>,
+    bounds: &qp::Bounds,
+    sigma: f64,
+    same_assets: impl Fn(&DVector<f64>, &DVector<f64>) -> bool,
+) -> Result<(Vec<f64>, usize), CutupError> {
     let minimum = bounded_min_variance(cov, bounds)?;
     let risk = Risk::new(cov)?;
     let target = volatility_floor(&risk, &minimum, sigma)?;
@@ -818,48 +859,76 @@ fn bounded_target_volatility(
     let target = (target_variance + rounding).sqrt();
     // Once, rather than at every target the search below solves at.
     let range = ReturnRange::new(mu, bounds)?;
-    let at = |rho: f64| bounded_target_return(cov, mu, bounds, &range, rho);
+    let solves = std::cell::Cell::new(0);
+    let at = |rho: f64| {
+        solves.set(solves.get() + 1);
+        bounded_target_return(cov, mu, bounds, &range, rho)
+    };
     // The variance on the frontier is convex in the target return, and no higher at the
     // minimum variance portfolio's return than the target's, so it's within the target from
     // there up to some return and above it after.
     let highest = range.highest();
     let top = at(highest)?;
     if risk.volatility(&top) <= target {
-        return Ok(within_bounds(top.as_slice(), bounds));
+        return Ok((within_bounds(top.as_slice(), bounds), solves.get()));
     }
     let (mut low, mut high) = ((mu.dot(&minimum), minimum), (highest, top));
-    for _ in 0..200 {
-        let width = high.0 - low.0;
-        if held(&low.1, bounds) == held(&high.1, bounds)
-            || width <= 4.0 * f64::EPSILON * low.0.abs().max(high.0.abs())
-        {
-            break;
+    let mut trusted = true;
+    loop {
+        for _ in 0..200 {
+            let width = high.0 - low.0;
+            if (trusted && same_assets(&low.1, &high.1))
+                || width <= 4.0 * f64::EPSILON * low.0.abs().max(high.0.abs())
+            {
+                break;
+            }
+            let middle = low.0 + width / 2.0;
+            let w = at(middle)?;
+            if risk.volatility(&w) <= target {
+                low = (middle, w);
+            } else {
+                high = (middle, w);
+            }
         }
-        let middle = low.0 + width / 2.0;
-        let w = at(middle)?;
-        if risk.volatility(&w) <= target {
-            low = (middle, w);
+        // With the same assets held, the weights move in a straight line from low to high, and
+        // the variance along it, at low + t·d, is at² + 2bt + c. The target's is at the larger
+        // root.
+        let d = &high.1 - &low.1;
+        let (u, v) = (risk.units(&low.1), risk.units(&d));
+        let (a, b, c) = (
+            risk.product(&v, &v),
+            risk.product(&u, &v),
+            risk.product(&u, &u),
+        );
+        // Low is within the target, but for rounding, and a gap within rounding is none.
+        let gap = (target_variance - c - rounding).max(0.0);
+        #[allow(
+            clippy::manual_clamp,
+            reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
+        )]
+        let t = larger_root(a, b, gap).max(0.0).min(1.0);
+        let weights = within_bounds((&low.1 + d * t).as_slice(), bounds);
+        if !trusted {
+            return Ok((weights, solves.get()));
+        }
+        // Whether that line was the frontier: see above.
+        let point = DVector::from_column_slice(&weights);
+        let rho = mu.dot(&point);
+        let frontier = at(rho)?;
+        let variance = |w: &DVector<f64>| {
+            let u = risk.units(w);
+            risk.product(&u, &u)
+        };
+        if variance(&point) <= variance(&frontier) * (1.0 + ON_FRONTIER) {
+            return Ok((weights, solves.get()));
+        }
+        trusted = false;
+        if risk.volatility(&frontier) <= target {
+            low = (rho, frontier);
         } else {
-            high = (middle, w);
+            high = (rho, frontier);
         }
     }
-    // With the same assets held, the weights move in a straight line from low to high, and the
-    // variance along it, at low + t·d, is at² + 2bt + c. The target's is at the larger root.
-    let d = &high.1 - &low.1;
-    let (u, v) = (risk.units(&low.1), risk.units(&d));
-    let (a, b, c) = (
-        risk.product(&v, &v),
-        risk.product(&u, &v),
-        risk.product(&u, &u),
-    );
-    // Low is within the target, but for rounding, and a gap within rounding is none.
-    let gap = (target_variance - c - rounding).max(0.0);
-    #[allow(
-        clippy::manual_clamp,
-        reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
-    )]
-    let t = larger_root(a, b, gap).max(0.0).min(1.0);
-    Ok(within_bounds((low.1 + d * t).as_slice(), bounds))
 }
 
 /// The larger root `t` of `at² + 2bt = gap`, for `a ≥ 0` and `gap ≥ 0`, in whichever form
@@ -1731,6 +1800,53 @@ mod tests {
                     assert_weights_close(&weights, &on_frontier, 1e-9);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_checks_its_line_against_the_frontier() {
+        let data = Returns::returns_matrix(factor_returns(6, 40, 11)).unwrap();
+        // Long-only with a cap of a half, the frontier turns where assets come in and drop out,
+        // so no one line runs its length.
+        let bounds = WeightBounds::uniform(0.0, 0.5)
+            .resolve(data.labels())
+            .unwrap();
+        let cov = data
+            .adjusted_covariance(&CovarianceConfig::default())
+            .unwrap();
+        let mu = sample_mean(&data);
+        // The volatilities at the frontier's ends, in the covariance's own units.
+        let risk = Risk::new(&cov).unwrap();
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        let top = bounded_target_return(&cov, &mu, &bounds, &range, range.highest()).unwrap();
+        let minimum = bounded_min_variance(&cov, &bounds).unwrap();
+        let (floor, ceiling) = (
+            risk.volatility(&minimum) * risk.scale,
+            risk.volatility(&top) * risk.scale,
+        );
+        for fraction in [0.2, 0.5, 0.8] {
+            let sigma = floor + fraction * (ceiling - floor);
+            let search = |same_assets: &dyn Fn(&DVector<f64>, &DVector<f64>) -> bool| {
+                target_volatility_search(&cov, &mu, &bounds, sigma, same_assets).unwrap()
+            };
+            let (weights, solves) = search(&|low, high| same_assets(low, high, &bounds));
+            // Reading every pair of portfolios as holding the same assets, the first line is
+            // from the minimum variance portfolio to the highest return's, far off the
+            // frontier. Its point is checked against the frontier and found above it, and the
+            // search bisects to the end instead, to the same portfolio.
+            let (misread, bisected) = search(&|_, _| true);
+            for (w, m) in weights.iter().zip(&misread) {
+                assert!((w - m).abs() < 1e-9, "{weights:?} vs {misread:?}");
+            }
+            // As it does reading none as the same, which never takes a line to check.
+            let (never, all) = search(&|_, _| false);
+            for (w, n) in weights.iter().zip(&never) {
+                assert!((w - n).abs() < 1e-9, "{weights:?} vs {never:?}");
+            }
+            // A line that is the frontier passes the check, and saves most of the bisection:
+            // about 50 halvings take a return's range down to an ulp of it.
+            assert!(solves <= 20, "{solves}");
+            assert!(all >= 40 && bisected >= 40, "{all} and {bisected}");
         }
     }
 
