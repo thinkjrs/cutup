@@ -1,6 +1,6 @@
 //! [`Herc`]: Hierarchical Equal Risk Contribution.
 
-use super::{cluster_variance, inverse_variance_weights};
+use super::{cluster_variance, inverse_variance_weights, summable};
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
 
 #[cfg(feature = "serde")]
@@ -166,7 +166,7 @@ impl Returns {
             return Err(self.zero_variance(asset));
         }
         let distance = self.correlation_distance()?;
-        let cov = self.adjusted_covariance(covariance)?;
+        let cov = summable(self.adjusted_covariance(covariance)?);
         let hierarchy = cluster::hierarchy(&distance, linkage);
         let k = clusters.unwrap_or_else(|| hierarchy.cluster_count(&distance, max_clusters));
 
@@ -305,6 +305,33 @@ mod tests {
         ] {
             assert_weights_close(&data.allocate(method.as_ref()).unwrap(), &equal, 1e-12);
         }
+    }
+
+    #[test]
+    fn test_hierarchical_weights_on_variances_near_the_largest() {
+        // Regularized by 1e308, every variance is about that, and two of them sum past
+        // f64::MAX. With one risk infinite, HRP's first half took all of the weight, as did one
+        // of HERC's branches; with both, further up HERC's tree, the split was NaN.
+        let data = Returns::returns_matrix(two_block_returns()).unwrap();
+        let methods = |epsilon: f64| -> Vec<Box<dyn Allocation>> {
+            vec![
+                Box::new(Hrp::default().regularization(epsilon)),
+                Box::new(Herc::default().regularization(epsilon)),
+                Box::new(Herc::default().clusters(3).regularization(epsilon)),
+                Box::new(Herc::default().clusters(5).regularization(epsilon)),
+            ]
+        };
+        // The same as at 1e300, where the returns' own variances are as far below rounding.
+        for epsilon in [6e307, 1e308, 1.7e308] {
+            for (method, large) in methods(epsilon).iter().zip(methods(1e300)) {
+                let weights = data.allocate(method.as_ref()).unwrap();
+                let want = data.allocate(large.as_ref()).unwrap();
+                assert_weights_close(&weights, &want, 1e-15);
+            }
+        }
+        // Uncorrelated with equal variances, so HRP is equal weights.
+        let hrp = data.allocate(&Hrp::default().regularization(1e308));
+        assert_weights_close(&hrp.unwrap(), &Weights::from(vec![0.2; 5]), 1e-15);
     }
 
     #[test]

@@ -130,7 +130,10 @@ pub(crate) fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
             .then(room(j, weights[j]).total_cmp(&room(i, weights[i])))
     });
     for i in order {
-        if missing == 0.0 {
+        // Less than the half ulp of 1 that a sum short of it misses 1 by is no shortfall, only
+        // what adding the shortfall to a weight between its bounds rounded off: not for a weight
+        // at the bound it would leave to take.
+        if missing == 0.0 || (leaves(i, weights[i]) && missing.abs() < f64::EPSILON / 2.0) {
             break;
         }
         let moved = (weights[i] + missing).clamp(lower[i], upper[i]);
@@ -227,6 +230,21 @@ impl Returns {
         }
         Ok(distance)
     }
+}
+
+/// `cov` for HRP and HERC to split weight by, which only the ratios of its entries matter to.
+///
+/// A branch's risk is a sum of cluster variances, none larger than `cov`'s largest entry. If as
+/// many of those as there are assets could sum past `f64::MAX`, `cov` is divided by a power of
+/// two at least their number, which is exact and keeps every such sum finite: summed as they
+/// were, two risks near `f64::MAX` are infinite, one branch of the split takes all of the weight,
+/// and two infinite ones split it into NaN.
+pub(crate) fn summable(cov: DMatrix<f64>) -> DMatrix<f64> {
+    let n = cov.ncols();
+    if cov.amax() * n as f64 <= f64::MAX {
+        return cov;
+    }
+    cov / n.next_power_of_two() as f64
 }
 
 /// Returns the variance under `cov` of the inverse-variance portfolio over `cluster`.
@@ -369,6 +387,27 @@ mod tests {
             within_bounds(&[0.25, 0.375, 0.0], &bounds),
             [0.375, 0.5, 0.125]
         );
+    }
+
+    #[test]
+    fn what_adding_the_shortfall_rounds_off_isnt_for_a_weight_at_its_bound() {
+        // An ulp of 1 short. The first weight, with the most room, takes it, but 0.25 + 5·2⁻⁵⁵
+        // is a tie that rounds to even, 2⁻⁵⁵ short of it, and the second, in [½, 1), can't hold
+        // a step that small. The third, which the program left at 0, took it.
+        let bounds = plain(&[0.0; 3], &[1.0; 3]);
+        let ulp = f64::EPSILON;
+        let x = [0.25 - 3.0 * ulp / 8.0, 0.75 - ulp / 2.0, 0.0];
+        assert_eq!(1.0 - x.iter().sum::<f64>(), ulp);
+        let weights = within_bounds(&x, &bounds);
+        assert_eq!(weights, [0.25 + ulp / 2.0, 0.75 - ulp / 2.0, 0.0]);
+        assert_eq!(weights.iter().sum::<f64>(), 1.0);
+        // Over 1 by 97 ulps, of which the first two have room above their floors for 96.75. A
+        // quarter of an ulp is nothing the sum can show, so the third stays at its cap.
+        let bounds = plain(&[0.25, 0.5, 0.0], &[1.0, 1.0, 0.25]);
+        let x = [0.25 + 64.75 * ulp, 0.5 + 32.0 * ulp, 0.25];
+        assert_eq!(x.iter().sum::<f64>() - 1.0, 97.0 * ulp);
+        let weights = within_bounds(&x, &bounds);
+        assert_eq!(weights, [0.25, 0.5, 0.25]);
     }
 
     #[test]

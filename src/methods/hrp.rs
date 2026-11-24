@@ -1,6 +1,6 @@
 //! [`Hrp`]: Hierarchical Risk Parity.
 
-use super::cluster_variance;
+use super::{cluster_variance, summable};
 use crate::{Allocation, CovarianceConfig, CutupError, Linkage, Returns, Weights, cluster};
 
 #[cfg(feature = "serde")]
@@ -148,7 +148,7 @@ impl Returns {
         // The settings are checked before the data, as every other method checks them.
         covariance.validate()?;
         let order = self.cluster_order(linkage)?;
-        let cov = self.adjusted_covariance(covariance)?;
+        let cov = summable(self.adjusted_covariance(covariance)?);
         let mut weights = vec![1.0; order.len()];
         // Clusters are ranges of positions in `order`, bisected one level at a time.
         let mut ranges = vec![(0, order.len())];
