@@ -2089,7 +2089,14 @@ proptest! {
             }
             Err(other) => return Err(TestCaseError::fail(format!("{other:?}"))),
         };
-        prop_assert!(net(&weights) >= target - rounding, "{} < {target}", net(&weights));
+        // Long-short, the weights that net the target can be far larger than 1: with a cost near
+        // half of the spread of the expected returns, a trade from the lowest to the highest
+        // nets almost nothing, and it takes thousands of them. The net return then rounds by
+        // the terms those weights sum, not by the returns' own size.
+        let w = DVector::from_column_slice(weights.as_slice());
+        let terms = mu.component_mul(&w).abs().sum() + cost * (&w - &held).abs().sum();
+        let floor = target - rounding.max(1e-12 * terms);
+        prop_assert!(net(&weights) >= floor, "{} < {target}", net(&weights));
         prop_assert!(long_short || weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         if let Some(cap) = cap {
             prop_assert!(turnover(&weights, &current) <= cap + 1e-12, "{weights:?}");
