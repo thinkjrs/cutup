@@ -60,8 +60,9 @@ pub(crate) fn long_only_weights(
     Ok(within_bounds(x.as_slice(), bounds))
 }
 
-/// `x` rescaled to sum to 1. With a budget constraint `1ᵀx = 1`, that only removes the
-/// rounding left by clamping to the bounds; for max Sharpe it maps `y` back to `w`.
+/// `x` rescaled to sum to 1. For max Sharpe it maps `y` back to `w`; for long-short weights
+/// with a budget `1ᵀx = 1`, it only removes the solver's rounding. Weights within bounds go
+/// through [`within_bounds`] instead, since scaling could move one at a bound past it.
 ///
 /// If the sum overflows, `x` is first divided by its largest magnitude: dividing finite
 /// entries by an infinite sum would make every weight 0.
@@ -77,22 +78,43 @@ pub(crate) fn normalized(x: DVector<f64>) -> Vec<f64> {
     x.iter().map(|w| w / total).collect()
 }
 
-/// A solver's weights `x`, clamped to `bounds` and summing to 1. A solver meets the budget's
-/// row only to its tolerance, and clamping moves a weight a little more, so `x` can sum to a
-/// little more or less than 1, and scaling it to 1, as [`normalized`] does, could move a
-/// weight at its cap past it, or one at its floor below. Instead,
-/// what the clamped weights miss of 1 goes to those with the most room toward it, each only as
-/// far as its bounds, first those between their bounds and only then those at the bound they'd
-/// move away from, so that a weight of 0 stays 0. Bounds that a portfolio meets have room for
-/// all of it. Each weight then holds its own bounds exactly. Groups and a target hold to the
-/// rounding of their sums, as they did when the weights were scaled: what moves is rounding,
-/// about `1e-15`.
+/// How far the sum of `n` weights can round from 1: a few ulps of 1 for each. The budget is
+/// only met to this, so a weight this near a bound can't be told from one on it.
+pub(crate) fn budget_rounding(n: usize) -> f64 {
+    qp::sum_rounding(n, 1.0)
+}
+
+/// A solver's weights `x`, within `bounds` and summing to 1. A solver meets the budget's row
+/// only to its tolerance, so `x` can sum to a little more or less than 1, and scaling it to 1,
+/// as [`normalized`] does, could move a weight at its cap past it, or one at its floor below.
+/// Instead:
+///
+/// * Each weight is clamped to its bounds, and one within [the budget's rounding](budget_rounding)
+///   of a bound is put on it: a solver can leave an asset it doesn't hold at `1e-17` rather
+///   than 0, as the multipliers of [`MinCvar`](crate::MinCvar)'s dual do.
+/// * What the weights then miss of 1 goes to those with the most room toward it, each only as
+///   far as its bounds: first those between their bounds, and only then those on the bound
+///   they'd move away from, so that a weight of 0 stays 0. Bounds that a portfolio meets have
+///   room for all of it.
+///
+/// Each weight then holds its own bounds exactly. Groups and a target hold to the rounding of
+/// their sums, as they did when the weights were scaled: what moves is rounding, about `1e-15`.
 pub(crate) fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
     let (lower, upper) = (&bounds.lower, &bounds.upper);
+    let rounding = budget_rounding(x.len());
     let mut weights: Vec<f64> = x
         .iter()
         .enumerate()
-        .map(|(i, w)| w.clamp(lower[i], upper[i]))
+        .map(|(i, w)| {
+            let w = w.clamp(lower[i], upper[i]);
+            if w - lower[i] <= rounding {
+                lower[i]
+            } else if upper[i] - w <= rounding {
+                upper[i]
+            } else {
+                w
+            }
+        })
         .collect();
     let mut missing = 1.0 - weights.iter().sum::<f64>();
     let up = missing > 0.0;
@@ -308,6 +330,27 @@ mod tests {
         // And by the ratio to the floor, 3 against 6, the second would here.
         let bounds = plain(&[0.25, 0.0625], &[f64::INFINITY; 2]);
         assert_eq!(within_bounds(&[0.75, 0.375], &bounds), [0.625, 0.375]);
+    }
+
+    #[test]
+    fn a_weight_within_rounding_of_a_bound_is_on_it() {
+        // A dual program's multipliers leave an asset it doesn't hold at rounding of 0, and a
+        // weight held at a floor or a cap can come back an ulp inside it. Each is on its bound.
+        let bounds = plain(&[0.0, 0.25, 0.0, 0.0], &[1.0, 1.0, 0.125, 1.0]);
+        let x = [
+            4e-17,
+            0.25 + f64::EPSILON / 4.0,
+            0.125 - f64::EPSILON / 16.0,
+            0.625,
+        ];
+        assert!(x[1] > 0.25 && x[2] < 0.125);
+        assert_eq!(within_bounds(&x, &bounds), [0.0, 0.25, 0.125, 0.625]);
+        // Further from a bound than the weights' sum can round, a weight is its own: of four,
+        // 16 ulps of 1.
+        assert_eq!(budget_rounding(4), 16.0 * f64::EPSILON);
+        let x = [1e-13, 0.25 + 1e-13, 0.125 - 1e-13, 0.625];
+        let weights = within_bounds(&x, &bounds);
+        assert!(weights[0] > 0.0 && weights[1] > 0.25 && weights[2] < 0.125);
     }
 
     #[test]
