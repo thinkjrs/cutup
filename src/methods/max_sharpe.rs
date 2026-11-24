@@ -3,6 +3,7 @@
 use super::{correlation, long_only_max_ratio, normalized};
 use crate::eigen::SymmetricEigen;
 use crate::qp::norm;
+use crate::stats::{binary_exponent, pow2_scaled};
 use crate::{Allocation, CovarianceConfig, CutupError, PerAsset, Returns, Weights};
 use nalgebra::DVector;
 
@@ -184,10 +185,17 @@ impl Returns {
         let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         let ones = DVector::from_element(n, 1.0);
-        let excess = mu.add_scalar(-risk_free_rate);
+        // The expected returns and the rate over a power of two just past the largest of them
+        // in size, as long-only divides them by the largest: exact, and the weights don't
+        // depend on their scale, but a rate of -1.7e308 under a return of 1.7e308 is an excess
+        // return past f64::MAX otherwise. Only the return an error reports is scaled back.
+        let exponent = binary_exponent(risk_free_rate.abs().max(mu.amax())) + 1;
+        let rate = pow2_scaled(risk_free_rate, -exponent);
+        let mu = mu.map(|m| pow2_scaled(m, -exponent));
+        let excess = mu.add_scalar(-rate);
         let too_high = |min_variance_return: f64| CutupError::RiskFreeRateTooHigh {
             risk_free_rate,
-            min_variance_return,
+            min_variance_return: pow2_scaled(min_variance_return, exponent),
         };
 
         // Decompose the correlation matrix C into its range and its null space, with
@@ -217,36 +225,42 @@ impl Returns {
                 if norm(&(&b - &a * along)) > noise || projected > noise {
                     return Err(CutupError::Unbounded);
                 }
-                return Err(too_high(risk_free_rate + along));
+                return Err(too_high(rate + along));
             }
             if norm(&b) > noise {
                 return Err(CutupError::Unbounded);
             }
         }
 
-        // Σ⁺x = D⁻¹C⁺D⁻¹x restricted to the range, where every remaining solution lives.
+        // Σ⁺x = D⁻¹C⁺D⁻¹x restricted to the range, where every remaining solution lives, up to
+        // a factor: the volatilities are divided by a power of two near the smallest, which
+        // scales Σ⁺1 and Σ⁺(μ − r_f) alike, exactly, and so changes neither r_mvp nor the
+        // weights. The inverse of a variance near 1e-308 is at f64::MAX, and one of a subnormal
+        // variance is past it: Σ⁺1 summed to infinity, or held it, r_mvp was NaN, and no rate
+        // compares as above NaN, so the check below was skipped.
+        let nearest = binary_exponent(volatilities.min());
+        let relative = volatilities.map(|v| pow2_scaled(v, -nearest));
         let pinv = |x: &DVector<f64>| {
-            let x = x.component_div(&volatilities);
+            let x = x.component_div(&relative);
             range
                 .iter()
                 .fold(DVector::zeros(n), |acc, (sigma, v)| {
                     acc + v * (v.dot(&x) / sigma)
                 })
-                .component_div(&volatilities)
+                .component_div(&relative)
         };
-        // Divided by its largest magnitude, which doesn't change r_mvp, so that near-zero
-        // variances can't overflow its sum and make r_mvp NaN, which would skip the check.
         let inv_ones = pinv(&ones);
-        let inv_ones = match inv_ones.amax() {
-            s if s.is_finite() && s > 0.0 => inv_ones / s,
-            _ => inv_ones,
-        };
         let min_variance_return = inv_ones.dot(&mu) / inv_ones.sum();
         // The rounding in r_mvp comes from its terms wᵢμᵢ, which don't change when an asset is
         // rescaled.
         let terms = inv_ones.component_mul(&mu).abs().sum() / inv_ones.sum().abs();
-        let tolerance = 1e-10 * terms;
-        if risk_free_rate >= min_variance_return - tolerance {
+        let threshold = min_variance_return - 1e-10 * terms;
+        // No rate compares as at or above a NaN, as from a Σ⁺1 that sums to 0, so it would pass
+        // as below r_mvp.
+        if threshold.is_nan() {
+            return Err(CutupError::SingularCovariance);
+        }
+        if rate >= threshold {
             return Err(too_high(min_variance_return));
         }
 
@@ -634,6 +648,78 @@ mod tests {
             }
             Err(e) => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn test_max_sharpe_checks_the_rate_when_a_variance_has_no_finite_inverse() {
+        // The third asset is constant, so regularization is all of its variance, and at 1e-309
+        // or below that's subnormal, with an inverse past f64::MAX. It's the minimum variance
+        // portfolio, returning 0.5. Its entry of Σ⁻¹1 was infinite and r_mvp NaN, which no rate
+        // is at or above, so a rate of 0.55 got that portfolio, the lowest Sharpe ratio there
+        // is, one of 0.5 got the other two assets, and the rest a singular covariance.
+        let rows = [
+            [0.01, 0.02, 0.5],
+            [-0.01, 0.02, 0.5],
+            [0.01, -0.02, 0.5],
+            [-0.01, -0.02, 0.5],
+        ];
+        let data = Returns::new(&rows).unwrap();
+        for epsilon in [1e-300, 1e-308, 1e-309, 1e-315, 1e-320] {
+            let at = |rate: f64| {
+                let max_sharpe = MaxSharpe::default().regularization(epsilon);
+                data.allocate(&max_sharpe.allow_short().risk_free_rate(rate))
+            };
+            for rate in [0.5, 0.55, 1.0] {
+                match at(rate) {
+                    Err(CutupError::RiskFreeRateTooHigh {
+                        min_variance_return,
+                        ..
+                    }) => assert!(
+                        (min_variance_return - 0.5).abs() < 1e-12,
+                        "{epsilon:e}: {min_variance_return}"
+                    ),
+                    other => panic!("{epsilon:e} at {rate}: {other:?}"),
+                }
+            }
+            // Below it, the tangency portfolio is all but all in that asset too.
+            for rate in [0.2, 0.45] {
+                let weights = at(rate).unwrap();
+                assert_weights_close(&weights, &Weights::from(vec![0.0, 0.0, 1.0]), 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_sharpe_returns_and_a_rate_whose_difference_overflows() {
+        // The tangency portfolio doesn't depend on the scale of the expected returns and the
+        // rate together. At 1.7e308, the first asset's excess return was infinite, and so were
+        // the weights, reported as a singular covariance. Long-only never formed it.
+        let allocator = Returns::prices_matrix(full_rank_prices()).unwrap();
+        let at = |scale: f64| {
+            let max_sharpe = MaxSharpe::default()
+                .risk_free_rate(-scale)
+                .expected_returns([scale, 0.5 * scale, 0.25 * scale]);
+            allocator.allocate(&max_sharpe.allow_short())
+        };
+        let weights = at(1.0).unwrap();
+        for scale in [1.7e308, 1e-300] {
+            assert_weights_close(&at(scale).unwrap(), &weights, 1e-12);
+        }
+        // And an error reports the minimum variance portfolio's return at its own scale.
+        let too_high = |scale: f64| {
+            let max_sharpe = MaxSharpe::default()
+                .risk_free_rate(scale)
+                .expected_returns([scale, 0.5 * scale, 0.25 * scale]);
+            match allocator.allocate(&max_sharpe.allow_short()) {
+                Err(CutupError::RiskFreeRateTooHigh {
+                    min_variance_return,
+                    ..
+                }) => min_variance_return,
+                other => panic!("{scale:e}: {other:?}"),
+            }
+        };
+        let threshold = too_high(1.0);
+        assert!((too_high(1.7e308) / 1.7e308 - threshold).abs() < 1e-12 * threshold.abs());
     }
 
     #[test]
