@@ -11,21 +11,25 @@ All notable changes to this project are documented here. The format follows
 - **Caps on `MinVariance`, `MeanVariance` and rebalancing:** each weight stays within its
   bounds. The solver clamped the weights in its own units, and converting them back and then
   scaling them to sum to 1 could put a weight at its cap a few units in the last place past
-  it: 48 of 2,000 capped weights did in a test. They're now clamped in the original units, and
-  the budget is met by the weights with room, as for `MinCvar`, `MinMad` and `MinCdar` in
-  0.3.12.
-- **Exact zeros from `MinCvar`, `MinMad` and `MinCdar`:** a weight the program leaves at 0
-  stays 0, where meeting the budget could give it about `1e-16`, enough for a `w > 0` filter
-  to count it as held.
+  it: 48 of 2,000 capped weights did in a test. A weight the solver holds at a floor or a cap
+  now comes back exactly on it, and the budget is met by the weights with room, as for
+  `MinCvar`, `MinMad` and `MinCdar` in 0.3.12. A target return at either end of its range, and
+  the frontier's last point, could also put a weight a unit in the last place past its cap:
+  raised from its floor to its cap, `l + (u − l)` isn't always `u`.
+- **Exact zeros from `MinCvar`, `MinMad` and `MinCdar`:** an asset the method doesn't hold has
+  a weight of exactly 0, where it could come back as about `1e-16`, enough for a `w > 0`
+  filter to count it as held: 13 of 279 solves in a sweep had such a weight. A weight within
+  rounding of a bound, a few units in the last place of 1 for each asset, is now put on it.
 - **Rebalancing errors:** with a turnover cap or a net-return target, a solve that fails while
   narrowing down its multiplier is `NotConverged`, as one that fails while bracketing it
   already was, rather than the solve's own error.
 
 ### Changed
 
-- The simplex solver gives up repairing a basis after `100 + 10m` dual pivots for `m` rows,
-  where a dual-degenerate basis could cycle until the iteration cap. No repair measured took
-  more than 7. A warm start that reaches it falls back to solving from scratch.
+- A warm start of the simplex solver, as `MinCdar` makes each round, gives up repairing its
+  basis after `100 + 10m` dual pivots for `m` rows and solves from scratch, where a
+  dual-degenerate basis could cycle until the iteration cap. No repair measured took more
+  than 7. A solve from scratch is as before.
 
 ## [0.3.12] - 2026-11-23
 
