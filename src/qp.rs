@@ -508,6 +508,16 @@ enum Side {
     Upper,
 }
 
+/// `x` within `[lower, upper]`, or NaN if it's NaN, for [`checked`] to reject: `f64::max`
+/// would swap a NaN for the bound, and a failed solve would pass as one at it.
+fn within(x: f64, lower: f64, upper: f64) -> f64 {
+    if x.is_nan() {
+        x
+    } else {
+        x.max(lower).min(upper)
+    }
+}
+
 /// Solves `minimize ½ xᵀQx − cᵀx subject to Eᵀx = b and l ≤ x ≤ u`, and the bounds' [`Rows`],
 /// for a positive semidefinite `Q`, starting from `start`, which must be feasible. This is
 /// [`solve_piecewise`] with no kinks.
@@ -548,7 +558,8 @@ pub(crate) fn solve_bounded(
 /// sets it from the step afterwards. That keeps the block of `Q` the solve factors free of the
 /// slacks' zero curvature.
 ///
-/// The returned `x` is clamped to the bounds, so rounding never leaves an entry outside them.
+/// The returned `x` is clamped to the bounds, so rounding never leaves an entry outside them,
+/// and a variable held at a bound or at its kink is exactly there.
 ///
 /// # Errors
 ///
@@ -603,13 +614,21 @@ pub(crate) fn solve_piecewise(
         start,
         n,
     )?;
-    // Clamped in units, a variable at a bound comes back from them as the bound times its
-    // scale divided by it, which can round a hair past the bound: 0.1 · 3 / 3 is
-    // 0.10000000000000002. So it's clamped again here, as a nudge of rounding.
+    // A variable held at a bound or at its kink is exactly that point in units, the point
+    // times its scale, and dividing by the scale again can round to either side of the point:
+    // 0.1 · 3 / 3 is 0.10000000000000002, and 0.03 · √6 / √6 is 0.029999999999999995. So it
+    // comes back as the point itself, on its bound or at the weight it was to stay at. The
+    // others are clamped again here, as a nudge of rounding.
     let x = DVector::from_fn(n, |i, _| {
-        (u[i] / units.scales[i])
-            .max(bounds.lower[i])
-            .min(bounds.upper[i])
+        let scale = units.scales[i];
+        let held = [bounds.lower[i], bounds.upper[i], kinks.at[i]]
+            .into_iter()
+            .find(|point| point * scale == u[i]);
+        within(
+            held.unwrap_or(u[i] / scale),
+            bounds.lower[i],
+            bounds.upper[i],
+        )
     });
     // Against the problem's own constraints, not the slacks' rows, which only measure each
     // row's sum: the slacks don't come back. A row whose variables all end at 0 leaves its slack
@@ -2420,5 +2439,42 @@ mod tests {
         let bounds = capped(dvector![0.1, 1.0, 1.0]);
         let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.1, 0.45, 0.45]).unwrap();
         assert_eq!(x[0], 0.1);
+    }
+
+    #[test]
+    fn a_weight_held_at_its_floor_or_its_kink_comes_back_exactly_there() {
+        // A variance of 5 scales x₀ by √5, and 0.45 · √5 / √5 rounds to 0.45000000000000007:
+        // inside a floor of 0.45, where clamping doesn't catch it, and off a kink at 0.45.
+        let q = dmatrix![5.0, 0.0, 0.0; 0.0, 1.0, 0.0; 0.0, 0.0, 1.0];
+        let c = DVector::zeros(3);
+        let (e, b) = budget(3);
+        // x₀'s variance holds it at its floor.
+        let floors = Bounds::new(dvector![0.45, 0.0, 0.0], dvector![1.0, 1.0, 1.0]);
+        let x = solve_bounded(&q, &c, &e, &b, &floors, dvector![0.45, 0.275, 0.275]).unwrap();
+        assert_eq!(x[0], 0.45);
+        // A cost of 10 on leaving them holds every variable at its kink.
+        let kinks = Kinks {
+            at: dvector![0.45, 0.3, 0.25],
+            slopes: dvector![10.0, 10.0, 10.0],
+        };
+        let x = solve_piecewise(
+            &q,
+            &c,
+            &e,
+            &b,
+            &capped(dvector![1.0, 1.0, 1.0]),
+            &kinks,
+            kinks.at.clone(),
+        )
+        .unwrap();
+        assert_eq!(x, kinks.at);
+    }
+
+    #[test]
+    fn a_nan_stays_nan_within_bounds() {
+        assert!(within(f64::NAN, 0.0, 1.0).is_nan());
+        assert_eq!(within(1.5, 0.0, 1.0), 1.0);
+        assert_eq!(within(-0.5, 0.0, 1.0), 0.0);
+        assert_eq!(within(0.25, 0.0, 1.0), 0.25);
     }
 }
