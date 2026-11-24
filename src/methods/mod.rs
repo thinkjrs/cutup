@@ -408,6 +408,15 @@ mod tests {
         assert_eq!(x.iter().sum::<f64>() - 1.0, 97.0 * ulp);
         let weights = within_bounds(&x, &bounds);
         assert_eq!(weights, [0.25, 0.5, 0.25]);
+        // But half an ulp is a shortfall: the least a sum below 1 can miss it by. With every
+        // weight on its floor, one of them has to take it. Each has room for just that, with
+        // the others on theirs, and the first does.
+        let floors = [0.5, 0.5 - ulp / 2.0, 0.0];
+        let bounds = plain(&floors, &[1.0; 3]);
+        assert_eq!(1.0 - floors.iter().sum::<f64>(), ulp / 2.0);
+        let weights = within_bounds(&floors, &bounds);
+        assert_eq!(weights, [0.5 + ulp / 2.0, 0.5 - ulp / 2.0, 0.0]);
+        assert_eq!(weights.iter().sum::<f64>(), 1.0);
     }
 
     #[test]
