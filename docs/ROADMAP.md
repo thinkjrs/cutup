@@ -741,19 +741,12 @@ the internals. Its scope is settled when it starts.
   - consistent names, docs and errors across the methods, where that doesn't
     change the API;
   - anything the analysis turns up.
-- **From the 0.3.12 reviews,** in `lp.rs`:
-  - the dual pivots that repair a basis have no stall count or Bland's rule,
-    as the primal ones do, so a dual-degenerate basis could cycle to the
-    iteration cap. A warm start then falls back to a cold solve, so the
-    result is right but slow. Measure how many repair pivots warm starts
-    take, then bound them or add anti-cycling;
-  - `from_basis` repeats `solve_perturbing`'s setup of the `Problem` and its
-    finish: share them;
-  - the QP methods' weights are clamped to their bounds and then scaled to
-    sum to 1, as the LP methods' were until 0.3.12, which can put a capped
-    weight a unit in the last place past its cap. Their property tests have
-    held at `1e-15`, but `within_bounds` belongs next to `normalized`, for
-    every method whose weights have bounds.
+- **From the 0.3.12 reviews,** all three done in the solvers' audit:
+  - the dual pivots that repair a basis are capped at `100 + 10m`, where no
+    repair measured took more than 7;
+  - the warm and cold solves share their finish;
+  - the QP methods meet the budget within the bounds, as the LP methods do,
+    where 48 of 2,000 capped weights in a test had ended past their caps.
 
 ## Later 0.3.x or 1.x
 
