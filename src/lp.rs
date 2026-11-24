@@ -113,6 +113,9 @@ fn solve_perturbing(
     perturbation: f64,
 ) -> Result<(Outcome, Option<Basis>), CutupError> {
     let (m, n) = a.shape();
+    if crossed(lower, upper) {
+        return Ok((Outcome::Infeasible, None));
+    }
     if m == 0 {
         return Ok((unconstrained(c, lower, upper), None));
     }
@@ -234,7 +237,7 @@ fn from_basis(
     warm: &Basis,
 ) -> Option<(Outcome, Option<Basis>)> {
     let (m, n) = a.shape();
-    if m == 0 || warm.basis.len() != m || warm.status.len() != n {
+    if m == 0 || warm.basis.len() != m || warm.status.len() != n || crossed(lower, upper) {
         return None;
     }
     // Each row's basic variable distinct, in range and marked basic, and no other marked so:
@@ -311,6 +314,16 @@ impl Basis {
         self.basis.push(self.status.len());
         self.status.push(Status::Basic);
     }
+}
+
+/// Whether some variable's lower bound is above its upper bound, or either is NaN, so that no
+/// `x` is within them. The simplex method would otherwise hold such a variable at one bound,
+/// past the other, and with no rows `f64::clamp` would panic on it.
+fn crossed(lower: &DVector<f64>, upper: &DVector<f64>) -> bool {
+    lower
+        .iter()
+        .zip(upper.iter())
+        .any(|(l, u)| l.is_nan() || u.is_nan() || l > u)
 }
 
 /// The optimum with no constraints but the bounds: each variable at the bound its cost
@@ -2015,6 +2028,33 @@ mod tests {
             )
             .unwrap(),
             Outcome::Unbounded
+        );
+    }
+
+    #[test]
+    fn bounds_that_cross_are_infeasible() {
+        // x₁'s floor of 2 is above its cap of 1, so no x is within the bounds: with no rows,
+        // where clamping 0 into them would panic, and with a row x₀ + x₁ = 3 that x₀ = 1 and
+        // x₁ at its floor would otherwise meet.
+        let (lower, upper) = (dvector![0.0, 2.0], dvector![INF, 1.0]);
+        let c = dvector![1.0, 0.0];
+        let none = DMatrix::zeros(0, 2);
+        let infeasible = |a: &DMatrix<f64>, b: &DVector<f64>| {
+            solve(&c, a, b, &lower, &upper).unwrap() == Outcome::Infeasible
+        };
+        assert!(infeasible(&none, &DVector::zeros(0)));
+        assert!(infeasible(&dmatrix![1.0, 1.0], &dvector![3.0]));
+        // So is a NaN bound, which no x is within either.
+        assert_eq!(
+            solve(
+                &c,
+                &none,
+                &DVector::zeros(0),
+                &dvector![0.0, f64::NAN],
+                &upper
+            )
+            .unwrap(),
+            Outcome::Infeasible
         );
     }
 }
