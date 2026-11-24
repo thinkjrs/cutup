@@ -23,8 +23,39 @@ All notable changes to this project are documented here. The format follows
 - **Rebalancing errors:** with a turnover cap or a net-return target, a solve that fails while
   narrowing down its multiplier is `NotConverged`, as one that fails while bracketing it
   already was, rather than the solve's own error.
+- **Rebalancing that trades nothing:** a turnover cap of 0, and costs or a penalty that leave
+  no trade worth making, return the current weights as they are, as `max_turnover`'s docs
+  say. They came back up to `3e-15` away, in 1,570 of 2,000 cases of a sweep: meeting the
+  budget again moved one of them.
+  - **Leveraged current weights:** a cap of 0 from long-short current weights such as 65 and
+    -64, which sum to 1 only to an ulp of 65, failed with `InfeasibleTurnover`.
+- **A target return with transaction costs, on returns of any scale:** long-short, it failed
+  with `NotConverged` on returns scaled down by about `1e-8`. The search for the target's
+  multiplier started at 1 whatever the data's scale, and it now starts at the scale of the
+  variances over the returns.
+- **The order of rebalancing's errors:** with trading settings, `MinVariance` and a risk
+  aversion reported what's wrong with the data, such as a constant asset, before what's wrong
+  with the settings, the bounds or the cap. Every method now reports its settings first, and
+  a test holds each of them to it.
+- **A turnover penalty above half of `f64::MAX`:** `MeanVariance` failed with
+  `NonFiniteCovariance`, where `MinVariance` held the current weights.
+- **`MaxSharpe`, long-short, on extreme inputs:**
+  - with a variance below about `5.6e-309`, whose inverse isn't finite, a risk-free rate
+    above the minimum variance portfolio's return got the portfolio with the lowest Sharpe
+    ratio rather than `RiskFreeRateTooHigh`;
+  - with expected returns and a rate near `±f64::MAX`, whose difference overflows, it failed
+    with `SingularCovariance`.
+- **`Hrp` and `Herc` on variances near `f64::MAX`:** two branches' risks summed to infinity,
+  and one branch took all of the weight, or the split was NaN.
+- **`RollingAllocation::count`:** it allocated every window to count them. It now allocates
+  none.
 
 ### Changed
+
+- `MeanVariance::target_volatility` within bounds checks its portfolio against the frontier's
+  own at the same return, at the cost of one more solve. Its search stops early between two
+  portfolios that hold the same assets, which it reads from their weights, and those round:
+  where the check fails, it bisects to the end instead. No result changes.
 
 - A warm start of the simplex solver, as `MinCdar` makes each round, gives up repairing its
   basis after `100 + 10m` dual pivots for `m` rows and solves from scratch, where a
