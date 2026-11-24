@@ -5556,26 +5556,26 @@
         {
           "metric": "impressions",
           "stats": {
-            "average_drawdown": 78.0226287725184,
+            "average_drawdown": 78.02262877251842,
             "cdar": 161.43434010245477,
             "cvar": 0.6826067778483499,
-            "diversification_ratio": 1.0000000000000002,
+            "diversification_ratio": 1.0,
             "downside_mad": 0.4249209317785926,
             "expected_return": -0.4243918237099257,
-            "mad": 0.10487125614031227,
+            "mad": 0.10487125614031223,
             "max_drawdown": 167.63477036542065,
             "risk_contributions": [
-              0.9999999999999999,
+              1.0,
               0.0,
-              1.6226517564446766e-16
+              0.0
             ],
-            "sharpe_ratio": -3.0463463869521115,
-            "volatility": 0.13931174259357038
+            "sharpe_ratio": -3.046346386952112,
+            "volatility": 0.13931174259357035
           },
           "weights": {
             "Google": 0.0,
             "Meta": 1.0,
-            "TikTok": 9.566532193620101e-17
+            "TikTok": 0.0
           }
         },
         {
