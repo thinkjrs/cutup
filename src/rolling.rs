@@ -142,13 +142,18 @@ impl<A: Allocation> RollingAllocation<'_, A> {
     }
 }
 
-/// Skipping windows, with `nth`, `skip`, `last` or from the back, allocates only those reached.
+/// Skipping windows, with `nth`, `skip`, `last` or from the back, allocates only those reached,
+/// and counting them allocates none.
 impl<A: Allocation> Iterator for RollingAllocation<'_, A> {
     type Item = Window;
 
     fn next(&mut self) -> Option<Window> {
         let k = self.windows.next()?;
         Some(self.window(k))
+    }
+
+    fn count(self) -> usize {
+        self.windows.len()
     }
 
     fn nth(&mut self, n: usize) -> Option<Window> {
@@ -321,6 +326,11 @@ mod tests {
         let all = data.rolling(2).allocate(&method).unwrap();
         assert_eq!(all.last().unwrap().periods(), 10..12);
         assert_eq!(method.0.get(), 4);
+        // Counting the windows, or those left, allocates none of them.
+        let mut windows = data.rolling(2).allocate(&method).unwrap();
+        assert_eq!(windows.nth(2).unwrap().periods(), 2..4);
+        assert_eq!(windows.count(), 8);
+        assert_eq!(method.0.get(), 5);
         let backward: Vec<_> = data
             .rolling(5)
             .step(4)
