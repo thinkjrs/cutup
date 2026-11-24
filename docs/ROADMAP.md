@@ -747,15 +747,26 @@ the internals. Its scope is settled when it starts.
   - the warm and cold solves share their finish;
   - the QP methods meet the budget within the bounds, as the LP methods do,
     where 48 of 2,000 capped weights in a test had ended past their caps.
-- **From the solvers' audit,** for the methods' audit:
-  - a turnover cap of 0 returns the current weights only to rounding, up to
-    `3e-16` away, where `max_turnover`'s docs say it keeps them: the solver
-    now holds each at its current weight exactly, but meeting the budget can
-    still move one, since the current weights divided by their sum needn't
-    sum to exactly 1. Return them as they are;
-  - `held`, which reads a solution's active set back from its weights for
-    the target-volatility search, is the reason that search depends on how
-    weights round. The solver knows which variables it holds: pass that out.
+- **From the solvers' audit,** both done in the methods' audit:
+  - a turnover cap of 0, and costs or a penalty that leave no trade worth
+    making, return the current weights as they are;
+  - the target-volatility search no longer depends on how weights round. It
+    still reads which assets a portfolio holds from its weights, to stop
+    early, but checks the point it takes there against the frontier, and
+    bisects to the end where that fails. Passing the solver's own active
+    set out wouldn't have been enough: the frontier's ends are solved within
+    other bounds than the user's, so their sets don't compare.
+- **Consistent errors across the methods,** checked in the methods' audit:
+  every method reports what's wrong with its settings before what's wrong
+  with the data, which a test now holds each of them to. Rebalancing with
+  `MinVariance` or a risk aversion was the one exception.
+- **From the methods' audit,** for the analysis PR: with transaction costs
+  within about `1e-3` of half the spread of the expected returns, a
+  long-short net-return target fails in 865 of 400,000 forced cases of its
+  property test, as it did on 0.3.12. A trade from the lowest return to the
+  highest then nets almost nothing, and the weights that reach the target
+  are leveraged by thousands. Find which error it is, and whether that's
+  the right one to report.
 
 ## Later 0.3.x or 1.x
 
