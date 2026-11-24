@@ -41,9 +41,10 @@ impl Trading {
     }
 
     /// Checks the settings for the assets `labels`, returning the current weights, if any,
-    /// rescaled to sum to exactly 1: within `1e-9` of it counts as rounding, but a turnover cap
-    /// of 0 could never be met from weights that sum to anything else. Current weights by asset
-    /// are 0 for the assets they leave out. Returns the transaction costs per asset too.
+    /// divided by their sum, so that they sum to 1 but for that division's rounding: a sum
+    /// within `1e-9` of 1 counts as rounding, but a turnover cap of 0 could never be met from
+    /// weights that far from it. Current weights by asset are 0 for the assets they leave out.
+    /// Returns the transaction costs per asset too.
     pub(crate) fn check(&self, labels: &[String]) -> Result<Checked, CutupError> {
         let n = labels.len();
         let nonnegative = |field: &'static str, value: f64| {
@@ -100,7 +101,7 @@ impl Trading {
 
 /// The settings [`Trading::check`] has checked, in column order.
 pub(crate) struct Checked {
-    /// The current weights, if any, summing to exactly 1.
+    /// The current weights, if any, divided by their sum: summing to 1 but for its rounding.
     pub(crate) current: Option<DVector<f64>>,
     /// The transaction costs per asset, 0 without any.
     pub(crate) costs: DVector<f64>,
@@ -141,7 +142,8 @@ pub(crate) fn rebalance(
     let penalty = (curvature * trading.penalty.unwrap_or(0.0)).min(f64::MAX);
     let q = q()? + DMatrix::identity(n, n) * penalty;
     // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds.
-    // After `q`, so that what's wrong with the data is reported whatever the cap.
+    // After `q` is built, so that what building it finds wrong with the data, such as an asset
+    // that never moves, is reported whatever the cap.
     if trading.max_turnover == Some(0.0) && within(&current, &bounds) {
         return Ok(data.weights(kept(&current)));
     }
@@ -178,15 +180,6 @@ pub(crate) fn rebalance(
 /// Whether each of `weights` is within its own `bounds`, exactly.
 fn within(weights: &DVector<f64>, bounds: &qp::Bounds) -> bool {
     (0..weights.len()).all(|i| bounds.lower[i] <= weights[i] && weights[i] <= bounds.upper[i])
-}
-
-/// Whether `weights` meet `eᵀw = b`, each constraint to the rounding of its sum.
-fn on(weights: &DVector<f64>, e: &DMatrix<f64>, b: &DVector<f64>) -> bool {
-    e.column_iter().zip(b.iter()).all(|(column, &target)| {
-        let terms = column.component_mul(weights);
-        let rounding = qp::sum_rounding(terms.len(), terms.amax().max(target.abs()));
-        (terms.sum() - target).abs() <= rounding
-    })
 }
 
 /// The `current` weights as the weights to hold, as they are: the answer when nothing is
@@ -288,10 +281,11 @@ pub(crate) fn rebalance_to_target(
     if minimum > cap + rounding {
         return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
-    // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds and
-    // at the target. If they're only within the rounding above of either, the solver finds the
-    // portfolio that close to them that is.
-    if cap == 0.0 && within(&current, &bounds) && on(&current, &e, &b) {
+    // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds.
+    // They're at the target, or within the rounding above of it, or the least turnover to it
+    // would be above the cap: no trade is what a cap of 0 asks for, rather than one of that
+    // rounding to meet the target to the last place.
+    if cap == 0.0 && within(&current, &bounds) {
         return Ok(data.weights(kept(&current)));
     }
     // Half of wᵀΣw + κ‖w − w₀‖², less a constant: ½wᵀ(Σ + κI)w − κw₀ᵀw.
@@ -399,13 +393,17 @@ pub(crate) fn rebalance_to_net_target(
     // The net return is a sum over the assets, which rounds by a few ulps of its terms.
     let slack = |w: &DVector<f64>| qp::sum_rounding(n, net_terms(&mu, &costs, &current, w));
     // The search doubles λ from its first value until it nets the target, then narrows it
-    // down, so it finds λ from any first value the solver can handle.
-    let weights = qp::search_multiplier(
-        solve,
-        (-target, slack),
-        first_multiplier(&q, &mu, &costs),
-        start,
-    )?;
+    // down, so it finds λ from any first value the solver can handle. From the data's own
+    // scale and, if the search doesn't converge from there, from 1, where it started before
+    // that: neither start suits every problem. With one asset's returns far larger than the
+    // rest, the scale is that asset's, and the solver can break down at a multiplier that
+    // doubling from 1 never visits, as it can the other way round.
+    let search =
+        |first: f64| qp::search_multiplier(&solve, (-target, &slack), first, start.clone());
+    let weights = match search(first_multiplier(&q, &mu, &costs)) {
+        Err(CutupError::NotConverged) => search(1.0)?,
+        found => found?,
+    };
     Ok(data.weights(fully_invested(weights, &bounds, &current)))
 }
 
@@ -1069,6 +1067,11 @@ mod tests {
             let method = method.current_weights(current).max_turnover(0.0);
             assert_eq!(method.allocate(&data).unwrap().as_slice(), scaled(current));
         }
+        // With room to trade, they're where the rebalance starts, not where it ends: the target
+        // they already meet is reached with less variance.
+        let free = MeanVariance::target_return(held).current_weights(current);
+        let weights = free.max_turnover(0.5).allocate(&data).unwrap();
+        assert!(turnover(&weights, current) > 0.1, "{weights:?}");
         // Above what they return, net of any costs, no trade reaches the target.
         let above = MeanVariance::target_return(held + 1e-6).current_weights(current);
         assert!(matches!(
@@ -1199,6 +1202,44 @@ mod tests {
             assert_eq!(min_variance, zero_variance);
             assert_eq!(risk_aversion, zero_variance);
         }
+    }
+
+    #[test]
+    fn the_net_targets_search_starts_at_the_datas_scale() {
+        // The largest variance, 4, over the largest return, 1.5, plus the largest cost, 0.5.
+        let q = dmatrix![1.0, 0.5; 0.5, 4.0];
+        let (mu, costs) = (dvector![-1.5, 0.5], dvector![0.25, 0.5]);
+        assert_eq!(first_multiplier(&q, &mu, &costs), 2.0);
+        // And from 1 where that's no scale to start at: no returns or costs to divide by, or
+        // no variance at all.
+        let nothing = DVector::zeros(2);
+        assert_eq!(first_multiplier(&q, &nothing, &nothing), 1.0);
+        assert_eq!(first_multiplier(&DMatrix::zeros(2, 2), &mu, &costs), 1.0);
+    }
+
+    #[test]
+    fn a_net_target_the_scaled_start_misses_is_found_from_one() {
+        // The third asset's returns are a million times the others', so the largest variance
+        // over the largest return is its own, 4e6. Narrowing down from there, a solve at a
+        // multiplier of 7.79e3 breaks down, and the search doesn't converge: from 1, where it
+        // used to start, it never tries that multiplier, and finds the target.
+        let returns = dmatrix![
+             0.010, -0.020,  0.005e6;
+            -0.004,  0.015,  0.002e6;
+             0.007,  0.003, -0.006e6;
+             0.002, -0.001,  0.004e6;
+            -0.003,  0.006,  0.001e6
+        ];
+        let data = Returns::returns_matrix(returns).unwrap();
+        let method = MeanVariance::target_return(600.0003)
+            .current_weights([0.5, 0.5, 0.0])
+            .transaction_costs(0.0004);
+        let weights = data.allocate(&method).unwrap();
+        let mu = data.expected_returns(None).unwrap();
+        let net = mu.dot(&DVector::from_column_slice(weights.as_slice()))
+            - 0.0004 * turnover(&weights, [0.5, 0.5, 0.0]);
+        assert!((net - 600.0003).abs() < 1e-9 * 600.0, "{net}");
+        assert!((weights[0] - 0.5).abs() < 1e-12, "{weights:?}");
     }
 
     #[test]
