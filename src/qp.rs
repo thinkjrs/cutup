@@ -603,13 +603,21 @@ pub(crate) fn solve_piecewise(
         start,
         n,
     )?;
+    // Clamped in units, a variable at a bound comes back from them as the bound times its
+    // scale divided by it, which can round a hair past the bound: 0.1 · 3 / 3 is
+    // 0.10000000000000002. So it's clamped again here, as a nudge of rounding.
+    let x = DVector::from_fn(n, |i, _| {
+        (u[i] / units.scales[i])
+            .max(bounds.lower[i])
+            .min(bounds.upper[i])
+    });
     // Against the problem's own constraints, not the slacks' rows, which only measure each
     // row's sum: the slacks don't come back. A row whose variables all end at 0 leaves its slack
     // at rounding of 0, which, against no other term, is all residual. The rows' limits are
     // checked on x itself.
     let m = e.ncols() - rows.a.ncols();
     let x = checked(
-        units.original(&u).rows(0, n).into_owned(),
+        x,
         &e.view((0, 0), (n, m)).into_owned(),
         &b.rows(0, m).into_owned(),
         &units.column_scales[..m],
@@ -1115,17 +1123,18 @@ pub(crate) fn search_multiplier(
     {
         return Ok(x.clone());
     }
+    // The problem itself solved at λ = 0, so a failure only at a larger λ, while bracketing it
+    // or narrowing it down, is its arithmetic breaking down short of the limit: no λ the solver
+    // can handle reaches it. Unless the objective has no minimum, which no larger λ changes.
+    let past_zero = |error: CutupError| match error {
+        CutupError::Unbounded => error,
+        _ => CutupError::NotConverged,
+    };
     let mut low = 0.0;
     let mut warm = unconstrained.unwrap_or(start);
     let mut high = first;
     let (mut high_value, mut best) = loop {
-        // The problem itself solved at λ = 0, so a failure only at a larger λ is its arithmetic
-        // breaking down short of the limit: no λ the solver can handle reaches it. Unless the
-        // objective has no minimum, which no larger λ changes.
-        let solved = solve(high, warm.clone()).map_err(|error| match error {
-            CutupError::Unbounded => error,
-            _ => CutupError::NotConverged,
-        })?;
+        let solved = solve(high, warm.clone()).map_err(past_zero)?;
         match solved {
             (value, Some(x)) if value <= limit + slack(&x) => break (value, x),
             (value, x) => {
@@ -1152,7 +1161,7 @@ pub(crate) fn search_multiplier(
         if middle <= low || middle >= high {
             return Ok(best);
         }
-        match solve(middle, best.clone())? {
+        match solve(middle, best.clone()).map_err(past_zero)? {
             (value, Some(x)) if value <= limit + slack(&x) => {
                 (high, high_value, best) = (middle, value, x);
             }
@@ -1931,6 +1940,21 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_while_narrowing_the_multiplier_down_is_not_converging() {
+        // g(λ) = 10 − λ, limit 3, bracketed between 4 and 8 as above, but the solve between
+        // them fails: that's the arithmetic breaking down, as it is while bracketing.
+        let solve = |lambda: f64, _: DVector<f64>| {
+            if lambda > 4.0 && lambda < 8.0 {
+                Err(CutupError::SingularCovariance)
+            } else {
+                Ok((10.0 - lambda, Some(dvector![lambda])))
+            }
+        };
+        let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), 1.0, dvector![0.0]);
+        assert_eq!(x, Err(CutupError::NotConverged));
+    }
+
+    #[test]
     fn the_turnover_search_starts_where_every_variable_can_stay_at_its_kink() {
         // Qa − c = [2 − 1, 2 − 0], so the largest pull is 2.
         let kinks = Kinks {
@@ -2384,5 +2408,17 @@ mod tests {
             with_slack_steps(step.clone(), (&[0, 1], &[]), &e, None),
             step
         );
+    }
+
+    #[test]
+    fn a_weight_held_at_its_cap_comes_back_at_it_from_units() {
+        // A variance of 9 scales x₀ by 3, and 0.1 · 3 / 3 rounds to 0.10000000000000002: held
+        // at its cap of 0.1 in units, x₀ would come back a hair past it.
+        let q = dmatrix![9.0, 0.0, 0.0; 0.0, 1.0, 0.0; 0.0, 0.0, 1.0];
+        let c = dvector![10.0, 0.0, 0.0];
+        let (e, b) = budget(3);
+        let bounds = capped(dvector![0.1, 1.0, 1.0]);
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.1, 0.45, 0.45]).unwrap();
+        assert_eq!(x[0], 0.1);
     }
 }
