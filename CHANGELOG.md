@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Caps on `MinVariance`, `MeanVariance` and rebalancing:** each weight stays within its
+  bounds. The solver clamped the weights in its own units, and converting them back and then
+  scaling them to sum to 1 could put a weight at its cap a few units in the last place past
+  it: 48 of 2,000 capped weights did in a test. They're now clamped in the original units, and
+  the budget is met by the weights with room, as for `MinCvar`, `MinMad` and `MinCdar` in
+  0.3.12.
+- **Exact zeros from `MinCvar`, `MinMad` and `MinCdar`:** a weight the program leaves at 0
+  stays 0, where meeting the budget could give it about `1e-16`, enough for a `w > 0` filter
+  to count it as held.
+- **Rebalancing errors:** with a turnover cap or a net-return target, a solve that fails while
+  narrowing down its multiplier is `NotConverged`, as one that fails while bracketing it
+  already was, rather than the solve's own error.
+
+### Changed
+
+- The simplex solver gives up repairing a basis after `100 + 10m` dual pivots for `m` rows,
+  where a dual-degenerate basis could cycle until the iteration cap. No repair measured took
+  more than 7. A warm start that reaches it falls back to solving from scratch.
+
 ## [0.3.12] - 2026-11-23
 
 ### Added
