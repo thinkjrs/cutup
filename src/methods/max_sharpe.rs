@@ -185,11 +185,12 @@ impl Returns {
         let cov = self.adjusted_covariance(covariance)?;
         let n = cov.ncols();
         let ones = DVector::from_element(n, 1.0);
-        // The expected returns and the rate over a power of two just past the largest of them
-        // in size, as long-only divides them by the largest: exact, and the weights don't
-        // depend on their scale, but a rate of -1.7e308 under a return of 1.7e308 is an excess
-        // return past f64::MAX otherwise. Only the return an error reports is scaled back.
-        let exponent = binary_exponent(risk_free_rate.abs().max(mu.amax())) + 1;
+        // The expected returns and the rate over the power of two at the largest of them in
+        // size, as long-only divides them by the largest: exact, and the weights don't depend
+        // on their scale, but a rate of -1.7e308 under a return of 1.7e308 is an excess return
+        // past f64::MAX otherwise. Each is then below 2 in size, and an excess return below 4.
+        // Only the return an error reports is scaled back.
+        let exponent = binary_exponent(risk_free_rate.abs().max(mu.amax()));
         let rate = pow2_scaled(risk_free_rate, -exponent);
         let mu = mu.map(|m| pow2_scaled(m, -exponent));
         let excess = mu.add_scalar(-rate);
