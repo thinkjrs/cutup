@@ -3,7 +3,7 @@
 
 use crate::asset::check_values;
 use crate::bounds::{ReturnRange, TargetProblem, feasible_start};
-use crate::methods::within_bounds;
+use crate::methods::{normalized, within_bounds};
 use crate::{CutupError, PerAsset, Returns, WeightBounds, Weights, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
@@ -155,7 +155,19 @@ pub(crate) fn rebalance(
         }
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
     };
-    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
+    Ok(data.weights(fully_invested(weights, &bounds)))
+}
+
+/// The solver's `weights`, summing to 1: [within `bounds`](within_bounds) where they're finite,
+/// or long-short, with none to keep, [scaled](normalized) to it. With every bound infinite,
+/// every weight has the same room, and `within_bounds` would leave all of the rounding to the
+/// first asset, even one the solver left at 0, where scaling leaves a 0 at 0.
+fn fully_invested(weights: DVector<f64>, bounds: &qp::Bounds) -> Vec<f64> {
+    if bounds.lower.iter().all(|l| l.is_finite()) {
+        within_bounds(weights.as_slice(), bounds)
+    } else {
+        normalized(weights)
+    }
 }
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with expected return
@@ -241,7 +253,7 @@ pub(crate) fn rebalance_to_target(
         (&kinks, cap.max(minimum + rounding)),
         start,
     )?;
-    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
+    Ok(data.weights(fully_invested(weights, &bounds)))
 }
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with a net return
@@ -327,7 +339,7 @@ pub(crate) fn rebalance_to_net_target(
     // The search doubles λ from 1 until it nets the target, then narrows it down, so it finds
     // λ from any start.
     let weights = qp::search_multiplier(solve, (-target, slack), 1.0, start)?;
-    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
+    Ok(data.weights(fully_invested(weights, &bounds)))
 }
 
 /// The least turnover `Σᵢ|wᵢ − w₀ᵢ|` from `current` to a portfolio with `eᵀw = b` within
@@ -521,7 +533,7 @@ fn minimum_turnover(current: &DVector<f64>, bounds: &qp::Bounds) -> Result<f64, 
 mod tests {
     use super::*;
     use crate::{Allocation, MeanVariance, MinVariance, Returns, WeightBounds};
-    use nalgebra::dmatrix;
+    use nalgebra::{dmatrix, dvector};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -1062,5 +1074,25 @@ mod tests {
             method(highest + 2.0 * rounding).allocate(&allocator()),
             Err(CutupError::TargetReturnOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn fully_invested_weights_keep_zeros_long_short_and_caps_long_only() {
+        // Long-short, every weight has infinite room, and meeting the budget within the bounds
+        // would give all of the rounding to the first, the one the solver left at 0: scaled to
+        // 1, it stays 0.
+        let short = dvector![0.0, 0.625, 0.375 - 3e-16];
+        let unbounded = qp::Bounds::new(
+            DVector::from_element(3, -f64::INFINITY),
+            DVector::from_element(3, f64::INFINITY),
+        );
+        let weights = fully_invested(short, &unbounded);
+        assert_eq!(weights[0], 0.0);
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
+        // With finite bounds, within them: a weight at its cap stays there, where scaling to 1
+        // would move it past.
+        let capped = qp::Bounds::new(DVector::zeros(3), dvector![0.5, 1.0, 1.0]);
+        let weights = fully_invested(dvector![0.5, 0.3, 0.2 - 3e-15], &capped);
+        assert_eq!(weights[0], 0.5);
     }
 }
