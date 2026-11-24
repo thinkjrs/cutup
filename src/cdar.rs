@@ -354,11 +354,7 @@ mod tests {
                 .bounds(WeightBounds::uniform(lower, upper));
             let weights = data.allocate(&method).unwrap();
             assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-            assert!(
-                weights
-                    .iter()
-                    .all(|&w| (lower - 1e-15..=upper + 1e-15).contains(&w))
-            );
+            assert!(weights.iter().all(|&w| (lower..=upper).contains(&w)));
             let cdar = data.cdar(&weights, beta).unwrap();
             let best = primal(&data, beta, (lower, upper), None);
             assert!(

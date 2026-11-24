@@ -391,11 +391,7 @@ mod tests {
                     (largest - worst / unit).abs() <= 1e-15,
                     "{largest} vs {worst}"
                 );
-                assert!(
-                    weights
-                        .iter()
-                        .all(|&x| (0.05 - 1e-15..=0.4 + 1e-15).contains(&x))
-                );
+                assert!(weights.iter().all(|&x| (0.05..=0.4).contains(&x)));
                 assert!((0.3 - 1e-15..=0.5 + 1e-15).contains(&(weights[0] + weights[1])));
                 assert!(weights[2] + weights[3] + weights[4] <= 0.6 + 1e-15);
                 if let Some(target) = target {
@@ -436,7 +432,7 @@ mod tests {
                 (worst - scratch).abs() <= 1e-12 * scratch.abs().max(1.0),
                 "{k}: {worst} vs {scratch}"
             );
-            assert!(weights.iter().all(|&w| (-1e-15..=0.5 + 1e-15).contains(&w)));
+            assert!(weights.iter().all(|&w| (0.0..=0.5).contains(&w)));
         }
     }
 

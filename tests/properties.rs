@@ -274,10 +274,7 @@ fn assert_bounded_optimum(
 ) -> Result<(), TestCaseError> {
     let n = w.len();
     for i in 0..n {
-        prop_assert!(
-            w[i] >= lower[i] - 1e-15 && w[i] <= upper[i] + 1e-15,
-            "asset {i}: {w:?}"
-        );
+        prop_assert!(w[i] >= lower[i] && w[i] <= upper[i], "asset {i}: {w:?}");
     }
     prop_assert!((w.sum() - 1.0).abs() < 1e-12, "sums to {}", w.sum());
     let can_shrink = (0..n).filter(|&i| w[i] > lower[i] + 1e-9);
@@ -1646,7 +1643,7 @@ proptest! {
         // least that on assets at their floor, and at most on assets at their cap. Fitting λ
         // needs two such assets with expected returns that differ by more than rounding.
         for i in 0..n {
-            prop_assert!(w[i] >= lower[i] - 1e-15 && w[i] <= upper[i] + 1e-15, "asset {i}: {w:?}");
+            prop_assert!(w[i] >= lower[i] && w[i] <= upper[i], "asset {i}: {w:?}");
         }
         prop_assert!((w.sum() - 1.0).abs() < 1e-12, "sums to {}", w.sum());
         let marginal = &cov * &w;
@@ -2250,7 +2247,7 @@ proptest! {
             .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
         let weights = allocator.allocate(&bounded).unwrap();
         for i in 0..n {
-            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+            prop_assert!(weights[i] >= lower[i] && weights[i] <= upper[i]);
         }
         // Any target between the bounded portfolio's own return and the highest inside the
         // bounds is reachable, as for min CVaR.
@@ -2267,7 +2264,7 @@ proptest! {
         let target = own + mix * (highest - own);
         let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
         for i in 0..n {
-            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+            prop_assert!(targeted[i] >= lower[i] && targeted[i] <= upper[i]);
         }
         let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
@@ -2291,7 +2288,7 @@ proptest! {
         }
         let weights = allocator.allocate(&bounded).unwrap();
         for i in 0..n {
-            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+            prop_assert!(weights[i] >= lower[i] && weights[i] <= upper[i]);
         }
         // Any target between the bounded portfolio's own return and the highest inside the
         // bounds is reachable, as for min CVaR.
@@ -2308,7 +2305,7 @@ proptest! {
         let target = own + mix * (highest - own);
         let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
         for i in 0..n {
-            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+            prop_assert!(targeted[i] >= lower[i] && targeted[i] <= upper[i]);
         }
         let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");
@@ -2330,7 +2327,7 @@ proptest! {
             .bounds(WeightBounds::per_asset(lower.clone(), upper.clone()));
         let weights = allocator.allocate(&bounded).unwrap();
         for i in 0..n {
-            prop_assert!(weights[i] >= lower[i] - 1e-15 && weights[i] <= upper[i] + 1e-15);
+            prop_assert!(weights[i] >= lower[i] && weights[i] <= upper[i]);
         }
         // The highest return inside the bounds: every asset at its floor, then what's left of
         // the budget to the highest means, each up to its cap. Any target between that and the
@@ -2348,7 +2345,7 @@ proptest! {
         let target = own + mix * (highest - own);
         let targeted = allocator.allocate(&bounded.target_return(target)).unwrap();
         for i in 0..n {
-            prop_assert!(targeted[i] >= lower[i] - 1e-15 && targeted[i] <= upper[i] + 1e-15);
+            prop_assert!(targeted[i] >= lower[i] && targeted[i] <= upper[i]);
         }
         let achieved: f64 = targeted.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         prop_assert!((achieved - target).abs() <= 1e-12 * mu.amax().max(1e-3), "{achieved} vs {target}");

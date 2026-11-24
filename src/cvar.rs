@@ -371,11 +371,7 @@ mod tests {
                     .target_return(target),
             )
             .unwrap();
-        assert!(
-            weights
-                .iter()
-                .all(|&w| (0.1 - 1e-15..=0.5 + 1e-15).contains(&w))
-        );
+        assert!(weights.iter().all(|&w| (0.1..=0.5).contains(&w)));
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - target).abs() < 1e-15, "{achieved} vs {target}");
     }

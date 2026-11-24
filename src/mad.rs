@@ -241,11 +241,7 @@ mod tests {
                 .allocate(&MinMad::default().bounds(bounds.clone()))
                 .unwrap();
             assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-            assert!(
-                weights
-                    .iter()
-                    .all(|&w| (lower - 1e-15..=upper + 1e-15).contains(&w))
-            );
+            assert!(weights.iter().all(|&w| (lower..=upper).contains(&w)));
             let mad = data.mad(&weights).unwrap();
             let best = primal(&data, None, (lower, upper));
             assert!((mad - best).abs() <= 1e-13, "{upper}: {mad} vs {best}");
@@ -300,7 +296,7 @@ mod tests {
             .target_return(target);
         for method in [method.clone(), method.downside(0.0)] {
             let weights = data.allocate(&method).unwrap();
-            assert!(weights.iter().all(|&w| (-1e-15..=0.5 + 1e-15).contains(&w)));
+            assert!(weights.iter().all(|&w| (0.0..=0.5).contains(&w)));
             let group: f64 = weights.iter().take(3).sum();
             assert!((0.2 - 1e-12..=0.4 + 1e-12).contains(&group), "{group}");
             let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
