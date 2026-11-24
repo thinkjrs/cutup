@@ -3,7 +3,7 @@
 
 use crate::asset::check_values;
 use crate::bounds::{ReturnRange, TargetProblem, feasible_start};
-use crate::methods::normalized;
+use crate::methods::within_bounds;
 use crate::{CutupError, PerAsset, Returns, WeightBounds, Weights, lp, qp};
 use nalgebra::{DMatrix, DVector};
 
@@ -155,7 +155,7 @@ pub(crate) fn rebalance(
         }
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
     };
-    Ok(data.weights(normalized(weights)))
+    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
 }
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with expected return
@@ -241,7 +241,7 @@ pub(crate) fn rebalance_to_target(
         (&kinks, cap.max(minimum + rounding)),
         start,
     )?;
-    Ok(data.weights(normalized(weights)))
+    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
 }
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with a net return
@@ -327,7 +327,7 @@ pub(crate) fn rebalance_to_net_target(
     // The search doubles λ from 1 until it nets the target, then narrows it down, so it finds
     // λ from any start.
     let weights = qp::search_multiplier(solve, (-target, slack), 1.0, start)?;
-    Ok(data.weights(normalized(weights)))
+    Ok(data.weights(within_bounds(weights.as_slice(), &bounds)))
 }
 
 /// The least turnover `Σᵢ|wᵢ − w₀ᵢ|` from `current` to a portfolio with `eᵀw = b` within

@@ -1,7 +1,7 @@
 //! [`MeanVariance`]: Markowitz mean-variance optimization.
 
 use super::min_variance::{bounded_min_variance, min_variance};
-use super::{correlation, in_null_space, long_only_weights, normalized};
+use super::{correlation, in_null_space, long_only_weights, within_bounds};
 use crate::bounds::{ReturnRange, feasible_start};
 use crate::turnover::{Costs, Trading};
 use crate::{
@@ -821,7 +821,7 @@ fn bounded_target_volatility(
     let highest = range.highest();
     let top = at(highest)?;
     if risk.volatility(&top) <= target {
-        return Ok(normalized(top));
+        return Ok(within_bounds(top.as_slice(), bounds));
     }
     let (mut low, mut high) = ((mu.dot(&minimum), minimum), (highest, top));
     for _ in 0..200 {
@@ -855,7 +855,7 @@ fn bounded_target_volatility(
         reason = "f64::max drops a NaN from 0 / 0, which clamp keeps"
     )]
     let t = larger_root(a, b, gap).max(0.0).min(1.0);
-    Ok(normalized(low.1 + d * t))
+    Ok(within_bounds((low.1 + d * t).as_slice(), bounds))
 }
 
 /// The larger root `t` of `at² + 2bt = gap`, for `a ≥ 0` and `gap ≥ 0`, in whichever form
