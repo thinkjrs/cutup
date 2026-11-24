@@ -181,13 +181,7 @@ fn solve_perturbing(
     }
 
     let cost = c.clone().resize_vertically(n + m, 0.0);
-    match problem.minimize(&cost, Perturbation::Off)? {
-        None => Ok((Outcome::Unbounded, None)),
-        Some(y) => Ok((
-            Outcome::Optimal(problem.solution(c, &y, &scales)),
-            problem.basis_of(n),
-        )),
-    }
+    problem.finish(c, &cost, Perturbation::Off, &scales)
 }
 
 /// [`solve`], from `warm`, an earlier optimum's [`Basis`] for this problem, if it can start
@@ -275,13 +269,7 @@ fn from_basis(
         status: warm.status.clone(),
         perturbation: PERTURBATION,
     };
-    match problem.minimize(c, Perturbation::Repairing).ok()? {
-        None => Some((Outcome::Unbounded, None)),
-        Some(y) => Some((
-            Outcome::Optimal(problem.solution(c, &y, &scales)),
-            problem.basis_of(n),
-        )),
-    }
+    problem.finish(c, c, Perturbation::Repairing, &scales).ok()
 }
 
 /// Each row of `a` and `b` divided by the row's largest entry in `a`, and those entries, so
@@ -485,6 +473,25 @@ impl Problem {
             x,
             y: y.component_div(scales),
         }
+    }
+
+    /// Minimizes `cost` from `start`, as [`Problem::minimize`], and gives the outcome in the
+    /// problem's own variables, `c`'s, with the basis it ends at if a later solve can start
+    /// there.
+    fn finish(
+        &mut self,
+        c: &DVector<f64>,
+        cost: &DVector<f64>,
+        start: Perturbation,
+        scales: &DVector<f64>,
+    ) -> Result<(Outcome, Option<Basis>), CutupError> {
+        Ok(match self.minimize(cost, start)? {
+            None => (Outcome::Unbounded, None),
+            Some(y) => (
+                Outcome::Optimal(self.solution(c, &y, scales)),
+                self.basis_of(c.len()),
+            ),
+        })
     }
 
     /// The basis as a start for a later solve, if every basic variable is one of the problem's
