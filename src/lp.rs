@@ -155,6 +155,7 @@ fn solve_perturbing(
             .chain(std::iter::repeat_n(Status::Basic, m))
             .collect(),
         perturbation,
+        repairs: usize::MAX,
     };
     for i in 0..m {
         problem.x[n + i] = residual[i].abs();
@@ -195,8 +196,9 @@ fn solve_perturbing(
 /// the primal method carries on from there. Far fewer pivots than from scratch, which starts
 /// from a basis of artificial variables.
 ///
-/// Anything that goes wrong from the warm start, such as a basis that can't be factored or a
-/// variable nothing can bring back, falls back to solving from scratch. A warm optimum meets
+/// Anything that goes wrong from the warm start, such as a basis that can't be factored, a
+/// variable nothing can bring back, or a repair that takes more than [`repair_cap`] dual
+/// pivots, falls back to solving from scratch. A warm optimum meets
 /// the same tolerances as a cold one after its bounds are restored: a basic variable can end
 /// up to `1e-9` of `max(1, |x|)` beyond one of its bounds, where a cold solve might land on
 /// another vertex.
@@ -214,14 +216,15 @@ pub(crate) fn solve_warm(
 ) -> Result<(Outcome, Option<Basis>), CutupError> {
     // Nested rather than a let chain, which takes Rust 1.88.
     if let Some(warm) = warm {
-        if let Some(solved) = from_basis(c, a, b, lower, upper, warm) {
+        if let Some(solved) = from_basis(c, a, b, lower, upper, warm, repair_cap(a.nrows())) {
             return Ok(solved);
         }
     }
     solve_perturbing(c, a, b, lower, upper, &[], PERTURBATION)
 }
 
-/// [`solve_warm`] from `warm`, or `None` if it can't start or finish there.
+/// [`solve_warm`] from `warm`, or `None` if it can't start or finish there, or if repairing the
+/// basis takes more than `repairs` dual pivots.
 fn from_basis(
     c: &DVector<f64>,
     a: &DMatrix<f64>,
@@ -229,6 +232,7 @@ fn from_basis(
     lower: &DVector<f64>,
     upper: &DVector<f64>,
     warm: &Basis,
+    repairs: usize,
 ) -> Option<(Outcome, Option<Basis>)> {
     let (m, n) = a.shape();
     if m == 0 || warm.basis.len() != m || warm.status.len() != n || crossed(lower, upper) {
@@ -268,6 +272,7 @@ fn from_basis(
         basis: warm.basis.clone(),
         status: warm.status.clone(),
         perturbation: PERTURBATION,
+        repairs,
     };
     problem.finish(c, c, Perturbation::Repairing, &scales).ok()
 }
@@ -363,12 +368,12 @@ fn iteration_cap(m: usize, total: usize) -> usize {
     1000 + 100 * (m + total)
 }
 
-/// How many dual pivots [`Problem::minimize`] takes repairing a basis, for `m` rows, before it
-/// gives up with [`CutupError::NotConverged`]. The dual pivots have no Bland's rule, as the
-/// primal ones do, so a dual-degenerate basis could cycle until the iteration cap. Measured on
-/// 0.3.12, no repair took more than 7 pivots in 32,498, all `MinCdar`'s, warm and cold, in its
-/// unit and property tests. Past this, a warm start falls back to solving from scratch, at a
-/// cost of this many pivots rather than the iteration cap's.
+/// How many dual pivots a warm start takes repairing its basis, for `m` rows, before it gives
+/// up for a solve from scratch. The dual pivots have no Bland's rule, as the primal ones do, so
+/// a dual-degenerate basis could cycle until the iteration cap. Measured on 0.3.12, no repair
+/// took more than 7 pivots in 32,498, all `MinCdar`'s, warm and cold, in its unit and property
+/// tests. Past this, the warm start has cost this many pivots rather than the iteration cap's.
+/// A solve from scratch has no fallback, and no cap but the iteration cap, as before.
 fn repair_cap(m: usize) -> usize {
     100 + 10 * m
 }
@@ -461,6 +466,10 @@ struct Problem {
     status: Vec<Status>,
     /// How far [`Problem::perturb`] widens a bound, as [`PERTURBATION`] describes.
     perturbation: f64,
+    /// How many dual pivots [`Problem::minimize`] takes repairing the basis before it gives up
+    /// with [`CutupError::NotConverged`]: [`repair_cap`] for a warm start, which then falls
+    /// back to a solve from scratch, and no limit for that solve.
+    repairs: usize,
 }
 
 impl Problem {
@@ -618,7 +627,7 @@ impl Problem {
             if perturbation == Perturbation::Repairing {
                 if self.repair(&reduced, &mut factors)? {
                     repairs += 1;
-                    if repairs > repair_cap(m) {
+                    if repairs > self.repairs {
                         return Err(CutupError::NotConverged);
                     }
                     stalled = 0;
@@ -1013,7 +1022,7 @@ mod tests {
 
     #[test]
     fn the_repair_cap_grows_with_the_rows() {
-        // 100 dual pivots, and 10 more per row: over a hundred times what any repair has taken.
+        // 100 dual pivots, and 10 more per row: over ten times what any repair has taken.
         assert_eq!(repair_cap(0), 100);
         assert_eq!(repair_cap(13), 230);
     }
@@ -1208,6 +1217,7 @@ mod tests {
             basis,
             status,
             perturbation,
+            repairs: usize::MAX,
         }
     }
 
@@ -1660,6 +1670,7 @@ mod tests {
             basis: vec![2],
             status: vec![Status::Lower, Status::Lower, Status::Basic],
             perturbation: PERTURBATION,
+            repairs: usize::MAX,
         };
         let basis_after = |a: f64, c: [f64; 2], floor: f64| {
             let mut problem = problem(a, c, floor);
@@ -1763,7 +1774,7 @@ mod tests {
         basis.add_row();
         // The earlier optimum violates the new row, y = 1 > 0.5, so its slack starts at −0.5,
         // and the warm start itself, not the fallback, repairs it.
-        let (warm, next) = from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis).unwrap();
+        let (warm, next) = from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis, usize::MAX).unwrap();
         let warm = optimal(warm);
         assert!((warm.x[0] - 3.0).abs() < 1e-14 && (warm.x[1] - 0.5).abs() < 1e-14);
         assert!((warm.objective + 10.0).abs() < 1e-14);
@@ -1774,13 +1785,28 @@ mod tests {
     }
 
     #[test]
+    fn a_warm_start_gives_up_past_its_repair_cap() {
+        let [(c, a, b, lower, upper), (c2, a2, b2, lower2, upper2)] = grown();
+        let (_, basis) = solve_warm(&c, &a, &b, &lower, &upper, None).unwrap();
+        let mut basis = basis.unwrap();
+        basis.add_row();
+        // Bringing the new row in takes one dual pivot. Allowed none, the warm start gives up,
+        // for `solve_warm` to solve from scratch; allowed one, it finishes.
+        let warm = |repairs: usize| from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis, repairs);
+        assert!(warm(0).is_none());
+        assert!(warm(1).is_some());
+        // And a solve from scratch that repairs its restored bounds has no cap: see
+        // `restoring_wide_bounds_is_repaired_by_dual_pivots`.
+    }
+
+    #[test]
     fn a_basis_that_cant_start_falls_back_to_solving_from_scratch() {
         let [(c, a, b, lower, upper), (c2, a2, b2, lower2, upper2)] = grown();
         let (_, basis) = solve_warm(&c, &a, &b, &lower, &upper, None).unwrap();
         let basis = basis.unwrap();
         let cold = optimal(solve(&c2, &a2, &b2, &lower2, &upper2).unwrap());
         // Without the new row's slack, the basis has a row too few for the grown program.
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &basis, usize::MAX).is_none());
         let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&basis)).unwrap();
         assert_eq!(optimal(outcome).objective, cold.objective);
         // A variable at a bound it doesn't have: y, s₀ and s₁ have no upper bound, and at the
@@ -1791,7 +1817,7 @@ mod tests {
             .find(|&j| unbounded.status[j] != Status::Basic)
             .expect("a nonbasic variable with no upper bound");
         unbounded.status[j] = Status::Upper;
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &unbounded, usize::MAX).is_none());
         // A basic variable marked at a bound, with a nonbasic one marked basic in its place: the
         // basis itself is fine and the count of basic variables right, but the two disagree.
         let mut mislabeled = basis.clone();
@@ -1801,17 +1827,17 @@ mod tests {
             .expect("a nonbasic variable");
         mislabeled.status[k] = Status::Basic;
         mislabeled.status[mislabeled.basis[0]] = Status::Lower;
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &mislabeled).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &mislabeled, usize::MAX).is_none());
         // A basis naming a column the program doesn't have.
         let mut beyond = basis.clone();
         beyond.add_row();
         beyond.basis[0] = 5;
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &beyond).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &beyond, usize::MAX).is_none());
         // A basis with one column twice, and so a variable marked basic outside it.
         let mut repeated = basis;
         repeated.add_row();
         repeated.basis[1] = repeated.basis[0];
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &repeated).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &repeated, usize::MAX).is_none());
         let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&repeated)).unwrap();
         assert_eq!(optimal(outcome).objective, cold.objective);
         // A basis that's consistent but singular: x's column is s₀'s plus s₁'s, so the
@@ -1826,7 +1852,7 @@ mod tests {
                 Status::Lower,
             ],
         };
-        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &singular).is_none());
+        assert!(from_basis(&c2, &a2, &b2, &lower2, &upper2, &singular, usize::MAX).is_none());
         let (outcome, _) = solve_warm(&c2, &a2, &b2, &lower2, &upper2, Some(&singular)).unwrap();
         assert_eq!(optimal(outcome).objective, cold.objective);
     }
@@ -1848,7 +1874,7 @@ mod tests {
         let cold = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
         // Each at a bound it has, and y free: the warm start itself solves it.
         let valid = start([Lower, Free, Basic, Lower, Upper]);
-        let (warm, _) = from_basis(&c, &a, &b, &lower, &upper, &valid).unwrap();
+        let (warm, _) = from_basis(&c, &a, &b, &lower, &upper, &valid, usize::MAX).unwrap();
         assert_eq!(optimal(warm).objective, cold.objective);
         // Free, though it has a bound: x has both, w one. At a lower bound v doesn't have.
         for status in [
@@ -1858,7 +1884,7 @@ mod tests {
         ] {
             let bad = start(status);
             assert!(
-                from_basis(&c, &a, &b, &lower, &upper, &bad).is_none(),
+                from_basis(&c, &a, &b, &lower, &upper, &bad, usize::MAX).is_none(),
                 "{status:?}"
             );
             let (outcome, _) = solve_warm(&c, &a, &b, &lower, &upper, Some(&bad)).unwrap();
@@ -1869,14 +1895,14 @@ mod tests {
             basis: vec![2],
             status: vec![Lower, Free, Basic],
         };
-        assert!(from_basis(&c, &a, &b, &lower, &upper, &short).is_none());
+        assert!(from_basis(&c, &a, &b, &lower, &upper, &short, usize::MAX).is_none());
         // No rows at all.
         let none = Basis {
             basis: vec![],
             status: vec![Lower, Free, Lower, Lower, Upper],
         };
         let rowless = DMatrix::zeros(0, 5);
-        assert!(from_basis(&c, &rowless, &dvector![], &lower, &upper, &none).is_none());
+        assert!(from_basis(&c, &rowless, &dvector![], &lower, &upper, &none, usize::MAX).is_none());
     }
 
     #[test]
@@ -1892,6 +1918,7 @@ mod tests {
             basis,
             status: vec![Status::Basic, Status::Basic, Status::Basic],
             perturbation: PERTURBATION,
+            repairs: usize::MAX,
         };
         assert!(problem(vec![2]).basis_of(2).is_none());
         let own = problem(vec![1]).basis_of(2).unwrap();
