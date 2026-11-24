@@ -167,12 +167,10 @@ impl MinVariance {
 impl Allocation for MinVariance {
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
         if self.trading.first_setting().is_some() {
-            let cov = data.adjusted_covariance(&self.covariance)?;
-            let n = cov.ncols();
             return turnover::rebalance(
                 data,
-                cov,
-                DVector::zeros(n),
+                || data.adjusted_covariance(&self.covariance),
+                DVector::zeros(data.labels().len()),
                 self.bounds.as_ref(),
                 &self.trading,
                 1.0,

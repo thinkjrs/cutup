@@ -295,8 +295,8 @@ impl Allocation for MeanVariance {
             return match self.objective {
                 Objective::RiskAversion(gamma) => {
                     let mu = data.expected_returns(expected_returns.as_ref())?;
-                    let cov = covariance()? * gamma;
-                    turnover::rebalance(data, cov, mu, self.bounds.as_ref(), &self.trading, 2.0)
+                    let q = || Ok(covariance()? * gamma);
+                    turnover::rebalance(data, q, mu, self.bounds.as_ref(), &self.trading, 2.0)
                 }
                 Objective::TargetVolatility(_) => {
                     unreachable!("a target volatility with trading settings is rejected above")

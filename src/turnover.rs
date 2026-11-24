@@ -111,58 +111,109 @@ pub(crate) struct Checked {
 /// if `trading` caps it. `h` is the penalty's curvature in the caller's objective: 1 for min
 /// variance's `wᵀΣw + κ‖w − w₀‖²`, which is twice `½ wᵀΣw + ½κ‖w − w₀‖²`, and 2 for
 /// mean-variance's `−μᵀw + (γ/2) wᵀΣw + κ‖w − w₀‖²`.
+///
+/// `q` builds `Q` once the settings, the bounds and the cap have been checked, so that what's
+/// wrong with them is reported before what's wrong with the data, as without trading settings
+/// and as [`rebalance_to_net_target`] does.
 pub(crate) fn rebalance(
     data: &Returns,
-    q: DMatrix<f64>,
+    q: impl FnOnce() -> Result<DMatrix<f64>, CutupError>,
     c: DVector<f64>,
     bounds: Option<&WeightBounds>,
     trading: &Trading,
     curvature: f64,
 ) -> Result<Weights, CutupError> {
-    let (n, labels) = (q.ncols(), data.labels());
+    let (n, labels) = (c.len(), data.labels());
     let checked = trading.check(labels)?;
     let current = checked.current.ok_or(CutupError::MissingCurrentWeights)?;
     let bounds = resolve_bounds(bounds, labels)?;
-    let penalty = curvature * trading.penalty.unwrap_or(0.0);
-    let q = q + DMatrix::identity(n, n) * penalty;
+    // First, so that groups that can't all be met say so before the cap is checked.
+    let inside = if bounds.lower.iter().all(|l| l.is_finite()) {
+        Some(feasible_start(&bounds)?)
+    } else {
+        None
+    };
+    if let Some(cap) = trading.max_turnover {
+        check_cap(&current, &bounds, cap)?;
+    }
+    // Twice a penalty above half of f64::MAX is infinite, and no covariance plus it is finite,
+    // where the largest finite one already holds every weight where it is.
+    let penalty = (curvature * trading.penalty.unwrap_or(0.0)).min(f64::MAX);
+    let q = q()? + DMatrix::identity(n, n) * penalty;
+    // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds.
+    // After `q`, so that what's wrong with the data is reported whatever the cap.
+    if trading.max_turnover == Some(0.0) && within(&current, &bounds) {
+        return Ok(data.weights(kept(&current)));
+    }
     let c = c + &current * penalty;
     let (e, b) = (
         DMatrix::from_element(n, 1, 1.0),
         DVector::from_element(1, 1.0),
     );
     let kinks = qp::Kinks {
-        at: current.clone(),
+        at: current,
         slopes: checked.costs,
     };
+    let current = &kinks.at;
     // Long-short, the optimum without the kinks is a feasible start that, unlike the current
     // weights, isn't at every kink at once. Where there's none, as when a singular covariance
     // lets expected return grow without limit, the costs or the cap may still bound the
     // problem, and the current weights are a feasible start. So are they when the optimum is
     // too ill-conditioned to meet the budget: the solve below only needs somewhere to start.
-    let start = if bounds.lower.iter().all(|l| l.is_finite()) {
-        feasible_start(&bounds)?
-    } else {
-        match qp::solve_kkt(&q, &c, &e, &b) {
+    let start = match inside {
+        Some(start) => start,
+        None => match qp::solve_kkt(&q, &c, &e, &b) {
             Ok(Some((x, _))) => x,
             Ok(None) | Err(CutupError::SingularCovariance) => current.clone(),
             Err(error) => return Err(error),
-        }
+        },
     };
     let weights = match trading.max_turnover {
-        Some(cap) => {
-            check_cap(&current, &bounds, cap)?;
-            qp::solve_turnover_capped(&q, &c, &e, &b, &bounds, (&kinks, cap), start)?
-        }
+        Some(cap) => qp::solve_turnover_capped(&q, &c, &e, &b, &bounds, (&kinks, cap), start)?,
         None => qp::solve_piecewise(&q, &c, &e, &b, &bounds, &kinks, start)?,
     };
-    Ok(data.weights(fully_invested(weights, &bounds)))
+    Ok(data.weights(fully_invested(weights, &bounds, current)))
+}
+
+/// Whether each of `weights` is within its own `bounds`, exactly.
+fn within(weights: &DVector<f64>, bounds: &qp::Bounds) -> bool {
+    (0..weights.len()).all(|i| bounds.lower[i] <= weights[i] && weights[i] <= bounds.upper[i])
+}
+
+/// Whether `weights` meet `eᵀw = b`, each constraint to the rounding of its sum.
+fn on(weights: &DVector<f64>, e: &DMatrix<f64>, b: &DVector<f64>) -> bool {
+    e.column_iter().zip(b.iter()).all(|(column, &target)| {
+        let terms = column.component_mul(weights);
+        let rounding = qp::sum_rounding(terms.len(), terms.amax().max(target.abs()));
+        (terms.sum() - target).abs() <= rounding
+    })
+}
+
+/// The `current` weights as the weights to hold, as they are: the answer when nothing is
+/// traded. They sum to 1 as nearly as [`Trading::check`] could scale them to, and meeting the
+/// budget from there would trade one of them by the rounding of that sum. A weight of -0.0
+/// comes back as 0.0, as [`within_bounds`] returns it.
+fn kept(current: &DVector<f64>) -> Vec<f64> {
+    current.iter().map(|w| w + 0.0).collect()
 }
 
 /// The solver's `weights`, summing to 1: [within `bounds`](within_bounds) where they're finite,
 /// or long-short, with none to keep, [scaled](normalized) to it. With every bound infinite,
 /// every weight has the same room, and `within_bounds` would leave all of the rounding to the
 /// first asset, even one the solver left at 0, where scaling leaves a 0 at 0.
-fn fully_invested(weights: DVector<f64>, bounds: &qp::Bounds) -> Vec<f64> {
+///
+/// Weights that are each within the rounding of a sum of them from the `current` ones trade
+/// nothing, as when costs, a penalty or a cap leave no trade worth making, so they're the
+/// current weights [as they are](kept), if those are within the bounds. The solver holds a
+/// weight at its current one exactly, but it finds the last of them from the budget, an ulp
+/// off, and meeting the budget again would move another.
+fn fully_invested(weights: DVector<f64>, bounds: &qp::Bounds, current: &DVector<f64>) -> Vec<f64> {
+    let rounding = qp::sum_rounding(current.len(), current.amax().max(1.0));
+    // Not within it if it's NaN, which stays for `allocate` to reject.
+    let held = |(w, c): (&f64, &f64)| (w - c).abs() <= rounding;
+    if within(current, bounds) && weights.iter().zip(current.iter()).all(held) {
+        return kept(current);
+    }
     if bounds.lower.iter().all(|l| l.is_finite()) {
         within_bounds(weights.as_slice(), bounds)
     } else {
@@ -237,6 +288,12 @@ pub(crate) fn rebalance_to_target(
     if minimum > cap + rounding {
         return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
+    // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds and
+    // at the target. If they're only within the rounding above of either, the solver finds the
+    // portfolio that close to them that is.
+    if cap == 0.0 && within(&current, &bounds) && on(&current, &e, &b) {
+        return Ok(data.weights(kept(&current)));
+    }
     // Half of wᵀΣw + κ‖w − w₀‖², less a constant: ½wᵀ(Σ + κI)w − κw₀ᵀw.
     let q = cov + DMatrix::identity(n, n) * penalty;
     let c = &current * penalty;
@@ -253,7 +310,7 @@ pub(crate) fn rebalance_to_target(
         (&kinks, cap.max(minimum + rounding)),
         start,
     )?;
-    Ok(data.weights(fully_invested(weights, &bounds)))
+    Ok(data.weights(fully_invested(weights, &bounds, &kinks.at)))
 }
 
 /// Minimizes `wᵀΣw + κ‖w − w₀‖²` over portfolios summing to 1 with a net return
@@ -301,6 +358,8 @@ pub(crate) fn rebalance_to_net_target(
     } else {
         current.clone()
     };
+    // A cap of 0 leaves no portfolio but the current weights, if they're within the bounds.
+    let stay = cap == 0.0 && within(&current, &bounds);
     let cap = cap.max(check_cap(&current, &bounds, cap)?);
     let (highest, rounding) = highest_net_return(&current, (&mu, &costs), &bounds, cap)?;
     if target > highest + rounding {
@@ -315,6 +374,9 @@ pub(crate) fn rebalance_to_net_target(
 
     let penalty = trading.penalty.unwrap_or(0.0);
     let q = cov()? + DMatrix::identity(n, n) * penalty;
+    if stay {
+        return Ok(data.weights(kept(&current)));
+    }
     let anchor = &current * penalty;
     let (e, b) = (
         DMatrix::from_element(n, 1, 1.0),
@@ -336,10 +398,31 @@ pub(crate) fn rebalance_to_net_target(
     };
     // The net return is a sum over the assets, which rounds by a few ulps of its terms.
     let slack = |w: &DVector<f64>| qp::sum_rounding(n, net_terms(&mu, &costs, &current, w));
-    // The search doubles λ from 1 until it nets the target, then narrows it down, so it finds
-    // λ from any start.
-    let weights = qp::search_multiplier(solve, (-target, slack), 1.0, start)?;
-    Ok(data.weights(fully_invested(weights, &bounds)))
+    // The search doubles λ from its first value until it nets the target, then narrows it
+    // down, so it finds λ from any first value the solver can handle.
+    let weights = qp::search_multiplier(
+        solve,
+        (-target, slack),
+        first_multiplier(&q, &mu, &costs),
+        start,
+    )?;
+    Ok(data.weights(fully_invested(weights, &bounds, &current)))
+}
+
+/// Where [`rebalance_to_net_target`]'s search for the target's multiplier `λ` starts. `λ` is
+/// the variance given up for a unit of net return, so it's on the scale of `q`'s variances
+/// over the returns `mu` and the `costs`: the largest of the one over the largest of the
+/// others, or 1 if that's 0 or overflows.
+///
+/// From 1 whatever the data's scale, a `λ` many orders of magnitude above the one that nets
+/// the target is the first tried. Long-short, the optimum there is leveraged by as many, the
+/// solver loses the budget in its rounding, and the search failed without converging on
+/// returns scaled down by `1e-8`, where `λ` scales with them.
+fn first_multiplier(q: &DMatrix<f64>, mu: &DVector<f64>, costs: &DVector<f64>) -> f64 {
+    match q.diagonal().amax() / (mu.amax() + costs.amax()) {
+        ratio if ratio.is_finite() && ratio > 0.0 => ratio,
+        _ => 1.0,
+    }
 }
 
 /// The least turnover `Σᵢ|wᵢ − w₀ᵢ|` from `current` to a portfolio with `eᵀw = b` within
@@ -503,10 +586,12 @@ fn unbounded(n: usize) -> qp::Bounds {
 }
 
 /// The least turnover from `current` into `bounds`, or [`CutupError::InfeasibleTurnover`] if
-/// it's above `cap` by more than summing it rounds by.
+/// it's above `cap` by more than summing it rounds by: a few ulps of the largest current
+/// weight, or of 1. Long-short weights of 65 and -64 sum to 1 only to an ulp of 65, and that
+/// far from 1 isn't a trade a cap of 0 leaves unmade.
 fn check_cap(current: &DVector<f64>, bounds: &qp::Bounds, cap: f64) -> Result<f64, CutupError> {
     let minimum = minimum_turnover(current, bounds)?;
-    if minimum > cap + qp::sum_rounding(current.len(), 1.0) {
+    if minimum > cap + qp::sum_rounding(current.len(), current.amax().max(1.0)) {
         return Err(CutupError::InfeasibleTurnover { minimum, cap });
     }
     Ok(minimum)
@@ -897,16 +982,136 @@ mod tests {
         assert!(weights[0] <= 0.5 + 1e-15);
     }
 
+    /// A rebalance from `current` of each kind: long-only, long-short, and within bounds and a
+    /// group, which the second of these current weights is at the limit of.
+    fn rebalances(current: [f64; 3]) -> [(&'static str, MeanVariance); 3] {
+        let method = MeanVariance::risk_aversion(10.0).current_weights(current);
+        let bounded = WeightBounds::uniform(0.0, 0.75).group([0, 1], 0.0, 0.9);
+        [
+            ("long-only", method.clone()),
+            ("long-short", method.clone().allow_short()),
+            ("bounds and a group", method.bounds(bounded)),
+        ]
+    }
+
+    /// `current` as [`Trading::check`] scales it, to sum to 1 as nearly as it can.
+    fn scaled(current: [f64; 3]) -> [f64; 3] {
+        let total: f64 = current.iter().sum();
+        current.map(|c| c / total)
+    }
+
     #[test]
     fn a_zero_cap_keeps_the_current_weights() {
-        let current = [0.2, 0.3, 0.5];
-        let weights = MinVariance::default()
-            .current_weights(current)
-            .max_turnover(0.0)
-            .allocate(&allocator())
-            .unwrap();
-        for (w, c) in weights.iter().zip(current) {
-            assert!((w - c).abs() < 1e-15);
+        // As they are. 0.3 + 0.6 + 0.1 is 0.9999999999999999, and each over that sums to
+        // 1.0000000000000002: on 0.3.12, meeting the budget from weights the solver hadn't
+        // moved traded one of them by that, and so did scaling them to it, long-short.
+        assert_eq!(
+            scaled([0.3, 0.6, 0.1]).iter().sum::<f64>(),
+            1.0 + f64::EPSILON
+        );
+        for current in [[0.2, 0.3, 0.5], [0.3, 0.6, 0.1], [0.6, 0.1, 0.3]] {
+            for method in [MinVariance::default(), MinVariance::default().allow_short()] {
+                let weights = method.current_weights(current).max_turnover(0.0);
+                let weights = weights.allocate(&allocator()).unwrap();
+                assert_eq!(weights.as_slice(), scaled(current));
+            }
+            for (name, method) in rebalances(current) {
+                let method = method.max_turnover(0.0);
+                for method in [method.clone(), method.transaction_costs(0.001)] {
+                    let weights = method.allocate(&allocator()).unwrap();
+                    assert_eq!(weights.as_slice(), scaled(current), "{name}");
+                }
+            }
+        }
+        // Nor from long-short weights that sum to 1 only to an ulp of the largest of them, here
+        // 7e-15 from it: more than three weights up to 1 round by, which read as a trade that
+        // a cap of 0 didn't allow.
+        let leveraged = [-37.88974406760603, -25.967278987291273, 64.8570230548973];
+        let missed = (scaled(leveraged).iter().sum::<f64>() - 1.0).abs();
+        assert!(missed > qp::sum_rounding(3, 1.0), "{missed:e}");
+        let [_, (_, method), _] = rebalances(leveraged);
+        for method in [
+            Box::new(method.max_turnover(0.0)) as Box<dyn Allocation>,
+            Box::new(
+                MinVariance::default()
+                    .allow_short()
+                    .current_weights(leveraged)
+                    .max_turnover(0.0),
+            ),
+        ] {
+            let weights = allocator().allocate(&method).unwrap();
+            assert_eq!(weights.as_slice(), scaled(leveraged));
+        }
+        // But not outside the bounds, which only a trade can meet, and a cap of 0 allows none.
+        let capped = MinVariance::default()
+            .bounds(WeightBounds::uniform(0.0, 0.4))
+            .current_weights([0.2, 0.3, 0.5])
+            .max_turnover(0.0);
+        assert!(matches!(
+            capped.allocate(&allocator()),
+            Err(CutupError::InfeasibleTurnover { cap: 0.0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_zero_cap_keeps_the_current_weights_at_a_target_they_meet() {
+        let data = allocator();
+        let current = [0.3, 0.6, 0.1];
+        let mu = data.expected_returns(None).unwrap();
+        let held: f64 = mu.iter().zip(current).map(|(m, c)| m * c).sum();
+        for method in [
+            MeanVariance::target_return(held),
+            MeanVariance::target_return(held).allow_short(),
+            // With costs the target is a floor, which they meet with room to spare too.
+            MeanVariance::target_return(held).transaction_costs(0.001),
+            MeanVariance::target_return(held - 1.0).transaction_costs(0.001),
+        ] {
+            let method = method.current_weights(current).max_turnover(0.0);
+            assert_eq!(method.allocate(&data).unwrap().as_slice(), scaled(current));
+        }
+        // Above what they return, net of any costs, no trade reaches the target.
+        let above = MeanVariance::target_return(held + 1e-6).current_weights(current);
+        assert!(matches!(
+            above.clone().max_turnover(0.0).allocate(&data),
+            Err(CutupError::InfeasibleTurnover { cap: 0.0, .. })
+        ));
+        assert!(matches!(
+            above
+                .transaction_costs(0.001)
+                .max_turnover(0.0)
+                .allocate(&data),
+            Err(CutupError::TargetReturnOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn weights_no_trade_is_worth_come_back_as_they_are() {
+        // At 10 a unit traded, far above any return, or with a penalty as far above any
+        // variance, nothing trades. The solver holds each weight where it is but the last,
+        // which it finds from the budget, an ulp off, and meeting the budget moved another.
+        for current in [[0.2, 0.3, 0.5], [0.3, 0.6, 0.1], [0.6, 0.1, 0.3]] {
+            for (name, method) in rebalances(current) {
+                let costly = method.clone().transaction_costs(10.0);
+                let weights = costly.allocate(&allocator()).unwrap();
+                assert_eq!(weights.as_slice(), scaled(current), "{name}");
+                // Nor with a penalty near the largest there is. Mean-variance's curvature is
+                // twice it, which was infinite, and reported as a covariance that isn't finite.
+                for penalty in [1e15, 1e308, f64::MAX] {
+                    let penalized = method.clone().turnover_penalty(penalty);
+                    let weights = penalized.allocate(&allocator()).unwrap();
+                    assert_eq!(weights.as_slice(), scaled(current), "{name} at {penalty:e}");
+                }
+                // What's worth trading still is, and still meets the budget.
+                let cheap = method.transaction_costs(1e-5);
+                let weights = cheap.allocate(&allocator()).unwrap();
+                assert!(turnover(&weights, current) > 0.01, "{name}: {weights:?}");
+                assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-14, "{name}");
+            }
+            let penalized = MinVariance::default()
+                .current_weights(current)
+                .turnover_penalty(1e15);
+            let weights = penalized.allocate(&allocator()).unwrap();
+            assert_eq!(weights.as_slice(), scaled(current));
         }
     }
 
@@ -920,9 +1125,121 @@ mod tests {
                 .max_turnover(0.0)
                 .allocate(&allocator())
                 .unwrap();
-            let total: f64 = current.iter().sum();
-            for (w, c) in weights.iter().zip(current) {
-                assert!((w - c / total).abs() < 1e-15);
+            assert_eq!(weights.as_slice(), scaled(current));
+        }
+    }
+
+    #[test]
+    fn settings_are_checked_before_the_data() {
+        // The second asset never moves, so no covariance can be built. What's wrong with the
+        // settings, the bounds or the cap is reported first, as without trading settings: on
+        // 0.3.12 each of these was the zero variance, but for a target return.
+        let constant = Returns::returns_matrix(dmatrix![
+            0.01, 0.0, 0.02;
+            -0.02, 0.0, 0.01;
+            0.03, 0.0, -0.01
+        ])
+        .unwrap();
+        let zero_variance = Err(CutupError::ZeroVariance {
+            column: 1,
+            asset: "1".into(),
+        });
+        let current = Some([0.2, 0.3, 0.5]);
+        // Min variance, a risk aversion and a target return, each capped.
+        let capped = |current: Option<[f64; 3]>, cap: f64, bounds: Option<&WeightBounds>| {
+            let mut min_variance = MinVariance::default().max_turnover(cap);
+            let mut risk_aversion = MeanVariance::risk_aversion(10.0).max_turnover(cap);
+            let mut target_return = MeanVariance::target_return(0.01).max_turnover(cap);
+            if let Some(current) = current {
+                min_variance = min_variance.current_weights(current);
+                risk_aversion = risk_aversion.current_weights(current);
+                target_return = target_return.current_weights(current);
+            }
+            if let Some(bounds) = bounds {
+                min_variance = min_variance.bounds(bounds.clone());
+                risk_aversion = risk_aversion.bounds(bounds.clone());
+                target_return = target_return.bounds(bounds.clone());
+            }
+            [
+                min_variance.allocate(&constant),
+                risk_aversion.allocate(&constant),
+                target_return.allocate(&constant),
+            ]
+        };
+        for result in capped(None, 0.1, None) {
+            assert_eq!(result, Err(CutupError::MissingCurrentWeights));
+        }
+        for result in capped(current, -0.1, None) {
+            let (field, value) = ("max_turnover", -0.1);
+            assert_eq!(result, Err(CutupError::InvalidConfig { field, value }));
+        }
+        let narrow = WeightBounds::uniform(0.0, 0.1);
+        for result in capped(current, 0.1, Some(&narrow)) {
+            assert!(
+                matches!(result, Err(CutupError::InfeasibleBounds { .. })),
+                "{result:?}"
+            );
+        }
+        // A cap below the turnover into the bounds too, where there's no target to reach.
+        let tight = WeightBounds::uniform(0.0, 0.4);
+        let [min_variance, risk_aversion, _] = capped(current, 0.01, Some(&tight));
+        for result in [min_variance, risk_aversion] {
+            assert!(
+                matches!(
+                    result,
+                    Err(CutupError::InfeasibleTurnover { cap: 0.01, .. })
+                ),
+                "{result:?}"
+            );
+        }
+        // And the data's own trouble once the settings are in order, whatever the cap, even
+        // one of 0, which keeps the current weights without a covariance.
+        for cap in [0.5, 0.0] {
+            let [min_variance, risk_aversion, _] = capped(current, cap, None);
+            assert_eq!(min_variance, zero_variance);
+            assert_eq!(risk_aversion, zero_variance);
+        }
+    }
+
+    #[test]
+    fn a_net_target_is_found_at_any_scale_of_the_returns() {
+        // The target's multiplier is a variance over a return, so it scales with the returns.
+        // The search for it started at 1 whatever their scale: with returns 1e-8 of these it
+        // first tried one 1e8 times too large, where the long-short optimum is leveraged by as
+        // much, and failed there without converging.
+        let returns = dmatrix![
+             0.010, -0.020,  0.005;
+            -0.004,  0.015,  0.002;
+             0.007,  0.003, -0.006;
+             0.002, -0.001,  0.004;
+            -0.003,  0.006,  0.001
+        ];
+        let current = [0.2, 0.3, 0.5];
+        let methods = |scale: f64| {
+            let method = MeanVariance::target_return(0.0015 * scale)
+                .current_weights(current)
+                .transaction_costs(0.0004 * scale);
+            [
+                method.clone(),
+                method.clone().allow_short(),
+                method.clone().allow_short().max_turnover(0.8),
+                method.allow_short().turnover_penalty(1e-5 * scale * scale),
+            ]
+        };
+        let at = |scale: f64| -> Vec<Weights> {
+            let data = Returns::returns_matrix(&returns * scale).unwrap();
+            let allocate = |method: &MeanVariance| data.allocate(method).unwrap();
+            methods(scale).iter().map(allocate).collect()
+        };
+        let base = at(1.0);
+        for exponent in [-100, -30, -12, -8, 4, 30, 100] {
+            for (weights, want) in at(10f64.powi(exponent)).iter().zip(&base) {
+                for (w, b) in weights.iter().zip(want.iter()) {
+                    assert!(
+                        (w - b).abs() < 1e-9,
+                        "1e{exponent}: {weights:?} vs {want:?}"
+                    );
+                }
             }
         }
     }
@@ -1086,13 +1403,46 @@ mod tests {
             DVector::from_element(3, -f64::INFINITY),
             DVector::from_element(3, f64::INFINITY),
         );
-        let weights = fully_invested(short, &unbounded);
+        let current = dvector![0.25, 0.25, 0.5];
+        let weights = fully_invested(short, &unbounded, &current);
         assert_eq!(weights[0], 0.0);
         assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
         // With finite bounds, within them: a weight at its cap stays there, where scaling to 1
         // would move it past.
         let capped = qp::Bounds::new(DVector::zeros(3), dvector![0.5, 1.0, 1.0]);
-        let weights = fully_invested(dvector![0.5, 0.3, 0.2 - 3e-15], &capped);
+        let weights = fully_invested(dvector![0.5, 0.3, 0.2 - 3e-15], &capped, &current);
         assert_eq!(weights[0], 0.5);
+    }
+
+    #[test]
+    fn weights_within_rounding_of_the_current_ones_are_those() {
+        // Of three weights, within 12 ulps of 1 each: the rounding of their sum.
+        let rounding = qp::sum_rounding(3, 1.0);
+        let capped = qp::Bounds::new(DVector::zeros(3), dvector![0.5, 1.0, 1.0]);
+        let unbounded = qp::Bounds::new(
+            DVector::from_element(3, -f64::INFINITY),
+            DVector::from_element(3, f64::INFINITY),
+        );
+        let current = dvector![0.5, 0.3, 0.2];
+        for bounds in [&capped, &unbounded] {
+            let near = dvector![0.5, 0.3 + rounding, 0.2 - rounding];
+            assert_eq!(fully_invested(near, bounds, &current), [0.5, 0.3, 0.2]);
+            // Past it, one is traded, and the weights are the solver's, summing to 1.
+            let traded = dvector![0.5, 0.3 + 2.0 * rounding, 0.2 - 2.0 * rounding];
+            let weights = fully_invested(traded, bounds, &current);
+            assert!(weights[1] > 0.3 && weights[2] < 0.2, "{weights:?}");
+        }
+        // Current weights outside the bounds aren't the answer, however near.
+        let outside = dvector![0.5 + rounding, 0.3, 0.2 - rounding];
+        let weights = fully_invested(dvector![0.5, 0.3, 0.2 - rounding], &capped, &outside);
+        assert_eq!(weights[0], 0.5);
+        assert!((weights.iter().sum::<f64>() - 1.0).abs() <= 2.0 * f64::EPSILON);
+        // A NaN is within nothing, and stays for `allocate` to reject.
+        let weights = fully_invested(dvector![0.5, f64::NAN, 0.2], &unbounded, &current);
+        assert!(weights.iter().any(|w| w.is_nan()), "{weights:?}");
+        // A current weight of -0.0 comes back unsigned.
+        let signed = dvector![-0.0, 0.5, 0.5];
+        let weights = fully_invested(signed.clone(), &capped, &signed);
+        assert!(weights.iter().all(|w| w.is_sign_positive()), "{weights:?}");
     }
 }
