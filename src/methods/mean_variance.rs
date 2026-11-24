@@ -833,10 +833,10 @@ const ON_FRONTIER: f64 = 1e-9;
 /// saves most of the bisection, but `same_assets` reads what's held from weights, which round,
 /// and a line between portfolios that hold different assets isn't the frontier. So the point is
 /// checked: the frontier's own portfolio at its return has the least variance there, and the
-/// point is on the frontier only if its variance is no higher, to [`ON_FRONTIER`]. If it's
-/// higher, `same_assets` isn't trusted again, and the bisection carries on from the frontier's
-/// portfolio until its ends are an ulp or so apart, where the line between them is as good as
-/// either.
+/// point is on the frontier only if its variance is no higher, to [`ON_FRONTIER`] and the
+/// rounding of a variance. If it's higher, `same_assets` isn't trusted again, and the bisection
+/// carries on from the frontier's portfolio until its ends are an ulp or so apart, where the
+/// line between them is as good as either. So the check can cost solves, but never the answer.
 fn target_volatility_search(
     cov: &DMatrix<f64>,
     mu: &DVector<f64>,
@@ -911,15 +911,23 @@ fn target_volatility_search(
         if !trusted {
             return Ok((weights, solves.get()));
         }
-        // Whether that line was the frontier: see above.
+        // Whether that line was the frontier: see above. The check is one solve more than the
+        // search made without it, and that solve failing isn't the search failing: it bisects
+        // on from where it was, as when the check fails.
         let point = DVector::from_column_slice(&weights);
         let rho = mu.dot(&point);
-        let frontier = at(rho)?;
+        let Ok(frontier) = at(rho) else {
+            trusted = false;
+            continue;
+        };
         let variance = |w: &DVector<f64>| {
             let u = risk.units(w);
             risk.product(&u, &u)
         };
-        if variance(&point) <= variance(&frontier) * (1.0 + ON_FRONTIER) {
+        // To the rounding of a variance too, as the target's is taken above: just over the floor
+        // of a singular covariance the two differ by less than they round by, though by more
+        // than `ON_FRONTIER` of either.
+        if variance(&point) <= variance(&frontier) * (1.0 + ON_FRONTIER) + rounding {
             return Ok((weights, solves.get()));
         }
         trusted = false;
@@ -1847,6 +1855,34 @@ mod tests {
             // about 50 halvings take a return's range down to an ulp of it.
             assert!(solves <= 20, "{solves}");
             assert!(all >= 40 && bisected >= 40, "{all} and {bisected}");
+        }
+    }
+
+    #[test]
+    fn test_target_volatility_check_allows_for_the_rounding_of_a_variance() {
+        // More assets than periods, so the covariance is singular, and a target just above its
+        // floor is a variance within what a variance rounds by. With a cap of a half, the line's
+        // point and the frontier's portfolio at its return differed by a thousandth of that
+        // rounding, but by a part in 600 of either variance: the check read the line as off the
+        // frontier, and the search bisected to the end, 52 solves for 21.
+        let data = Returns::returns_matrix(dmatrix![
+             0.010, -0.020,  0.005,  0.012, -0.007,  0.003;
+            -0.004,  0.015,  0.002, -0.011,  0.009,  0.001;
+             0.007,  0.003, -0.006,  0.004,  0.002, -0.008;
+             0.002, -0.001,  0.004, -0.003,  0.006,  0.005
+        ])
+        .unwrap();
+        let cov = data
+            .adjusted_covariance(&CovarianceConfig::default())
+            .unwrap();
+        let mu = sample_mean(&data);
+        for cap in [1.0, 0.5, 0.3] {
+            let bounds = WeightBounds::uniform(0.0, cap)
+                .resolve(data.labels())
+                .unwrap();
+            let same = |low: &DVector<f64>, high: &DVector<f64>| same_assets(low, high, &bounds);
+            let (_, solves) = target_volatility_search(&cov, &mu, &bounds, 1e-9, same).unwrap();
+            assert!(solves <= 35, "{cap}: {solves}");
         }
     }
 
