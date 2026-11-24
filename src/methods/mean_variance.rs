@@ -1,7 +1,7 @@
 //! [`MeanVariance`]: Markowitz mean-variance optimization.
 
 use super::min_variance::{bounded_min_variance, min_variance};
-use super::{correlation, in_null_space, long_only_weights, within_bounds};
+use super::{budget_rounding, correlation, in_null_space, long_only_weights, within_bounds};
 use crate::bounds::{ReturnRange, feasible_start};
 use crate::turnover::{Costs, Trading};
 use crate::{
@@ -766,18 +766,22 @@ fn target_volatility(
 /// Which bound each weight is held at, if any, then which limit each group's total is: the
 /// active set of a long-only solution.
 ///
-/// A weight held at a bound comes back within rounding of it, not on it: the solver clamps it
-/// in scaled units, and the weights are then divided by their sum, which is 1 within `n` ulps.
-/// So a weight within `4nε` of a bound's size counts as at it. Compared exactly, rounding hid
-/// every lower bound of a solution on wasm, the bisection below stopped between two that held
-/// different assets, and the step along the line between them was off by 1e-3.
+/// A group's total held at a limit comes back within rounding of it, not on it: it's a sum of
+/// its members, and [meeting the budget](within_bounds) moves one weight by what the weights'
+/// sum misses 1 by, about `1e-16` whatever the limit's size. So a value within
+/// [the budget's rounding](budget_rounding) of a limit counts as at it. Measured against the
+/// limit's own size, a total of 0.03 that came back `1.1e-16` over its floor read as free, the
+/// bisection below stopped between two portfolios that held different assets, and the step
+/// along the line between them left the frontier, by 0.06 in a weight. Compared exactly,
+/// rounding hid every lower bound of a solution on wasm, with the same result.
 fn held(w: &DVector<f64>, bounds: &qp::Bounds) -> Vec<Option<bool>> {
     let n = w.len();
+    let rounding = budget_rounding(n);
     // A group's limit may be infinite, where nothing is held.
     let at = |value: f64, lower: f64, upper: f64| {
-        if lower.is_finite() && value <= lower + qp::sum_rounding(n, lower.abs()) {
+        if lower.is_finite() && value <= lower + rounding {
             Some(false)
-        } else if upper.is_finite() && value >= upper - qp::sum_rounding(n, upper.abs()) {
+        } else if upper.is_finite() && value >= upper - rounding {
             Some(true)
         } else {
             None
@@ -1533,8 +1537,8 @@ mod tests {
         let weights = data
             .allocate(&MeanVariance::target_volatility(sigma).bounds(bounds.clone()))
             .unwrap();
-        // To the rounding of rescaling them to sum to 1.
-        let within = |w: f64| (0.05 - 1e-15..=0.3 + 1e-15).contains(&w);
+        // Exactly, since the budget is met within the bounds.
+        let within = |w: f64| (0.05..=0.3).contains(&w);
         assert!(weights.iter().all(|&w| within(w)), "{weights:?}");
         let got = volatility(&data, &weights);
         assert!((got - sigma).abs() <= 1e-12 * sigma, "{got} vs {sigma}");
@@ -1668,6 +1672,69 @@ mod tests {
     }
 
     #[test]
+    fn test_target_volatility_stays_on_the_frontier_with_floors() {
+        // A weight at a floor, or a group's total at one, that came back from meeting the
+        // budget 1e-16 off it read as free, the search stopped between two portfolios that
+        // held different assets, and the result left the frontier: in these cases of a sweep
+        // by 0.001 to 0.06 in a weight. Each is now the frontier's portfolio at its return.
+        // The sweep draws every case's data in turn, so the others are drawn and skipped.
+        let failed: [(bool, &[usize]); 2] = [(false, &[164, 232, 262]), (true, &[326])];
+        for (seed, (grouped, cases)) in (0x1234u64..).zip(failed) {
+            let mut state = seed;
+            let mut uniform = || {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 11) as f64 / (1u64 << 53) as f64
+            };
+            for case in 0..=*cases.last().unwrap() {
+                let n = 3 + case % 5;
+                let factor: Vec<f64> = (0..40).map(|_| uniform() * 0.04 - 0.02).collect();
+                let load: Vec<f64> = (0..n).map(|_| uniform() * 1.5).collect();
+                let size: Vec<f64> = (0..n).map(|_| 0.01 + 0.04 * uniform()).collect();
+                let rows: Vec<Vec<f64>> = (0..40)
+                    .map(|t| {
+                        (0..n)
+                            .map(|i| load[i] * factor[t] + size[i] * (uniform() - 0.5))
+                            .collect()
+                    })
+                    .collect();
+                let mu: Vec<f64> = (0..n).map(|_| 0.0005 + 0.005 * uniform()).collect();
+                let bounds = if grouped {
+                    WeightBounds::uniform(0.0, 1.0).group([0, 1], 0.02 + 0.06 * uniform(), 1.0)
+                } else {
+                    WeightBounds::uniform(0.3 / n as f64 * uniform(), 1.0)
+                };
+                if !cases.contains(&case) {
+                    continue;
+                }
+                let data = Returns::new(&rows).unwrap();
+                let method = |method: MeanVariance| {
+                    method.expected_returns(mu.clone()).bounds(bounds.clone())
+                };
+                let frontier = data
+                    .frontier(&method(MeanVariance::risk_aversion(1.0)), 2)
+                    .unwrap();
+                let (low, high) = (
+                    volatility(&data, frontier[0].weights()),
+                    volatility(&data, frontier[1].weights()),
+                );
+                for k in 1..6 {
+                    let sigma = low + (high - low) * k as f64 / 6.0;
+                    let weights = data
+                        .allocate(&method(MeanVariance::target_volatility(sigma)))
+                        .unwrap();
+                    let rho: f64 = weights.iter().zip(&mu).map(|(w, m)| w * m).sum();
+                    let on_frontier = data
+                        .allocate(&method(MeanVariance::target_return(rho)))
+                        .unwrap();
+                    assert_weights_close(&weights, &on_frontier, 1e-9);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_target_volatility_helpers() {
         // A floor of exactly 1, so a target exactly 1e-12 below it is the last one allowed.
         let risk = Risk::new(&DMatrix::identity(2, 2)).unwrap();
@@ -1685,17 +1752,27 @@ mod tests {
         );
         let w = DVector::from_vec(vec![0.1, 0.4, 0.5]);
         assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
-        // Within 4nε of a bound's size, and an ulp past that.
-        let (lower, upper) = (
-            0.1 + qp::sum_rounding(3, 0.1),
-            0.5 - qp::sum_rounding(3, 0.5),
-        );
+        // Within the budget's rounding of a bound, and an ulp past that.
+        let (lower, upper) = (0.1 + budget_rounding(3), 0.5 - budget_rounding(3));
         let w = DVector::from_vec(vec![lower, 0.4, upper]);
         assert_eq!(held(&w, &bounds), vec![Some(false), None, Some(true)]);
         let past =
             |x: f64, up: bool| f64::from_bits(if up { x.to_bits() + 1 } else { x.to_bits() - 1 });
         let w = DVector::from_vec(vec![past(lower, true), 0.4, past(upper, false)]);
         assert_eq!(held(&w, &bounds), vec![None, None, None]);
+        // A group's total that came back 1.1e-16 over its floor of 0.03, the first weight
+        // having taken what the four's sum missed 1 by: further than 0.03 itself rounds, but at
+        // the floor all the same.
+        let grouped = WeightBounds::uniform(0.0, 1.0)
+            .group([0, 1], 0.03, 1.0)
+            .resolve(&["a", "b", "c", "d"].map(String::from))
+            .unwrap();
+        let w = DVector::from_vec(vec![0.03000000000000011, 0.0, 0.525, 0.445]);
+        assert!(w[0] > 0.03 + qp::sum_rounding(4, 0.03));
+        assert_eq!(
+            held(&w, &grouped),
+            vec![None, Some(false), None, None, Some(false)]
+        );
 
         // at² + 2bt = gap: t = 7 for a = 1, b = −3, gap = 7. With b far larger than the rest,
         // (root − b) / a would cancel to 0, but t is about gap / 2b.
@@ -1828,12 +1905,7 @@ mod tests {
             .highest();
         assert!((frontier[4].expected_return() - highest).abs() <= 4.0 * f64::EPSILON * mu.amax());
         for point in &frontier {
-            assert!(
-                point
-                    .weights()
-                    .iter()
-                    .all(|&w| (0.05 - 1e-15..=0.3 + 1e-15).contains(&w))
-            );
+            assert!(point.weights().iter().all(|&w| (0.05..=0.3).contains(&w)));
         }
     }
 
