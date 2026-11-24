@@ -31,12 +31,14 @@ All notable changes to this project are documented here. The format follows
     -64, which sum to 1 only to an ulp of 65, failed with `InfeasibleTurnover`.
 - **A target return with transaction costs, on returns of any scale:** long-short, it failed
   with `NotConverged` on returns scaled down by about `1e-8`. The search for the target's
-  multiplier started at 1 whatever the data's scale, and it now starts at the scale of the
-  variances over the returns.
+  multiplier started at 1 whatever the data's scale. It now starts at the scale of the
+  variances over the returns, and from 1 if it doesn't converge from there, which one asset
+  on a far larger scale than the rest can cause.
 - **The order of rebalancing's errors:** with trading settings, `MinVariance` and a risk
   aversion reported what's wrong with the data, such as a constant asset, before what's wrong
   with the settings, the bounds or the cap. Every method now reports its settings first, and
-  a test holds each of them to it.
+  a test holds each of them to it. With a target return, a cap no trade can meet depends on
+  the expected returns, and is still reported after the data's own trouble.
 - **A turnover penalty above half of `f64::MAX`:** `MeanVariance` failed with
   `NonFiniteCovariance`, where `MinVariance` held the current weights.
 - **`MaxSharpe`, long-short, on extreme inputs:**
@@ -55,8 +57,8 @@ All notable changes to this project are documented here. The format follows
 - `MeanVariance::target_volatility` within bounds checks its portfolio against the frontier's
   own at the same return, at the cost of one more solve. Its search stops early between two
   portfolios that hold the same assets, which it reads from their weights, and those round:
-  where the check fails, it bisects to the end instead. No result changes.
-
+  where the check fails, it bisects to the end instead. No result changes: about 8,000 random
+  requests give the same weights as without the check, bit for bit.
 - A warm start of the simplex solver, as `MinCdar` makes each round, gives up repairing its
   basis after `100 + 10m` dual pivots for `m` rows and solves from scratch, where a
   dual-degenerate basis could cycle until the iteration cap. No repair measured took more
