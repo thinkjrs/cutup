@@ -552,7 +552,8 @@ impl ReturnRange {
                 }
                 let raise = (bounds.upper[i] - bounds.lower[i]).min(left);
                 if raise > 0.0 {
-                    weights[i] += raise;
+                    // l + (u − l) can round past u.
+                    weights[i] = (weights[i] + raise).min(bounds.upper[i]);
                     left -= raise;
                     margin = Some(mu[i]);
                 }
@@ -912,7 +913,7 @@ mod tests {
         let achieved: f64 = weights.iter().zip(mu.iter()).map(|(w, m)| w * m).sum();
         assert!((achieved - 0.0025).abs() < 1e-15, "{achieved}");
         assert!(
-            weights.iter().all(|&w| (0.0..=0.6 + 1e-15).contains(&w)),
+            weights.iter().all(|&w| (0.0..=0.6).contains(&w)),
             "{weights:?}"
         );
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-15);
@@ -1901,5 +1902,27 @@ mod tests {
             )
             .unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.1; 10]), 1e-15);
+    }
+
+    #[test]
+    fn the_range_ends_hold_each_weight_within_its_cap() {
+        // Raised from its floor of 0.195 to its cap of 0.751, the first weight would round to
+        // 0.7510000000000001: l + (u − l) isn't u. The highest return's portfolio, and with it a
+        // target there, would then be a hair past the cap.
+        let bounds = qp::Bounds::new(dvector![0.195, 0.0], dvector![0.751, 1.0]);
+        let mu = dvector![0.002, 0.001];
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        let Ends::Filled { weights, .. } = &range.ends else {
+            panic!("no groups, so the ends are filled");
+        };
+        assert!(weights.1[0] <= 0.751, "{}", weights.1);
+        let m = uncorrelated_returns();
+        let rows: Vec<[f64; 2]> = (0..m.nrows()).map(|t| [m[(t, 0)], m[(t, 1)]]).collect();
+        let data = Returns::new(&rows).unwrap();
+        let method = MeanVariance::target_return(range.highest())
+            .expected_returns(mu.as_slice().to_vec())
+            .bounds(WeightBounds::per_asset(vec![0.195, 0.0], vec![0.751, 1.0]));
+        let top = data.allocate(&method).unwrap();
+        assert!(top[0] <= 0.751, "{top:?}");
     }
 }
