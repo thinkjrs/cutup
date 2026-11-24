@@ -137,7 +137,7 @@ pub(crate) fn within_bounds(x: &[f64], bounds: &qp::Bounds) -> Vec<f64> {
         missing -= moved - weights[i];
         weights[i] = moved;
     }
-    // A weight of -0.0, from the program or the clamp, is 0.0, which prints without a sign:
+    // A weight of -0.0, as one put on a floor of -0.0 is, is 0.0, which prints without a sign:
     // adding 0.0 makes it so and leaves every other weight as it is.
     weights.iter().map(|w| w + 0.0).collect()
 }
@@ -380,6 +380,11 @@ mod tests {
         );
         // But a weight of -0.0 comes back as 0.0.
         let weights = within_bounds(&[1.0, -0.0, 0.0], &bounds);
+        assert!(weights.iter().all(|w| w.is_sign_positive()), "{weights:?}");
+        // So does one on a floor of -0.0, which the bounds accept as 0.
+        let signed = plain(&[-0.0; 3], &[1.0; 3]);
+        assert!(signed.lower.iter().all(|l| l.is_sign_negative()));
+        let weights = within_bounds(&[1.0, 0.0, -0.0], &signed);
         assert!(weights.iter().all(|w| w.is_sign_positive()), "{weights:?}");
     }
 
