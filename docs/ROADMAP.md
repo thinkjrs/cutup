@@ -742,11 +742,20 @@ the internals. Its scope is settled when it starts.
     change the API;
   - anything the analysis turns up.
 - **From the 0.3.12 reviews,** all three done in the solvers' audit:
-  - the dual pivots that repair a basis are capped at `100 + 10m`, where no
-    repair measured took more than 7;
+  - a warm start's dual pivots that repair its basis are capped at
+    `100 + 10m`, where no repair measured took more than 7;
   - the warm and cold solves share their finish;
   - the QP methods meet the budget within the bounds, as the LP methods do,
     where 48 of 2,000 capped weights in a test had ended past their caps.
+- **From the solvers' audit,** for the methods' audit:
+  - a turnover cap of 0 returns the current weights only to rounding, up to
+    `3e-16` away, where `max_turnover`'s docs say it keeps them: the solver
+    now holds each at its current weight exactly, but meeting the budget can
+    still move one, since the current weights divided by their sum needn't
+    sum to exactly 1. Return them as they are;
+  - `held`, which reads a solution's active set back from its weights for
+    the target-volatility search, is the reason that search depends on how
+    weights round. The solver knows which variables it holds: pass that out.
 
 ## Later 0.3.x or 1.x
 
