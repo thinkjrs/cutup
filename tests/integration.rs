@@ -1,6 +1,7 @@
 use cutup::{
-    Allocation, CovarianceConfig, CutupError, EqualWeight, Hrp, InverseVolatility, MeanVariance,
-    MinVariance, Returns, Weights,
+    Allocation, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp, InverseVolatility,
+    MaxDiversification, MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad, MinVariance, Returns,
+    RiskParity, WeightBounds, Weights,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -160,4 +161,170 @@ fn weights_display_as_a_labeled_table() {
     // Short positions line up with long ones.
     let long_short = Weights::from(vec![1.25, -0.25]);
     assert_eq!(long_short.to_string(), "0   1.2500\n1  -0.2500");
+}
+
+#[test]
+fn every_method_reports_its_settings_before_the_data() {
+    // The second asset never moves, so every method that builds a covariance has a zero
+    // variance to report. Each method here also has a setting that's wrong, and says so first:
+    // what's wrong with a request doesn't depend on the data it's sent with.
+    let rows = [
+        [0.01, 0.0, 0.02],
+        [-0.02, 0.0, 0.01],
+        [0.03, 0.0, -0.01],
+        [0.01, 0.0, 0.03],
+        [-0.01, 0.0, -0.02],
+        [0.02, 0.0, 0.01],
+    ];
+    let data = Returns::new(&rows).unwrap();
+    assert!(matches!(
+        data.allocate(&MinVariance::default()),
+        Err(CutupError::ZeroVariance { column: 1, .. })
+    ));
+    let crossed = WeightBounds::uniform(0.5, 0.2);
+    let narrow = WeightBounds::uniform(0.0, 0.1);
+    let shrunk = CovarianceConfig::default().shrinkage(-1.0);
+    let current = [0.2, 0.3, 0.5];
+    type Method = Box<dyn Allocation>;
+    let config: Vec<(&str, Method)> = vec![
+        (
+            "shrinkage",
+            Box::new(MinVariance::default().shrinkage(-1.0)),
+        ),
+        (
+            "shrinkage",
+            Box::new(MinVariance::default().allow_short().shrinkage(-1.0)),
+        ),
+        (
+            "upper_bound",
+            Box::new(MinVariance::default().bounds(crossed.clone())),
+        ),
+        (
+            "max_turnover",
+            Box::new(
+                MinVariance::default()
+                    .current_weights(current)
+                    .max_turnover(-0.1),
+            ),
+        ),
+        ("risk_aversion", Box::new(MeanVariance::risk_aversion(-1.0))),
+        (
+            "risk_aversion",
+            Box::new(MeanVariance::risk_aversion(-1.0).allow_short()),
+        ),
+        (
+            "target_return",
+            Box::new(MeanVariance::target_return(f64::NAN)),
+        ),
+        (
+            "target_return",
+            Box::new(MeanVariance::target_return(f64::NAN).allow_short()),
+        ),
+        (
+            "target_volatility",
+            Box::new(MeanVariance::target_volatility(-1.0)),
+        ),
+        (
+            "target_volatility",
+            Box::new(MeanVariance::target_volatility(-1.0).allow_short()),
+        ),
+        (
+            "shrinkage",
+            Box::new(MeanVariance::risk_aversion(1.0).covariance(shrunk)),
+        ),
+        (
+            "upper_bound",
+            Box::new(MeanVariance::risk_aversion(1.0).bounds(crossed.clone())),
+        ),
+        (
+            "transaction_costs",
+            Box::new(
+                MeanVariance::risk_aversion(1.0)
+                    .current_weights(current)
+                    .transaction_costs(-0.1),
+            ),
+        ),
+        (
+            "risk_free_rate",
+            Box::new(MaxSharpe::default().risk_free_rate(f64::NAN)),
+        ),
+        (
+            "risk_free_rate",
+            Box::new(MaxSharpe::default().allow_short().risk_free_rate(f64::NAN)),
+        ),
+        ("shrinkage", Box::new(MaxSharpe::default().shrinkage(-1.0))),
+        (
+            "shrinkage",
+            Box::new(MaxDiversification::default().shrinkage(-1.0)),
+        ),
+        ("shrinkage", Box::new(RiskParity::default().shrinkage(-1.0))),
+        ("shrinkage", Box::new(Hrp::default().shrinkage(-1.0))),
+        ("shrinkage", Box::new(Herc::default().shrinkage(-1.0))),
+        ("clusters", Box::new(Herc::default().clusters(0))),
+        ("confidence", Box::new(MinCvar::default().confidence(1.5))),
+        (
+            "upper_bound",
+            Box::new(MinCvar::default().bounds(crossed.clone())),
+        ),
+        ("threshold", Box::new(MinMad::default().downside(f64::NAN))),
+        (
+            "upper_bound",
+            Box::new(MinMad::default().bounds(crossed.clone())),
+        ),
+        ("confidence", Box::new(MinCdar::default().confidence(1.5))),
+        ("upper_bound", Box::new(MinCdar::default().bounds(crossed))),
+    ];
+    for (field, method) in &config {
+        match data.allocate(method.as_ref()) {
+            Err(CutupError::InvalidConfig { field: named, .. }) => assert_eq!(named, *field),
+            other => panic!("{field}: {other:?}"),
+        }
+    }
+    // So do settings that are wrong only for this data: one value per asset, and bounds no
+    // portfolio of these three assets can meet.
+    let sized: Vec<(&str, Method)> = vec![
+        (
+            "expected_returns",
+            Box::new(MeanVariance::risk_aversion(1.0).expected_returns([0.1, 0.2])),
+        ),
+        (
+            "expected_returns",
+            Box::new(MaxSharpe::default().expected_returns([0.1, 0.2])),
+        ),
+        (
+            "risk_budgets",
+            Box::new(RiskParity::default().risk_budgets([0.5, 0.5])),
+        ),
+    ];
+    for (field, method) in &sized {
+        match data.allocate(method.as_ref()) {
+            Err(CutupError::DimensionMismatch { field: named, .. }) => assert_eq!(named, *field),
+            other => panic!("{field}: {other:?}"),
+        }
+    }
+    let infeasible: [Method; 3] = [
+        Box::new(MinVariance::default().bounds(narrow.clone())),
+        Box::new(MeanVariance::target_return(0.01).bounds(narrow.clone())),
+        Box::new(
+            MinVariance::default()
+                .bounds(narrow)
+                .current_weights(current)
+                .max_turnover(0.5),
+        ),
+    ];
+    for method in &infeasible {
+        let result = data.allocate(method.as_ref());
+        assert!(
+            matches!(result, Err(CutupError::InfeasibleBounds { .. })),
+            "{result:?}"
+        );
+    }
+    assert!(matches!(
+        data.allocate(&RiskParity::default().risk_budgets([0.5, -0.5, 1.0])),
+        Err(CutupError::InvalidAssetValue {
+            field: "risk_budgets",
+            column: 1,
+            ..
+        })
+    ));
 }
