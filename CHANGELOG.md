@@ -8,6 +8,31 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **A group capped at 0:** `WeightBounds::group(members, 0.0, 0.0)`, which leaves its members
+  out, failed with `SingularCovariance` for a third of the problems in a sweep, on ordinary
+  data. The solver's last check allowed a group's total `1e-8` of its own terms, and a
+  member left at `1e-32` by rounding was the whole of a total that should be 0. The check
+  allows the rounding of the sum as well.
+- **Assets whose returns differ in size by a few million times or more:** next to a
+  volatile asset, one that's pegged, or close to cash, can have returns that much smaller.
+  `MinVariance` and `MeanVariance` within bounds could then return weights that weren't the
+  optimum, without an error, or fail with `SingularCovariance`: the first at a gap of `2e6`
+  in a sweep, 6% of four-asset minimum variance problems at `1.7e7`, and 23% at `4e9`. The
+  solver measured its tolerances against the largest quantity in a problem, and in its
+  units, where every asset has a variance of 1, the assets' weights differ in size as their
+  volatilities do. It now measures each one's own:
+  - a step that lands at weights far smaller than the ones it started from is solved for
+    again from there, since its rounding was the starting point's;
+  - a weight held at a bound is released by its own share of a constraint's multiplier,
+    not the largest share in the problem;
+  - a weight's target counts as past its bound by more than rounding in its own units, not
+    only in the solver's.
+
+  Against optima solved in exact arithmetic, 514 of 6,400 results in a sweep were wrong and
+  none are now. Up to a gap of `1e7` every problem in the sweeps is solved, and beyond it
+  more and more fail with `SingularCovariance` or `NotConverged` rather than return other
+  weights. Results on returns of like sizes are the same to the last bit, but for groups
+  capped at 0 that now solve.
 - **A covariance of your own with a variance rounded below 0:** `CovarianceConfig::matrix`
   allows eigenvalues a rounding below 0, and so a variance that small. Methods took it as
   given, the least risky asset there is: `MinVariance` and `Hrp` held nothing else, and
