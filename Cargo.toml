@@ -11,7 +11,18 @@ documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["portfolio", "allocation", "optimization", "finance", "quant"]
 categories = ["finance", "mathematics", "science"]
-include = ["/src/**/*", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+# The fixtures are the ones the unit tests in `src` read, so that they build from the package.
+include = [
+    "/src/**/*",
+    "/tests/fixtures/covariance.json",
+    "/tests/fixtures/datasets.json",
+    "/tests/fixtures/log_returns.json",
+    "/tests/fixtures/lp.json",
+    "/Cargo.toml",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
 rust-version = "1.85.0"
 
 [badges]
