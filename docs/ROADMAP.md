@@ -760,6 +760,30 @@ the internals. Its scope is settled when it starts.
   every method reports what's wrong with its settings before what's wrong
   with the data, which a test now holds each of them to. Rebalancing with
   `MinVariance` or a risk aversion was the one exception.
+- **From the data and estimation audit,** its own PR, next:
+  - long-only `MinVariance` returns a portfolio that isn't the optimum when
+    some assets' returns are more than about `1e12` times smaller than
+    others': with two of four assets scaled by `2⁻⁴⁰` it gives the long-short
+    split with the short clamped to 0, and by `2⁻⁶⁰` all of the weight to one
+    asset. The solver takes a full step on one solve, whose tolerances are
+    measured against the largest variable, and accepts what that hides of
+    the small ones. Confirming a full step with a second solve from where it
+    lands gives the right split from `2⁻²⁰` to `2⁻²⁰⁰`, and passes the
+    reference suite: benchmark it, and find what still fails at `2⁻⁴⁰⁰`.
+- **From the data and estimation audit,** left as they are:
+  - `Returns::stats` takes its weights relative to the largest, so one more
+    than about `1e323` times smaller counts as 0, whatever its asset's
+    returns. Its docs say so;
+  - returns below about `1e-150` in size have variances an `f64` can't hold,
+    and the methods that use one return `ZeroVariance` for assets that
+    aren't constant, or `NonFiniteCovariance`. The README's size limits say
+    so. Telling underflow from a constant asset would take a new error,
+    which is an API change;
+  - weights labeled `"0"`, `"1"`, … are taken by column, as documented, so
+    they can't be told from weights of data labeled that way in another
+    order;
+  - `Returns::allocate` labels a custom method's weights with the data's
+    labels, as documented, without comparing any they carry.
 - **From the methods' audit,** for the analysis PR: with transaction costs
   within about `1e-3` of half the spread of the expected returns, a
   long-short net-return target fails in 865 of 400,000 forced cases of its
