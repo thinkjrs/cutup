@@ -498,14 +498,24 @@ fn black_litterman(spec: BlackLittermanSpec) -> BlackLitterman {
     covariance!(model, spec.covariance)
 }
 
-/// `method`, boxed, after checking it reads back from its JSON equal to itself. A `null` in
-/// the JSON stands for an infinite or NaN value, which reads back as infinite or unset, so
-/// methods with one are only written.
+/// `method`, boxed, after checking it reads back from its JSON equal to itself. A setting, a
+/// bound or a value per asset that isn't finite doesn't serialize, which is the only error
+/// writing one may give. A `null` in the JSON stands for an infinite bound or value per asset,
+/// so methods with one are only written.
 fn boxed<M>(method: M) -> Box<dyn Allocation>
 where
     M: Allocation + Serialize + DeserializeOwned + PartialEq + Debug + 'static,
 {
-    let json = serde_json::to_string(&method).expect("a method serializes");
+    let json = match serde_json::to_string(&method) {
+        Ok(json) => json,
+        Err(e) => {
+            assert!(
+                e.to_string().contains("can't be written"),
+                "{method:?}: {e}"
+            );
+            return Box::new(method);
+        }
+    };
     if !json.contains("null") {
         let back: M = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}"));
         assert_eq!(back, method, "{json}");
