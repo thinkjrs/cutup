@@ -110,8 +110,8 @@ impl BlackLitterman {
     ///   name an asset that isn't in the data, or name one twice.
     /// * [`CutupError::InvalidAssetValue`] if a market weight is negative or not finite.
     /// * [`CutupError::InvalidConfig`] if the market weights sum to 0, `δ` isn't positive and
-    ///   finite, or is so large that `δΣw` overflows, the risk-free rate isn't finite, or the
-    ///   covariance config is invalid.
+    ///   finite, or is so large that `δΣw` overflows, the risk-free rate isn't finite, or is
+    ///   so large that `δΣw + r_f` overflows, or the covariance config is invalid.
     /// * [`CutupError::ZeroVariance`] if an asset's returns have zero variance, or it's given
     ///   a variance of 0 or rounded below it, and neither shrinkage nor regularization gives
     ///   it a positive one.
@@ -335,12 +335,20 @@ impl BlackLitterman {
                 value: self.risk_free_rate,
             });
         }
-        let prior = (cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate);
         // δ, Σ and the weights are each finite, and their product needn't be.
-        if prior.iter().any(|r| !r.is_finite()) {
+        let implied = (cov * w) * self.risk_aversion;
+        if implied.iter().any(|r| !r.is_finite()) {
             return Err(CutupError::InvalidConfig {
                 field: "risk_aversion",
                 value: self.risk_aversion,
+            });
+        }
+        // Nor need its sum with a finite rate.
+        let prior = implied + DVector::from_element(n, self.risk_free_rate);
+        if prior.iter().any(|r| !r.is_finite()) {
+            return Err(CutupError::InvalidConfig {
+                field: "risk_free_rate",
+                value: self.risk_free_rate,
             });
         }
         Ok(prior)
@@ -1104,6 +1112,14 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|r| r.is_finite())
+        );
+        // A finite rate can take it past the largest number, and then the rate is what's named.
+        assert_eq!(
+            model.risk_free_rate(f64::MAX).prior_returns(&data),
+            Err(CutupError::InvalidConfig {
+                field: "risk_free_rate",
+                value: f64::MAX,
+            })
         );
     }
 }
