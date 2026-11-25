@@ -6,6 +6,7 @@
 //! with no cap.
 
 use super::{Asset, Key, PerAsset, Values};
+use crate::serde_support::reserved;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::{self, SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -184,7 +185,7 @@ impl<'de> Deserialize<'de> for Labeled {
             }
 
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Labeled, M::Error> {
-                let mut pairs = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                let mut pairs = Vec::with_capacity(reserved(map.size_hint()));
                 while let Some((label, Limit(value))) = map.next_entry::<String, Limit>()? {
                     pairs.push((Asset::from(label), value));
                 }
