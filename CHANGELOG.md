@@ -8,6 +8,32 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **A covariance of your own with a variance rounded below 0:** `CovarianceConfig::matrix`
+  allows eigenvalues a rounding below 0, and so a variance that small. Methods took it as
+  given, the least risky asset there is: `MinVariance` and `Hrp` held nothing else, and
+  `Herc`'s weights went below 0. They now return `ZeroVariance` for the asset, as for a
+  variance of 0, unless shrinkage or regularization gives it a positive one.
+- **A target return at an end of its range, with caps:** a target within rounding of the
+  lowest or highest return is moved onto it, and that rounding left out the next asset a
+  target moves weight into in two cases, so a target that close to the end was solved for
+  instead, and put about `1e-14` in an asset the end doesn't hold:
+  - an asset filled to its cap whose weight rounded short of it, since `l + (u − l)` isn't
+    always `u`;
+  - caps that use up the budget exactly, such as eleven assets capped at 0.1, where taking
+    ten caps from 1 leaves `1.4e-16` for the eleventh.
+- **`CovarianceConfig::matrix` near `f64::MAX`:** a covariance with entries above half of
+  `f64::MAX` failed with `NotConverged`, and fixed shrinkage of one whose variances sum past
+  `f64::MAX` with `NonFiniteCovariance`.
+- **`CovarianceConfig::matrix_flat` with the wrong number of rows:** it reported the rows it
+  was given as the number of assets. It reports a `DimensionMismatch` of the rows against
+  `assets`, also for no values at all, which was `NoAssets`.
+- **`Returns::cvar` with a weight that isn't finite:** it returned NaN or an infinite loss.
+  It returns `NonFiniteWeight`, as `stats`, `mad` and `cdar` do.
+- **Ledoit-Wolf shrinkage toward a constant correlation, with one asset's returns about
+  `1e162` times smaller than another's:** the small asset's variance underflowed beside the
+  large one's, and no shrinkage was applied, without a word. It returns `ZeroVariance` for
+  that asset.
+
 - **Caps on `MinVariance`, `MeanVariance` and rebalancing:** each weight stays within its
   bounds. The solver clamped the weights in its own units, and converting them back and then
   scaling them to sum to 1 could put a weight at its cap a few units in the last place past
