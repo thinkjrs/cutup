@@ -11,6 +11,13 @@ pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
 
+/// How many entries to reserve for a map that says it has `hint`: what it says, up to 4096.
+/// The hint is the input's own word, and a format that writes a length first, such as
+/// MessagePack or CBOR, can claim billions of entries in a few bytes.
+pub(crate) fn reserved(hint: Option<usize>) -> usize {
+    hint.unwrap_or(0).min(4096)
+}
+
 /// A long-only method's `bounds` and `allow_short`, from its bounds, `None` when short positions
 /// are allowed. Bounds that are the default are left out.
 pub(crate) fn long_only_fields(bounds: &Option<WeightBounds>) -> (Option<WeightBounds>, bool) {

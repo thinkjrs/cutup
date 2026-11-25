@@ -2,6 +2,7 @@
 //! weight, in column order.
 
 use super::Weights;
+use crate::serde_support::reserved;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -30,7 +31,7 @@ impl<'de> Deserialize<'de> for Weights {
             }
 
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Weights, M::Error> {
-                let n = map.size_hint().unwrap_or(0);
+                let n = reserved(map.size_hint());
                 let (mut labels, mut values) = (Vec::with_capacity(n), Vec::with_capacity(n));
                 let mut seen = HashSet::new();
                 while let Some((label, value)) = map.next_entry::<String, f64>()? {
@@ -88,6 +89,40 @@ mod tests {
                 .ends_with("expected an object from each asset's label to its weight"),
             "{error}"
         );
+    }
+
+    /// A map with no entries that says it has `usize::MAX`, as the length a format writes
+    /// ahead of its entries can.
+    struct Claimed;
+
+    impl<'de> MapAccess<'de> for Claimed {
+        type Error = de::value::Error;
+
+        fn next_key_seed<K: de::DeserializeSeed<'de>>(
+            &mut self,
+            _: K,
+        ) -> Result<Option<K::Value>, Self::Error> {
+            Ok(None)
+        }
+
+        fn next_value_seed<V: de::DeserializeSeed<'de>>(
+            &mut self,
+            _: V,
+        ) -> Result<V::Value, Self::Error> {
+            unreachable!("the map has no entries")
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(usize::MAX)
+        }
+    }
+
+    #[test]
+    fn a_map_that_claims_more_entries_than_it_has_reserves_no_more_than_a_few() {
+        let weights = Weights::deserialize(de::value::MapAccessDeserializer::new(Claimed));
+        assert!(weights.unwrap().is_empty());
+        assert_eq!(reserved(Some(usize::MAX)), 4096);
+        assert_eq!((reserved(Some(3)), reserved(None)), (3, 0));
     }
 
     #[test]
