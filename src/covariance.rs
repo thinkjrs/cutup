@@ -694,7 +694,9 @@ impl Returns {
     /// powers from overflowing or underflowing.
     ///
     /// Returns [`CutupError::ZeroVariance`] for a constant asset with
-    /// [`ShrinkageTarget::ConstantCorrelation`].
+    /// [`ShrinkageTarget::ConstantCorrelation`], or one whose returns are so far below the
+    /// largest asset's, by about `1e162` times, that its variance next to theirs isn't one an
+    /// `f64` can hold: the target's correlations divide by it.
     pub(crate) fn ledoit_wolf(&self, target: ShrinkageTarget) -> Result<f64, CutupError> {
         if target == ShrinkageTarget::ConstantCorrelation {
             if let Some(asset) = self.find_zero_variance() {
@@ -732,6 +734,12 @@ impl Returns {
                 )
             }
             ShrinkageTarget::ConstantCorrelation => {
+                // Scaled by the largest return, a far smaller asset's variance underflows to 0.
+                // Its correlations would be 0/0, the average NaN, and with it the distance,
+                // which no shrinkage at all would follow from, without a word.
+                if let Some(asset) = (0..n).find(|&i| sample[(i, i)] <= 0.0) {
+                    return Err(self.zero_variance(asset));
+                }
                 let r = average_correlation(&sample);
                 let sd = sample.diagonal().map(f64::sqrt);
                 // ρ, the target's covariance with the sample covariance: the variances' own
@@ -1393,6 +1401,38 @@ mod tests {
         );
         assert!(
             data.allocate(&MinVariance::default().covariance(variance.regularization(1e-6)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn ledoit_wolf_toward_a_constant_correlation_needs_each_variance_beside_the_largest() {
+        // The third asset's returns are 1e170 times smaller than the others'. Scaled by the
+        // largest return, its variance underflows to 0, its correlations are 0/0, and the
+        // intensity came out as 0: no shrinkage at all, without a word.
+        let base = factor_returns(3, 24, 5);
+        let scaled = |small: f64| {
+            let returns = DMatrix::from_fn(24, 3, |t, i| {
+                base[(t, i)] * if i == 2 { small } else { 1e100 }
+            });
+            Returns::returns_matrix(returns).unwrap()
+        };
+        assert_eq!(
+            scaled(1e-70).ledoit_wolf(ShrinkageTarget::ConstantCorrelation),
+            Err(CutupError::ZeroVariance {
+                column: 2,
+                asset: "2".into()
+            })
+        );
+        // Twenty orders of magnitude nearer, it's a variance like any other.
+        let intensity = scaled(1e-50)
+            .ledoit_wolf(ShrinkageTarget::ConstantCorrelation)
+            .unwrap();
+        assert!(intensity > 0.0 && intensity <= 1.0, "{intensity}");
+        // And a constant variance divides by none of them.
+        assert!(
+            scaled(1e-70)
+                .ledoit_wolf(ShrinkageTarget::ConstantVariance)
                 .is_ok()
         );
     }
