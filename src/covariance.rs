@@ -460,7 +460,9 @@ impl CovarianceConfig {
     /// * [`CutupError::ZeroVariance`] for a constant asset with
     ///   [`ShrinkageTarget::ConstantCorrelation`], which has no correlations to average, or
     ///   with [`ShrinkageTarget::ConstantVariance`] if `δ` is `0`, unless regularization gives
-    ///   it a positive variance.
+    ///   it a positive variance. With [`ShrinkageTarget::ConstantCorrelation`], also for an
+    ///   asset whose returns are about `1e154` times smaller than the largest asset's: its
+    ///   variance underflows beside theirs.
     ///
     /// # Example
     ///
@@ -695,7 +697,7 @@ impl Returns {
     ///
     /// Returns [`CutupError::ZeroVariance`] for a constant asset with
     /// [`ShrinkageTarget::ConstantCorrelation`], or one whose returns are so far below the
-    /// largest asset's, by about `1e162` times, that its variance next to theirs isn't one an
+    /// largest asset's, by about `1e154` times, that its variance next to theirs isn't one an
     /// `f64` can hold: the target's correlations divide by it.
     pub(crate) fn ledoit_wolf(&self, target: ShrinkageTarget) -> Result<f64, CutupError> {
         if target == ShrinkageTarget::ConstantCorrelation {
@@ -734,10 +736,12 @@ impl Returns {
                 )
             }
             ShrinkageTarget::ConstantCorrelation => {
-                // Scaled by the largest return, a far smaller asset's variance underflows to 0.
-                // Its correlations would be 0/0, the average NaN, and with it the distance,
-                // which no shrinkage at all would follow from, without a word.
-                if let Some(asset) = (0..n).find(|&i| sample[(i, i)] <= 0.0) {
+                // Scaled by the largest return, a far smaller asset's variance underflows: to 0,
+                // where its correlations would be 0/0, the average NaN, and with it the
+                // distance, which no shrinkage at all would follow from, without a word. Or
+                // before that to a subnormal, which has lost digits the correlations are then
+                // wrong by.
+                if let Some(asset) = (0..n).find(|&i| !sample[(i, i)].is_normal()) {
                     return Err(self.zero_variance(asset));
                 }
                 let r = average_correlation(&sample);
@@ -1424,7 +1428,16 @@ mod tests {
                 asset: "2".into()
             })
         );
-        // Twenty orders of magnitude nearer, it's a variance like any other.
+        // And at 1e160, where its variance is a subnormal, with too few digits left for its
+        // correlations: the intensity was off by a few percent of itself.
+        assert_eq!(
+            scaled(1e-60).ledoit_wolf(ShrinkageTarget::ConstantCorrelation),
+            Err(CutupError::ZeroVariance {
+                column: 2,
+                asset: "2".into()
+            })
+        );
+        // Ten orders of magnitude nearer, it's a variance like any other.
         let intensity = scaled(1e-50)
             .ledoit_wolf(ShrinkageTarget::ConstantCorrelation)
             .unwrap();
