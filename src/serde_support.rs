@@ -4,11 +4,28 @@
 
 use crate::WeightBounds;
 use serde::de::Error;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser};
 
 /// Whether `value` is its type's default, so that it's left out.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
+}
+
+/// An error for the first of `settings`, each a key and its value, that's set to a number that
+/// isn't finite.
+///
+/// A format without NaN or infinities, such as JSON, writes one as `null`, and `null` reads
+/// back as not set. The builders refuse such a setting when a method uses it, so written and
+/// read back, a config that fails would allocate, without the cap or the estimate it named.
+pub(crate) fn finite<E: ser::Error>(settings: &[(&str, Option<f64>)]) -> Result<(), E> {
+    for &(key, value) in settings {
+        if let Some(value) = value.filter(|value| !value.is_finite()) {
+            return Err(E::custom(format!(
+                "`{key}` is {value}, which can't be written: it would read back as not set"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// How many entries to reserve for a map that says it has `hint`: what it says, up to 4096.
@@ -185,5 +202,155 @@ mod tests {
         );
         let both = of(Some(custom), true).unwrap_err();
         assert!(both.to_string().contains("exclude each other"));
+    }
+
+    #[test]
+    fn a_setting_that_isnt_finite_doesnt_serialize() {
+        use crate::{
+            BlackLitterman, CovarianceConfig, MeanVariance, MinCdar, MinCvar, MinMad, MinVariance,
+            View,
+        };
+
+        // JSON writes NaN and the infinities as `null`, and `null` reads back as not set. A
+        // turnover cap of NaN, which `allocate` refuses, read back with no cap and allocated.
+        let written = |value: Result<serde_json::Value, serde_json::Error>, key: &str| {
+            let error = value.unwrap_err().to_string();
+            assert!(error.contains(&format!("`{key}` is ")), "{key}: {error}");
+        };
+        for not in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let least = MinVariance::default().current_weights([0.5, 0.5]);
+            written(
+                serde_json::to_value(least.clone().max_turnover(not)),
+                "max_turnover",
+            );
+            written(
+                serde_json::to_value(least.turnover_penalty(not)),
+                "turnover_penalty",
+            );
+            let mean = MeanVariance::risk_aversion(2.0).current_weights([0.5, 0.5]);
+            written(
+                serde_json::to_value(mean.clone().max_turnover(not)),
+                "max_turnover",
+            );
+            written(
+                serde_json::to_value(mean.clone().turnover_penalty(not)),
+                "turnover_penalty",
+            );
+            written(
+                serde_json::to_value(mean.transaction_costs(not)),
+                "transaction_costs",
+            );
+            written(
+                serde_json::to_value(MeanVariance::risk_aversion(not)),
+                "risk_aversion",
+            );
+            written(
+                serde_json::to_value(MeanVariance::target_return(not)),
+                "target_return",
+            );
+            written(
+                serde_json::to_value(MeanVariance::target_volatility(not)),
+                "target_volatility",
+            );
+            written(
+                serde_json::to_value(MinCvar::default().target_return(not)),
+                "target_return",
+            );
+            written(
+                serde_json::to_value(MinCdar::default().target_return(not)),
+                "target_return",
+            );
+            written(
+                serde_json::to_value(MinMad::default().target_return(not)),
+                "target_return",
+            );
+            written(
+                serde_json::to_value(MinMad::default().downside(not)),
+                "downside",
+            );
+            let covariance = CovarianceConfig::default;
+            written(
+                serde_json::to_value(CovarianceConfig::exponentially_weighted(not)),
+                "exponentially_weighted",
+            );
+            written(
+                serde_json::to_value(CovarianceConfig::exponentially_weighted_decay(not)),
+                "exponentially_weighted_decay",
+            );
+            written(
+                serde_json::to_value(CovarianceConfig::semicovariance_below(not)),
+                "semicovariance_below",
+            );
+            written(
+                serde_json::to_value(covariance().shrinkage(not)),
+                "shrinkage",
+            );
+            written(
+                serde_json::to_value(covariance().regularization(not)),
+                "regularization",
+            );
+            // Inside a method too, and a model's views.
+            written(
+                serde_json::to_value(MinVariance::default().shrinkage(not)),
+                "shrinkage",
+            );
+            written(
+                serde_json::to_value(View::absolute(0, 0.01).variance(not)),
+                "variance",
+            );
+            written(
+                serde_json::to_value(View::absolute(0, 0.01).confidence(not)),
+                "confidence",
+            );
+            let model =
+                BlackLitterman::new([0.5, 0.5], 2.5).view(View::absolute(0, 0.01).variance(not));
+            written(serde_json::to_value(model), "variance");
+        }
+        // A finite one is written as before.
+        let capped = MinVariance::default()
+            .current_weights([0.5, 0.5])
+            .max_turnover(0.2);
+        assert_eq!(
+            serde_json::to_value(capped).unwrap(),
+            json!({"current_weights": [0.5, 0.5], "max_turnover": 0.2})
+        );
+    }
+
+    #[test]
+    fn only_an_infinite_cap_is_written_as_null() {
+        use crate::PerAsset;
+
+        // NaN and −∞ would be `null` in JSON too, and read back as no cap: an upper bound
+        // the builders refuse came back as none at all.
+        for not in [f64::NAN, f64::NEG_INFINITY] {
+            for bounds in [
+                WeightBounds::uniform(0.0, not),
+                WeightBounds::uniform(not, 1.0),
+                WeightBounds::per_asset(vec![0.0, 0.0], vec![0.5, not]),
+                WeightBounds::per_asset(vec![0.0, not], vec![0.5, 0.5]),
+                WeightBounds::default().asset(0, 0.0, not),
+                WeightBounds::default().group([0, 1], 0.0, not),
+            ] {
+                let error = serde_json::to_value(&bounds).unwrap_err().to_string();
+                assert!(error.contains("can't be written"), "{bounds:?}: {error}");
+            }
+            let values = PerAsset::from(vec![0.01, not]);
+            assert!(serde_json::to_value(&values).is_err(), "{not}");
+            let labeled = PerAsset::from([("SPY", 0.01), ("TLT", not)]);
+            assert!(serde_json::to_value(&labeled).is_err(), "{not}");
+        }
+        // No cap still is.
+        assert_eq!(
+            serde_json::to_value(WeightBounds::uniform(0.0, f64::INFINITY)).unwrap(),
+            json!({"lower": 0.0, "upper": null})
+        );
+        assert_eq!(
+            serde_json::to_value(WeightBounds::per_asset(
+                vec![0.0, 0.0],
+                vec![0.5, f64::INFINITY]
+            ))
+            .unwrap(),
+            json!({"lower": [0.0, 0.0], "upper": [0.5, null]})
+        );
     }
 }

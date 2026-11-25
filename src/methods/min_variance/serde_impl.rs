@@ -8,7 +8,7 @@
 //! `turnover_penalty`. `{}` is [`MinVariance::default`].
 
 use super::MinVariance;
-use crate::serde_support::{bounds_of, is_default, long_only_fields};
+use crate::serde_support::{bounds_of, finite, is_default, long_only_fields};
 use crate::turnover::Trading;
 use crate::{CovarianceConfig, PerAsset, WeightBounds};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -35,6 +35,10 @@ pub(super) struct Wire {
 impl Serialize for MinVariance {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (bounds, allow_short) = long_only_fields(&self.bounds);
+        finite(&[
+            ("max_turnover", self.trading.max_turnover),
+            ("turnover_penalty", self.trading.penalty),
+        ])?;
         Wire {
             bounds,
             allow_short,

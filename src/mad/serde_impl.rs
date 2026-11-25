@@ -3,7 +3,7 @@
 
 use super::MinMad;
 use crate::WeightBounds;
-use crate::serde_support::is_default;
+use crate::serde_support::{finite, is_default};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
@@ -20,6 +20,10 @@ pub(super) struct Wire {
 
 impl Serialize for MinMad {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        finite(&[
+            ("target_return", self.target_return),
+            ("downside", self.downside),
+        ])?;
         Wire {
             bounds: self.bounds.clone(),
             target_return: self.target_return,

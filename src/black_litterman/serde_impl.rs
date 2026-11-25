@@ -14,7 +14,7 @@
 //! most one of `variance` and `confidence`.
 
 use super::{Assets, BlackLitterman, Uncertainty, View};
-use crate::serde_support::is_default;
+use crate::serde_support::{finite, is_default};
 use crate::{Asset, CovarianceConfig, PerAsset};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -111,6 +111,7 @@ impl Serialize for View {
             Uncertainty::Variance(omega) => wire.variance = Some(omega),
             Uncertainty::Confidence(confidence) => wire.confidence = Some(confidence),
         }
+        finite(&[("variance", wire.variance), ("confidence", wire.confidence)])?;
         wire.serialize(serializer)
     }
 }

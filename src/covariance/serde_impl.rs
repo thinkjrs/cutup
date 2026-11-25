@@ -15,6 +15,7 @@
 
 use super::{CovarianceConfig, Decay, Estimate, Shrinkage};
 use crate::ShrinkageTarget;
+use crate::serde_support::finite;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -70,6 +71,16 @@ impl Serialize for CovarianceConfig {
             Some(Shrinkage::Fixed(lambda)) => wire.shrinkage = Some(lambda),
             Some(Shrinkage::LedoitWolf(target)) => wire.ledoit_wolf = Some(target),
         }
+        finite(&[
+            ("exponentially_weighted", wire.exponentially_weighted),
+            (
+                "exponentially_weighted_decay",
+                wire.exponentially_weighted_decay,
+            ),
+            ("semicovariance_below", wire.semicovariance_below),
+            ("shrinkage", wire.shrinkage),
+            ("regularization", wire.regularization),
+        ])?;
         wire.serialize(serializer)
     }
 }

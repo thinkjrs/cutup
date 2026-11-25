@@ -3,7 +3,7 @@
 
 use super::MinCvar;
 use crate::WeightBounds;
-use crate::serde_support::is_default;
+use crate::serde_support::{finite, is_default};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// [`MinCvar`]'s default confidence.
@@ -31,6 +31,7 @@ fn is_confidence(beta: &f64) -> bool {
 
 impl Serialize for MinCvar {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        finite(&[("target_return", self.target_return)])?;
         Wire {
             confidence: self.confidence,
             bounds: self.bounds.clone(),

@@ -10,7 +10,7 @@
 //! `max_turnover`, `turnover_penalty`, and `transaction_costs` or `transaction_costs_per_asset`.
 
 use super::{FrontierPoint, MeanVariance, Objective};
-use crate::serde_support::{bounds_of, is_default, long_only_fields};
+use crate::serde_support::{bounds_of, finite, is_default, long_only_fields};
 use crate::turnover::{Costs, Trading};
 use crate::{CovarianceConfig, PerAsset, WeightBounds, Weights};
 use serde::de::Error as _;
@@ -60,6 +60,14 @@ impl Serialize for MeanVariance {
             Objective::TargetReturn(target) => (None, Some(target), None),
             Objective::TargetVolatility(sigma) => (None, None, Some(sigma)),
         };
+        finite(&[
+            ("risk_aversion", risk_aversion),
+            ("target_return", target_return),
+            ("target_volatility", target_volatility),
+            ("max_turnover", self.trading.max_turnover),
+            ("turnover_penalty", self.trading.penalty),
+            ("transaction_costs", transaction_costs),
+        ])?;
         Wire {
             risk_aversion,
             target_return,

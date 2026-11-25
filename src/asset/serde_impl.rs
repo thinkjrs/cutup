@@ -7,7 +7,7 @@
 
 use super::{Asset, Key, PerAsset, Values};
 use serde::de::{self, MapAccess, Visitor};
-use serde::ser::{SerializeMap, SerializeSeq};
+use serde::ser::{self, SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 use std::fmt;
@@ -114,6 +114,15 @@ impl<'de> Deserialize<'de> for Limit {
 
 impl Serialize for Limit {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Only `f64::INFINITY` is `null`. A format without NaN or infinities, such as JSON,
+        // would write NaN and −∞ as `null` too, and they'd read back as no cap, or as an
+        // infinite value, where the builders refuse them.
+        if self.0.is_nan() || self.0 == f64::NEG_INFINITY {
+            return Err(ser::Error::custom(format!(
+                "{} can't be written: it would read back as infinity",
+                self.0
+            )));
+        }
         finite_or_none(self.0).serialize(serializer)
     }
 }
