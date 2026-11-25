@@ -12,7 +12,8 @@ All notable changes to this project are documented here. The format follows
   allows eigenvalues a rounding below 0, and so a variance that small. Methods took it as
   given, the least risky asset there is: `MinVariance` and `Hrp` held nothing else, and
   `Herc`'s weights went below 0. They now return `ZeroVariance` for the asset, as for a
-  variance of 0, unless shrinkage or regularization gives it a positive one.
+  variance of 0, unless shrinkage or regularization gives it a positive one. So do
+  `BlackLitterman`'s prior and posterior returns and its posterior covariance.
 - **A target return at an end of its range, with caps:** a target within rounding of the
   lowest or highest return is moved onto it, and that rounding left out the next asset a
   target moves weight into in two cases, so a target that close to the end was solved for
@@ -30,7 +31,8 @@ All notable changes to this project are documented here. The format follows
 - **`Returns::cvar` with a weight that isn't finite:** it returned NaN or an infinite loss.
   It returns `NonFiniteWeight`, as `stats`, `mad` and `cdar` do. It's now `stats`'s own CVaR,
   as they are its MAD and CDaR, so weights near `f64::MAX` that cancel no longer overflow
-  into NaN on the way.
+  into NaN on the way. As there, a weight more than about `1e323` times smaller than the
+  largest counts as 0.
 - **Ledoit-Wolf shrinkage toward a constant correlation, with one asset's returns about
   `1e154` times smaller than another's:** the small asset's variance underflowed beside the
   large one's, and no shrinkage was applied, without a word. It returns `ZeroVariance` for
