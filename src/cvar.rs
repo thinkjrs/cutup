@@ -2,7 +2,7 @@
 
 use crate::dual::{Portfolios, unit_scale};
 use crate::{Allocation, CutupError, Returns, WeightBounds, Weights};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DMatrix;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
@@ -159,13 +159,11 @@ impl Returns {
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn cvar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
-        let cap = tail_weight(beta, self.returns.nrows())?;
-        self.check_finite_weights(weights)?;
-        let w = DVector::from_column_slice(weights.as_slice());
-        Ok(tail_loss(
-            (-(&self.returns * w)).iter().copied().collect(),
-            cap,
-        ))
+        // The confidence is checked first, as it always was. The rest is `stats`'s, which
+        // divides the weights by a power of two before they meet the returns: weights of
+        // 1e308 and -1e308 times returns of 10 overflow before they cancel.
+        tail_weight(beta, self.returns.nrows())?;
+        self.portfolio_stats(weights, false)?.cvar(beta)
     }
 }
 
@@ -623,5 +621,27 @@ mod tests {
             );
             assert_eq!(data.mad(&weights), data.cvar(&weights, 0.5));
         }
+    }
+
+    #[test]
+    fn cvar_of_weights_whose_products_overflow_is_their_stats() {
+        // Each weight times a return of 10 is past f64::MAX, though the two nearly cancel:
+        // the losses were infinity less infinity, and the CVaR NaN.
+        let data = Returns::new(&[[10.0, 9.5], [-4.0, -3.0], [7.0, 7.5], [2.0, 1.0]]).unwrap();
+        let weights = vec![1e308, -1e308].into();
+        assert_eq!(data.cvar(&weights, 0.5), Ok(7.5e307));
+        assert_eq!(
+            data.cvar(&weights, 0.5),
+            data.stats(&weights).unwrap().cvar(0.5)
+        );
+        // The confidence is still the first thing checked.
+        let invalid = vec![f64::NAN, 1.0].into();
+        assert!(matches!(
+            data.cvar(&invalid, 1.5),
+            Err(CutupError::InvalidConfig {
+                field: "confidence",
+                ..
+            })
+        ));
     }
 }
