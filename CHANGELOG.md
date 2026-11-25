@@ -107,6 +107,38 @@ All notable changes to this project are documented here. The format follows
   and one branch took all of the weight, or the split was NaN.
 - **`RollingAllocation::count`:** it allocated every window to count them. It now allocates
   none.
+- **A setting that isn't finite, written to JSON and read back:** JSON writes NaN and the
+  infinities as `null`, and `null` reads back as not set. A turnover cap of NaN, which
+  `allocate` refuses with `InvalidConfig`, came back with no cap and allocated, and an
+  exponentially weighted covariance with a half-life of NaN came back as the sample
+  covariance. Serializing such a setting is now an error: the caps, penalties, costs and
+  targets of the methods, the numbers of a `CovarianceConfig`, and a view's variance and
+  confidence.
+- **A bound of NaN or `-f64::INFINITY`, written to JSON and read back:** it was `null` too,
+  which reads back as no cap, so an upper bound the builders refuse came back as none at
+  all, and a NaN among values per asset as infinity. Only `f64::INFINITY` is written as
+  `null`, and serializing the others is an error.
+- **Bounds and values per asset in a format that writes `Some` in full,** such as RON: they
+  didn't read back, and neither did a method with `expected_returns` or `current_weights`.
+- **Malformed JSON inside values per asset:** JSON that ends early, or a stray comma, was
+  reported as the wrong form of values. It's the reader's own error, and a value in none of
+  the forms still says which forms there are.
+- **A bound of the wrong type:** `{"upper": "x"}` said `data did not match any variant of
+  untagged enum Side`. It says what a bound is.
+- **A Black-Litterman view with a confidence near 0:** a confidence so small that its
+  variance overflows, such as `f64::MIN_POSITIVE` on returns in percent, failed with
+  `DegenerateViews`. It's left out, as at a confidence of 0.
+- **A Black-Litterman prior that overflows:** with a risk aversion so large that `δΣw` isn't
+  finite, `prior_returns` and `expected_returns` returned infinite returns as `Ok`. They
+  return `InvalidConfig` for the risk aversion.
+- **The unit tests from the published crate:** they read four fixtures that the package
+  left out, so `cargo test` didn't build there. The package has them.
+
+### Security
+
+- **`Weights` read from a format that writes a map's length first,** such as MessagePack or
+  CBOR: the length was reserved as claimed, so a few bytes claiming billions of entries
+  could panic or abort on allocation. No more than 4,096 entries are reserved ahead.
 
 ### Changed
 
