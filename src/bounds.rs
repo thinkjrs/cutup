@@ -506,8 +506,9 @@ enum Ends {
     Filled {
         /// The portfolios with the lowest and the highest expected return.
         weights: Box<(DVector<f64>, DVector<f64>)>,
-        /// The expected return of the last asset raised above its lower bound, for the lowest
-        /// and the highest, or `None` if the lower bounds already sum to 1.
+        /// The expected return of the last asset raised above its lower bound by more than
+        /// rounding leaves of the budget, for the lowest and the highest, or `None` if the
+        /// lower bounds already sum to 1, to rounding.
         margins: (Option<f64>, Option<f64>),
         /// The assets by expected return, highest first, ties in column order.
         descending: Vec<usize>,
@@ -542,6 +543,9 @@ impl ReturnRange {
         ascending.sort_by(|&i, &j| mu[i].total_cmp(&mu[j]));
         let mut descending: Vec<usize> = (0..mu.len()).collect();
         descending.sort_by(|&i, &j| mu[j].total_cmp(&mu[i]));
+        // What the raises' rounding can leave of the budget, as a sum of weights is held to: ten
+        // caps of 0.1 leave 1.4e-16 of it.
+        let spent = qp::sum_rounding(mu.len(), 1.0);
         let fill = |order: &[usize]| {
             let mut weights = bounds.lower.clone();
             let mut left = 1.0 - bounds.lower.sum();
@@ -550,12 +554,25 @@ impl ReturnRange {
                 if left <= 0.0 {
                     break;
                 }
-                let raise = (bounds.upper[i] - bounds.lower[i]).min(left);
+                let room = bounds.upper[i] - bounds.lower[i];
+                let raise = room.min(left);
                 if raise > 0.0 {
-                    // l + (u − l) can round past u.
-                    weights[i] = (weights[i] + raise).min(bounds.upper[i]);
+                    // A raise to the cap is the cap: l + (u − l) can round past u, or short of
+                    // it, where the asset would pass for one with room left. A raise by what's
+                    // left can still round past u.
+                    weights[i] = if raise == room {
+                        bounds.upper[i]
+                    } else {
+                        (weights[i] + raise).min(bounds.upper[i])
+                    };
                     left -= raise;
-                    margin = Some(mu[i]);
+                    // An asset raised only by what rounding left of the budget, so that the
+                    // weights still sum to 1, isn't the margin: it's the next asset a target
+                    // moves weight into, and as the margin it would be left out of that end's
+                    // rounding.
+                    if raise > spent {
+                        margin = Some(mu[i]);
+                    }
                 }
             }
             (mu.dot(&weights), weights, margin)
@@ -1924,5 +1941,66 @@ mod tests {
             .bounds(WeightBounds::per_asset(vec![0.195, 0.0], vec![0.751, 1.0]));
         let top = data.allocate(&method).unwrap();
         assert!(top[0] <= 0.751, "{top:?}");
+    }
+
+    #[test]
+    fn test_an_asset_raised_to_its_cap_has_no_room_left() {
+        // Raised from its floor of 0.011 to its cap of 0.056, the second weight would round to
+        // 0.055999999999999994, short of the cap, and pass for the next asset with room. The
+        // bottom's rounding would then leave out the first asset's 616.5, which a target just
+        // above the bottom moves weight into.
+        let bounds = qp::Bounds::new(dvector![0.0, 0.011, 0.0], dvector![1.0, 0.056, 1.0]);
+        let mu = dvector![616.5, -0.001, 0.0];
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        let Ends::Filled { weights, .. } = &range.ends else {
+            panic!("no groups, so the ends are filled");
+        };
+        assert_eq!(weights.0, dvector![0.0, 0.056, 0.944]);
+        assert!(range.tolerances.0 >= 616.5e-12, "{:?}", range.tolerances);
+        assert_eq!(range.reachable(range.lowest + 1e-11), Ok(range.lowest));
+    }
+
+    #[test]
+    fn test_an_asset_raised_by_what_rounding_leaves_of_the_budget_isnt_the_margin() {
+        // Ten caps of 0.1 fill the budget, but taken from 1 one at a time they leave 1.4e-16 of
+        // it, which the eleventh asset is raised by. As the top's margin, its −1e6, which a
+        // target just below the top moves weight into, would be left out of the rounding.
+        let n = 11;
+        let bounds = qp::Bounds::new(DVector::zeros(n), DVector::from_element(n, 0.1));
+        let mu = DVector::from_fn(n, |i, _| {
+            if i == 10 {
+                -1e6
+            } else {
+                0.02 - 0.001 * i as f64
+            }
+        });
+        let range = ReturnRange::new(&mu, &bounds).unwrap();
+        let Ends::Filled {
+            weights, margins, ..
+        } = &range.ends
+        else {
+            panic!("no groups, so the ends are filled");
+        };
+        assert!(
+            weights.1[10] > 0.0 && weights.1[10] < 2e-16,
+            "{}",
+            weights.1
+        );
+        assert!(
+            weights.1.iter().take(10).all(|&w| w == 0.1),
+            "{}",
+            weights.1
+        );
+        assert_eq!(margins.1, Some(mu[9]));
+        assert!(range.tolerances.1 >= 1e-6, "{:?}", range.tolerances);
+        assert_eq!(range.reachable(range.highest - 1e-9), Ok(range.highest));
+        // The top itself is still reached, within the caps and the budget.
+        let data = Returns::returns_matrix(crate::test_support::factor_returns(n, 30, 3)).unwrap();
+        let method = MeanVariance::target_return(range.highest())
+            .expected_returns(mu.as_slice().to_vec())
+            .bounds(WeightBounds::uniform(0.0, 0.1));
+        let top = data.allocate(&method).unwrap();
+        assert!(top.iter().take(10).all(|&w| w == 0.1), "{top:?}");
+        assert!((top.iter().sum::<f64>() - 1.0).abs() < 1e-15, "{top:?}");
     }
 }
