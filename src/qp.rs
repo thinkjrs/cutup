@@ -921,7 +921,8 @@ fn solve_piecewise_in_units(
         // instead. Rounding is measured against all of x, since variables held at a nonzero
         // point feed the step: a lone free variable at its bound would otherwise block on a
         // step of 1e-17.
-        let tolerance = 1e-12 * target.rows(0, solved.len()).amax().max(variables.amax());
+        let size = target.rows(0, solved.len()).amax().max(variables.amax());
+        let tolerance = 1e-12 * size;
         let blocking = (0..indices.len())
             .filter_map(|k| {
                 if target[k] < lower[k] - tolerance {
@@ -967,6 +968,16 @@ fn solve_piecewise_in_units(
         if moved {
             refused.fill(false);
         }
+        // The target is known to the rounding of the point it was solved from, which is what
+        // the tolerance allows for. Landing somewhere far smaller, that rounding is no longer
+        // small: next to the variables there, a target the tolerance took for one at its bound
+        // can be one well past it, and the others were solved for as if it could go there. So
+        // solve again from where the step landed, where the rounding is that point's own,
+        // before releasing anything or calling it the optimum.
+        if x.rows(0, originals).amax() * FAR < size {
+            released = None;
+            continue;
+        }
 
         // Release the held variable that lowers the objective fastest by moving into a
         // segment next to it, if any. A refused variable that would means x isn't optimal,
@@ -1010,6 +1021,12 @@ fn solve_piecewise_in_units(
     }
     Err(CutupError::NotConverged)
 }
+
+/// How many times smaller than the point it was solved from a full step of
+/// [`solve_piecewise_in_units`] lands before the solver solves again from there: `2¹⁰`. The
+/// tolerances are `1e-12` of the larger point, so short of this they're still about `1e-9` of
+/// the smaller one or less, which is what the release of a held variable is measured to.
+const FAR: f64 = 1024.0;
 
 /// The columns of `E` that a solve on the variables `solved` keeps: every one before
 /// `first_slack`, `E`'s own, and each slack's row but those of the free `slacks`, given as
@@ -2482,6 +2499,24 @@ mod tests {
         assert_eq!(within(1.5, 0.0, 1.0), 1.0);
         assert_eq!(within(-0.5, 0.0, 1.0), 0.0);
         assert_eq!(within(0.25, 0.0, 1.0), 0.25);
+    }
+
+    #[test]
+    fn test_an_optimum_at_the_origin_isnt_solved_for_again() {
+        // Every variable starts at 0 and stays there, so the step lands at a point of size 0
+        // from one of size 0: no smaller, with nothing to solve for again. Taken for smaller,
+        // it would be solved for until the iterations ran out.
+        let q = DMatrix::identity(2, 2);
+        let e = dmatrix![1.0; -1.0];
+        let x = solve_bounded(
+            &q,
+            &DVector::zeros(2),
+            &e,
+            &dvector![0.0],
+            &Bounds::nonnegative(2),
+            DVector::zeros(2),
+        );
+        assert_eq!(x, Ok(dvector![0.0, 0.0]));
     }
 
     #[test]
