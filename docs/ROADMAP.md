@@ -825,7 +825,12 @@ the internals. Its scope is settled when it starts.
     every method that reads weights;
   - with serde_json's `arbitrary_precision` feature on anywhere in a build,
     a bound or a value per asset written as a decimal doesn't parse: it
-    hands a number to an untagged enum as a map. The README says so.
+    hands a number to an untagged enum as a map. The README says so;
+  - a bound or a value per asset that's NaN or `-f64::INFINITY` doesn't
+    serialize, and the error gives the value but not the setting or the
+    asset it's in, where a setting's names its key. `allocate` names both
+    for the same value. Naming them when writing would take a check of each
+    list under its key in every method's serializer.
 - **From the data and estimation audit,** left as they are:
   - `Returns::stats` takes its weights relative to the largest, so one more
     than about `1e323` times smaller counts as 0, whatever its asset's
