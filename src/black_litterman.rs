@@ -104,12 +104,21 @@ impl BlackLitterman {
     ///
     /// # Errors
     ///
-    /// * [`CutupError::DimensionMismatch`] if there isn't one market weight per asset.
+    /// * [`CutupError::DimensionMismatch`] if there isn't one market weight per asset, or a
+    ///   covariance [of your own](CovarianceConfig::matrix) isn't the data's size.
     /// * [`CutupError::UnknownAsset`] or [`CutupError::DuplicateAsset`] if the market weights
     ///   name an asset that isn't in the data, or name one twice.
     /// * [`CutupError::InvalidAssetValue`] if a market weight is negative or not finite.
     /// * [`CutupError::InvalidConfig`] if the market weights sum to 0, `δ` isn't positive and
-    ///   finite, the risk-free rate isn't finite, or the covariance config is invalid.
+    ///   finite, or is so large that `δΣw` overflows, the risk-free rate isn't finite, or the
+    ///   covariance config is invalid.
+    /// * [`CutupError::ZeroVariance`] if an asset's returns have zero variance, or it's given
+    ///   a variance of 0 or rounded below it, and neither shrinkage nor regularization gives
+    ///   it a positive one.
+    /// * [`CutupError::NonFiniteCovariance`] if the adjusted covariance isn't finite, and
+    ///   [`CutupError::SingularCovariance`] if it's all zeros.
+    /// * [`CutupError::NotSupported`] for Ledoit-Wolf shrinkage of an estimate other than
+    ///   the sample covariance.
     pub fn prior_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         Ok(self.prior(&cov, data.labels())?.as_slice().to_vec())
@@ -322,7 +331,15 @@ impl BlackLitterman {
                 value: self.risk_free_rate,
             });
         }
-        Ok((cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate))
+        let prior = (cov * w) * self.risk_aversion + DVector::from_element(n, self.risk_free_rate);
+        // δ, Σ and the weights are each finite, and their product needn't be.
+        if prior.iter().any(|r| !r.is_finite()) {
+            return Err(CutupError::InvalidConfig {
+                field: "risk_aversion",
+                value: self.risk_aversion,
+            });
+        }
+        Ok(prior)
     }
 }
 
@@ -1051,5 +1068,31 @@ mod tests {
                 proptest::prop_assert!(smallest >= -1e-12, "{smallest}");
             }
         }
+    }
+
+    #[test]
+    fn a_prior_that_overflows_is_an_error() {
+        // δ, the covariance and the market weights are each finite, and δΣw isn't. The prior
+        // came back as `Ok` with infinite returns, and with a view as `DegenerateViews`.
+        let data = Returns::returns_matrix(sample() * 3e3).unwrap();
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 1e308);
+        let too_large = CutupError::InvalidConfig {
+            field: "risk_aversion",
+            value: 1e308,
+        };
+        assert_eq!(model.prior_returns(&data), Err(too_large.clone()));
+        assert_eq!(model.expected_returns(&data), Err(too_large.clone()));
+        let viewed = model.view(View::absolute(0, 5.0));
+        assert_eq!(viewed.expected_returns(&data), Err(too_large.clone()));
+        assert_eq!(viewed.posterior_covariance(&data).err(), Some(too_large));
+        // One that doesn't is still the prior.
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 1e300);
+        assert!(
+            model
+                .prior_returns(&data)
+                .unwrap()
+                .iter()
+                .all(|r| r.is_finite())
+        );
     }
 }
