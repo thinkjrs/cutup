@@ -777,9 +777,12 @@ the internals. Its scope is settled when it starts.
   - returns below about `1e-150` in size have variances an `f64` can't hold,
     and the methods that use one return `ZeroVariance` for assets that
     aren't constant, `NonFiniteCovariance` or, with shrinkage,
-    `SingularCovariance`. The README's size limits say so. Telling
-    underflow from a constant asset would take a new error, which is an
-    API change;
+    `SingularCovariance`. Between about `1e-154` and `1e-162` an `f64`
+    holds a variance with only some of its digits, and the methods that
+    still return weights there lose digits with it, without an error, as
+    their tests at those scales allow. The README's size limits say so.
+    Telling underflow from a constant asset would take a new error, which
+    is an API change;
   - weights labeled `"0"`, `"1"`, … are taken by column, as documented, so
     they can't be told from weights of data labeled that way in another
     order;
