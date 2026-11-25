@@ -137,6 +137,10 @@ impl Returns {
     ///
     /// This is what [`MinCvar`] minimizes.
     ///
+    /// As for [`Returns::stats`], the weights are taken relative to the largest of them in
+    /// size, so one more than about `1e323` times smaller than it counts as 0, whatever its
+    /// asset's returns.
+    ///
     /// # Errors
     ///
     /// * [`CutupError::InvalidConfig`] if `beta` isn't in `(0, 1)`.
