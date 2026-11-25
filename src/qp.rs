@@ -647,13 +647,14 @@ pub(crate) fn solve_piecewise(
         &b.rows(0, m).into_owned(),
         &units.column_scales[..m],
     )?;
-    meets_rows(x, rows)
+    meets_rows(x, rows, &units.scales)
 }
 
 /// `x`, or [`CutupError::SingularCovariance`] if some row's sum `aⱼᵀx` misses its limits by
 /// more than `1e-8` of the size of its terms `Σᵢ|aᵢⱼxᵢ|` and the limit, as [`checked`] measures
 /// an equality, and the rounding of a sum of terms as large as the row's largest could be,
-/// `maxᵢ|aᵢⱼ| · maxᵢ|xᵢ|`.
+/// `maxᵢ|aᵢⱼ| · maxᵢ|xᵢ|`. No more of a term counts toward that rounding than `1e-8` of the
+/// largest variable in the solver's units, [`Units`]' `scales` giving each variable's.
 ///
 /// A slack held at a limit is solved for exactly, and the ratio test keeps a free one within
 /// its limits, but only to the solver's rounding in [`Units`]. A variable whose curvature is
@@ -665,11 +666,34 @@ pub(crate) fn solve_piecewise(
 /// The rounding is for a row whose variables hold nothing, as a group capped at 0 is. One of
 /// them left at `1e-32` by the solve is then the row's whole sum and all of its terms, which
 /// no fraction of the terms allows for.
-fn meets_rows(x: DVector<f64>, rows: &Rows) -> Result<DVector<f64>, CutupError> {
+///
+/// That rounding is in the units the problem was given in, and the solve's is in [`Units`],
+/// where a variable with far more variance than the ones that hold the weight is far larger
+/// than they are at the same weight. `1e-15` of one, left in a row held to 0, is within the
+/// row's rounding, and can be as large there as all the rest of `x`, which was then solved
+/// for around it and isn't the optimum without it. A solve leaves a variable that's to be 0
+/// far less than `1e-8` of the largest in the solver's units, so a term past that isn't
+/// rounding, and counts as a miss.
+fn meets_rows(
+    x: DVector<f64>,
+    rows: &Rows,
+    scales: &DVector<f64>,
+) -> Result<DVector<f64>, CutupError> {
+    let largest = x
+        .iter()
+        .zip(scales.iter())
+        .map(|(x, scale)| (x * scale).abs())
+        .fold(0.0, f64::max);
     for (j, a) in rows.a.column_iter().enumerate() {
         let sum = a.dot(&x);
         let terms: f64 = a.iter().zip(x.iter()).map(|(a, x)| (a * x).abs()).sum();
-        let rounding = sum_rounding(x.len(), a.amax() * x.amax());
+        let left: f64 = a
+            .iter()
+            .zip(x.iter())
+            .zip(scales.iter())
+            .map(|((a, x), scale)| (a * x).abs().min(a.abs() * (1e-8 * largest / scale)))
+            .sum();
+        let rounding = sum_rounding(x.len(), a.amax() * x.amax()).min(left);
         let (lower, upper) = (rows.lower[j], rows.upper[j]);
         let within = lower - 1e-8 * (terms + lower.abs()) - rounding <= sum
             && sum <= upper + 1e-8 * (terms + upper.abs()) + rounding;
@@ -1649,18 +1673,20 @@ mod tests {
             upper: dvector![upper],
         };
         let at = |sum: f64| dvector![sum / 2.0, sum / 2.0];
+        let alike = dvector![1.0, 1.0];
         let free = (f64::NEG_INFINITY, f64::INFINITY);
         for (lower, upper, past) in [(free.0, 1.0, 1.0), (1.0, free.1, -1.0)] {
-            assert!(meets_rows(at(1.0 + past * 1.5e-8), &rows(lower, upper)).is_ok());
+            assert!(meets_rows(at(1.0 + past * 1.5e-8), &rows(lower, upper), &alike).is_ok());
             assert_eq!(
-                meets_rows(at(1.0 + past * 2.5e-8), &rows(lower, upper)),
+                meets_rows(at(1.0 + past * 2.5e-8), &rows(lower, upper), &alike),
                 Err(CutupError::SingularCovariance)
             );
         }
         // Exactly that far past, which holds: a sum of 1 against a cap 1e-8 of 1 and of the
         // cap below it, and of 0.75 against a floor as far above.
-        assert!(meets_rows(at(1.0), &rows(free.0, 0.999_999_980_000_000_2)).is_ok());
-        assert!(meets_rows(at(0.75), &rows(0.750_000_015_000_000_1, free.1)).is_ok());
+        let (cap, floor) = (0.999_999_980_000_000_2, 0.750_000_015_000_000_1);
+        assert!(meets_rows(at(1.0), &rows(free.0, cap), &alike).is_ok());
+        assert!(meets_rows(at(0.75), &rows(floor, free.1), &alike).is_ok());
     }
 
     #[test]
@@ -2611,14 +2637,15 @@ mod tests {
             upper: dvector![upper],
         };
         let held = rows(0.0, 0.0);
+        let alike = dvector![1.0, 1.0, 1.0];
         for left in [0.0, 1e-32, -1e-32, 1e-15, -1e-15] {
             let x = dvector![left, 0.0, 0.5];
-            assert_eq!(meets_rows(x.clone(), &held), Ok(x), "{left:e}");
+            assert_eq!(meets_rows(x.clone(), &held, &alike), Ok(x), "{left:e}");
         }
         // Twice 2e-15 is past it, on either side.
         for left in [2e-15, -2e-15] {
             assert_eq!(
-                meets_rows(dvector![left, 0.0, 0.5], &held),
+                meets_rows(dvector![left, 0.0, 0.5], &held, &alike),
                 Err(CutupError::SingularCovariance),
                 "{left:e}"
             );
@@ -2626,10 +2653,39 @@ mod tests {
         // A limit that isn't 0 still has 1e-8 of itself, and of the row's terms.
         let floor = rows(0.4, f64::INFINITY);
         let x = dvector![0.1, 0.1 - 1e-9, 0.5];
-        assert_eq!(meets_rows(x.clone(), &floor), Ok(x));
+        assert_eq!(meets_rows(x.clone(), &floor, &alike), Ok(x));
         assert_eq!(
-            meets_rows(dvector![0.1, 0.1 - 1e-8, 0.5], &floor),
+            meets_rows(dvector![0.1, 0.1 - 1e-8, 0.5], &floor, &alike),
             Err(CutupError::SingularCovariance)
         );
+    }
+
+    #[test]
+    fn test_a_row_takes_no_more_of_a_term_for_rounding_than_the_solvers_units_allow() {
+        // The row above, held to 0, with a first variable of 2³⁰ times the second's scale. In
+        // the solver's units the largest variable is the third, 0.25 · 2 = 0.5, and 1e-8 of
+        // that is 4.7e-18 of the first, which at twice the weight is a term of 9.3e-18.
+        let held = Rows {
+            a: dmatrix![2.0; 2.0; 0.0],
+            lower: dvector![0.0],
+            upper: dvector![0.0],
+        };
+        let scales = dvector![2f64.powi(30), 1.0, 2.0];
+        for left in [4.5e-18, -4.5e-18] {
+            let x = dvector![left, 0.0, 0.25];
+            assert_eq!(meets_rows(x.clone(), &held, &scales), Ok(x), "{left:e}");
+        }
+        // Twice 5e-18 is past it, though far within the row's rounding of 1.3e-15, which is
+        // all that scales alike hold it to.
+        let alike = dvector![1.0, 1.0, 1.0];
+        for left in [5e-18, -5e-18] {
+            let x = dvector![left, 0.0, 0.25];
+            assert_eq!(
+                meets_rows(x.clone(), &held, &scales),
+                Err(CutupError::SingularCovariance),
+                "{left:e}"
+            );
+            assert_eq!(meets_rows(x.clone(), &held, &alike), Ok(x), "{left:e}");
+        }
     }
 }
