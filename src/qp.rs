@@ -646,7 +646,8 @@ pub(crate) fn solve_piecewise(
 
 /// `x`, or [`CutupError::SingularCovariance`] if some row's sum `aⱼᵀx` misses its limits by
 /// more than `1e-8` of the size of its terms `Σᵢ|aᵢⱼxᵢ|` and the limit, as [`checked`] measures
-/// an equality.
+/// an equality, and the rounding of a sum of terms as large as the row's largest could be,
+/// `maxᵢ|aᵢⱼ| · maxᵢ|xᵢ|`.
 ///
 /// A slack held at a limit is solved for exactly, and the ratio test keeps a free one within
 /// its limits, but only to the solver's rounding in [`Units`]. A variable whose curvature is
@@ -654,13 +655,18 @@ pub(crate) fn solve_piecewise(
 /// it's in. Its whole range is then within that rounding, and the row can be missed by as
 /// much as its variables can hold. Clamping a variable to its bounds at the end catches that
 /// for the bounds, but not for a row.
+///
+/// The rounding is for a row whose variables hold nothing, as a group capped at 0 is. One of
+/// them left at `1e-32` by the solve is then the row's whole sum and all of its terms, which
+/// no fraction of the terms allows for.
 fn meets_rows(x: DVector<f64>, rows: &Rows) -> Result<DVector<f64>, CutupError> {
     for (j, a) in rows.a.column_iter().enumerate() {
         let sum = a.dot(&x);
         let terms: f64 = a.iter().zip(x.iter()).map(|(a, x)| (a * x).abs()).sum();
+        let rounding = sum_rounding(x.len(), a.amax() * x.amax());
         let (lower, upper) = (rows.lower[j], rows.upper[j]);
-        let within = lower - 1e-8 * (terms + lower.abs()) <= sum
-            && sum <= upper + 1e-8 * (terms + upper.abs());
+        let within = lower - 1e-8 * (terms + lower.abs()) - rounding <= sum
+            && sum <= upper + 1e-8 * (terms + upper.abs()) + rounding;
         if !within {
             return Err(CutupError::SingularCovariance);
         }
@@ -2476,5 +2482,39 @@ mod tests {
         assert_eq!(within(1.5, 0.0, 1.0), 1.0);
         assert_eq!(within(-0.5, 0.0, 1.0), 0.0);
         assert_eq!(within(0.25, 0.0, 1.0), 0.25);
+    }
+
+    #[test]
+    fn test_a_row_whose_variables_hold_nothing_is_met_to_rounding() {
+        // The first two variables are in a row held to 0, with twice the weight each. One of
+        // them left at 1e-32 by a solve is the whole of the row's sum and of its terms, so
+        // 1e-8 of the terms doesn't cover it. The rounding of a sum of three terms no larger
+        // than 2 · 0.5 does: 12 ulps of 1, about 2.7e-15.
+        let rows = |lower: f64, upper: f64| Rows {
+            a: dmatrix![2.0; 2.0; 0.0],
+            lower: dvector![lower],
+            upper: dvector![upper],
+        };
+        let held = rows(0.0, 0.0);
+        for left in [0.0, 1e-32, -1e-32, 1e-15, -1e-15] {
+            let x = dvector![left, 0.0, 0.5];
+            assert_eq!(meets_rows(x.clone(), &held), Ok(x), "{left:e}");
+        }
+        // Twice 2e-15 is past it, on either side.
+        for left in [2e-15, -2e-15] {
+            assert_eq!(
+                meets_rows(dvector![left, 0.0, 0.5], &held),
+                Err(CutupError::SingularCovariance),
+                "{left:e}"
+            );
+        }
+        // A limit that isn't 0 still has 1e-8 of itself, and of the row's terms.
+        let floor = rows(0.4, f64::INFINITY);
+        let x = dvector![0.1, 0.1 - 1e-9, 0.5];
+        assert_eq!(meets_rows(x.clone(), &floor), Ok(x));
+        assert_eq!(
+            meets_rows(dvector![0.1, 0.1 - 1e-8, 0.5], &floor),
+            Err(CutupError::SingularCovariance)
+        );
     }
 }

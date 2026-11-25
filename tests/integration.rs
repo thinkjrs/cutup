@@ -328,3 +328,59 @@ fn every_method_reports_its_settings_before_the_data() {
         })
     ));
 }
+
+#[test]
+fn a_group_capped_at_zero_leaves_its_assets_out() {
+    // Two of six assets are in a group capped at 0, so the weights are those of the other
+    // four on their own. A third of these failed with `SingularCovariance`: the group's row
+    // has no terms, since its assets hold nothing, and one of them left at 1e-32 by a solve
+    // was the whole of the row's sum, which no fraction of its terms allowed for.
+    let mut state = 7_u64;
+    let mut uniform = || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for case in 0..60 {
+        let load: Vec<f64> = (0..6).map(|_| 1.5 * uniform()).collect();
+        let rows: Vec<Vec<f64>> = (0..24)
+            .map(|_| {
+                let factor = 0.04 * uniform() - 0.02;
+                (0..6)
+                    .map(|i| load[i] * factor + 0.03 * (uniform() - 0.5))
+                    .collect()
+            })
+            .collect();
+        let rest: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|row| vec![row[0], row[2], row[3], row[5]])
+            .collect();
+        let grouped = WeightBounds::default().group([1, 4], 0.0, 0.0);
+        let methods: [(Box<dyn Allocation>, Box<dyn Allocation>); 2] = [
+            (
+                Box::new(MinVariance::default().bounds(grouped.clone())),
+                Box::new(MinVariance::default()),
+            ),
+            (
+                Box::new(MeanVariance::risk_aversion(4.0).bounds(grouped)),
+                Box::new(MeanVariance::risk_aversion(4.0)),
+            ),
+        ];
+        for (with_group, without) in methods {
+            let weights = Returns::new(&rows)
+                .unwrap()
+                .allocate(with_group.as_ref())
+                .unwrap_or_else(|e| panic!("case {case}: {e:?}"));
+            let expected = Returns::new(&rest)
+                .unwrap()
+                .allocate(without.as_ref())
+                .unwrap();
+            assert_eq!([weights[1], weights[4]], [0.0, 0.0], "case {case}");
+            for (w, e) in [0, 2, 3, 5].into_iter().zip(expected.iter()) {
+                assert!((weights[w] - e).abs() < 1e-12, "case {case}: {weights:?}");
+            }
+        }
+    }
+}
