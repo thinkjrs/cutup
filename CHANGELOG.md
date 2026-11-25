@@ -20,19 +20,21 @@ All notable changes to this project are documented here. The format follows
   in a sweep, 6% of four-asset minimum variance problems at `1.7e7`, and 23% at `4e9`. The
   solver measured its tolerances against the largest quantity in a problem, and in its
   units, where every asset has a variance of 1, the assets' weights differ in size as their
-  volatilities do. It now measures each one's own:
+  volatilities do. Two of them change:
   - a step that lands at weights far smaller than the ones it started from is solved for
     again from there, since its rounding was the starting point's;
   - a weight held at a bound is released by its own share of a constraint's multiplier,
-    not the largest share in the problem;
-  - a weight's target counts as past its bound by more than rounding in its own units, not
-    only in the solver's.
+    not the largest share in the problem.
 
   Against optima solved in exact arithmetic, 514 of 6,400 results in a sweep were wrong and
   none are now. Up to a gap of `1e7` every problem in the sweeps is solved, and beyond it
-  more and more fail with `SingularCovariance` or `NotConverged` rather than return other
-  weights. Results on returns of like sizes are the same to the last bit, but for groups
-  capped at 0 that now solve.
+  more and more fail with `SingularCovariance` or `NotConverged`. The few that return other
+  weights there are in the roadmap, with what else is left. Results on returns of like sizes
+  are the same to the last bit, but for groups capped at 0 that now solve.
+- **Rebalancing with costs or a turnover cap that ended in `NotConverged`:** 12 of 168,000
+  problems in a sweep, with assets from `2¹⁴` to `2²³` apart, now solve. Where no more
+  weights are free than there are constraints, each is what the constraints leave it, and
+  a target the rounding of a constraint past its bound no longer stops the solver.
 - **A covariance of your own with a variance rounded below 0:** `CovarianceConfig::matrix`
   allows eigenvalues a rounding below 0, and so a variance that small. Methods took it as
   given, the least risky asset there is: `MinVariance` and `Hrp` held nothing else, and
