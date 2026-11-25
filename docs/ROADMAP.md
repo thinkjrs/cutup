@@ -817,6 +817,15 @@ the internals. Its scope is settled when it starts.
     carries the return splits the rest among them differently from the
     exact optimum, by up to all of it: the variance of either split is the
     same to rounding.
+- **From the API and serde audit,** left as they are:
+  - weights read from JSON are in the order of their keys, which not every
+    reader keeps: `serde_json::Value` sorts them. Used with the data in
+    another order they're a `LabelMismatch`, which the README now says.
+    Matching weights to the data by label, whatever their order, would take
+    every method that reads weights;
+  - with serde_json's `arbitrary_precision` feature on anywhere in a build,
+    a bound or a value per asset written as a decimal doesn't parse: it
+    hands a number to an untagged enum as a map. The README says so.
 - **From the data and estimation audit,** left as they are:
   - `Returns::stats` takes its weights relative to the largest, so one more
     than about `1e323` times smaller counts as 0, whatever its asset's
