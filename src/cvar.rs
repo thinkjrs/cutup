@@ -144,6 +144,7 @@ impl Returns {
     /// * [`CutupError::LabelMismatch`] if the weights are labeled with other assets than the
     ///   data, or in another order. Weights labeled by column, such as `Weights::from(vec)`,
     ///   are taken in column order.
+    /// * [`CutupError::NonFiniteWeight`] if a weight is NaN or infinite.
     ///
     /// # Example
     ///
@@ -159,7 +160,7 @@ impl Returns {
     /// ```
     pub fn cvar(&self, weights: &Weights, beta: f64) -> Result<f64, CutupError> {
         let cap = tail_weight(beta, self.returns.nrows())?;
-        self.check_weights(weights)?;
+        self.check_finite_weights(weights)?;
         let w = DVector::from_column_slice(weights.as_slice());
         Ok(tail_loss(
             (-(&self.returns * w)).iter().copied().collect(),
@@ -604,5 +605,23 @@ mod tests {
         let cvar = allocator.cvar(&weights, beta).unwrap();
         let even = allocator.cvar(&vec![1.0 / 6.0; 6].into(), beta).unwrap();
         assert!(cvar <= even + 1e-15, "{cvar} > {even}");
+    }
+
+    #[test]
+    fn cvar_of_weights_that_arent_finite_is_an_error() {
+        // As for every other statistic of a portfolio. A NaN weight made its CVaR NaN, and an
+        // infinite one an infinite loss, where `stats`, `mad` and `cdar` named the weight.
+        let data = allocator();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let weights = vec![0.5, bad, 0.5].into();
+            assert_eq!(
+                data.cvar(&weights, 0.5),
+                Err(CutupError::NonFiniteWeight {
+                    column: 1,
+                    asset: "1".into()
+                })
+            );
+            assert_eq!(data.mad(&weights), data.cvar(&weights, 0.5));
+        }
     }
 }

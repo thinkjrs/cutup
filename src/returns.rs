@@ -485,6 +485,19 @@ impl Returns {
         Ok(())
     }
 
+    /// [`Returns::check_weights`], and that every weight is finite: what a statistic of a
+    /// portfolio needs of its weights.
+    pub(crate) fn check_finite_weights(&self, weights: &Weights) -> Result<(), CutupError> {
+        self.check_weights(weights)?;
+        match weights.iter().position(|w| !w.is_finite()) {
+            Some(column) => Err(CutupError::NonFiniteWeight {
+                column,
+                asset: self.labels[column].clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// `values`, one per asset in column order, as weights labeled with the data's labels.
     pub(crate) fn weights(&self, values: Vec<f64>) -> Weights {
         Weights::new(values, Arc::clone(&self.labels))

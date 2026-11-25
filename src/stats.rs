@@ -244,6 +244,9 @@ impl Returns {
     /// They use the sample mean and covariance, even for weights from a method given other
     /// expected returns or covariance adjustments, so methods are compared on the same data.
     ///
+    /// The weights are taken relative to the largest of them in size, so one more than about
+    /// `1e323` times smaller than it counts as 0, whatever its asset's returns.
+    ///
     /// # Errors
     ///
     /// * [`CutupError::DimensionMismatch`] if there isn't one weight per asset.
@@ -283,13 +286,7 @@ impl Returns {
         weights: &Weights,
         ratios: bool,
     ) -> Result<PortfolioStats, CutupError> {
-        self.check_weights(weights)?;
-        if let Some(column) = weights.iter().position(|w| !w.is_finite()) {
-            return Err(CutupError::NonFiniteWeight {
-                column,
-                asset: self.labels[column].clone(),
-            });
-        }
+        self.check_finite_weights(weights)?;
         let returns = &self.returns;
         let t = returns.nrows();
 
