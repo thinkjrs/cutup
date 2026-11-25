@@ -2002,5 +2002,23 @@ mod tests {
         let top = data.allocate(&method).unwrap();
         assert!(top.iter().take(10).all(|&w| w == 0.1), "{top:?}");
         assert!((top.iter().sum::<f64>() - 1.0).abs() < 1e-15, "{top:?}");
+        // What rounding can leave is up to 4 ulps of 1 for each asset, 12 for three. Raised by
+        // exactly that, the last asset isn't the margin; by 4 ulps more, it is.
+        let ulp = f64::EPSILON;
+        let mu = dvector![0.03, 0.02, 0.01];
+        let margin = |left: f64| {
+            let bounds = qp::Bounds::new(DVector::zeros(3), dvector![0.5, 0.5 - left, 1.0]);
+            let range = ReturnRange::new(&mu, &bounds).unwrap();
+            let Ends::Filled {
+                weights, margins, ..
+            } = &range.ends
+            else {
+                panic!("no groups, so the ends are filled");
+            };
+            assert_eq!(weights.1[2], left);
+            margins.1
+        };
+        assert_eq!(margin(12.0 * ulp), Some(0.02));
+        assert_eq!(margin(16.0 * ulp), Some(0.01));
     }
 }
