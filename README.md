@@ -122,7 +122,7 @@ In practice:
 - **`MinCvar` and `MinMad`** grow with the assets and the periods together: about as the cube of the assets at two periods each. `MinCdar` solves its program by cutting planes, and grows the slowest of the three with either.
 - **Rolling allocation** runs the method once per window, so multiply by the number of windows.
 - **`EqualWeight`, `InverseVolatility` and `InverseVariance`** aren't benchmarked: they solve nothing.
-- **Scale:** returns can be in any units. Every method works whatever their common scale, from about `1e-140` to `1e150` in size, given settings that are returns or variances, such as a target return, in the same units. A variance is the square of a return, so beyond that an `f64` can't hold it, and the methods that use one return `ZeroVariance` or `NonFiniteCovariance` rather than weights. `MinCvar`, `MinMad` and `MinCdar` never square a return, and go on down to `1e-300`.
+- **Scale:** returns can be in any units. Every method works whatever their common scale, from about `1e-140` to `1e150` in size, given settings that are returns or variances, such as a target return, in the same units. A variance is the square of a return, so beyond that an `f64` can't hold it, and the methods that use one return `ZeroVariance`, `NonFiniteCovariance` or, with shrinkage, `SingularCovariance` rather than weights. `MinCvar`, `MinMad` and `MinCdar` never square a return, and go on down to `1e-300`.
 
 ## Installation
 
