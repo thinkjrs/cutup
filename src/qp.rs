@@ -984,9 +984,11 @@ fn solve_piecewise_in_units(
         // but the solver can't make progress on it.
         let gradient = q * &x - c;
         let pushback = e * &multipliers;
-        // Like the step, the multipliers are differences of terms up to this size.
-        let scale = (q.amax() * x.rows(0, originals).amax() + c.amax().max(slope_amax))
-            .max(pushback.amax());
+        // Like the step, each rate is a difference of terms up to this size, and of its own
+        // variable's share of the multipliers. Not of the largest share in the problem: a
+        // variable whose entry in a constraint is far larger than the others' has a share that
+        // much larger, next to which every other variable's rate would pass for rounding.
+        let terms = q.amax() * x.rows(0, originals).amax() + c.amax().max(slope_amax);
         let wrong: Vec<(f64, usize, usize)> = (0..n)
             .filter(|&i| !fixed[i])
             .filter_map(|i| {
@@ -995,6 +997,7 @@ fn solve_piecewise_in_units(
                 };
                 let s = &segments[i];
                 let nu = gradient[i] + pushback[i];
+                let scale = terms.max(pushback[i].abs());
                 // The objective's rate of decrease moving up into segment p, and down into
                 // segment p − 1.
                 let up = (p < s.last()).then(|| -(nu + s.slopes[p]));
@@ -2517,6 +2520,22 @@ mod tests {
             DVector::zeros(2),
         );
         assert_eq!(x, Ok(dvector![0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_a_rate_within_rounding_of_its_terms_leaves_a_variable_held() {
+        // x₁ is held at its cap of 0.6, where moving down would lower the objective at a rate
+        // of 1e-8: its gradient, −9.6, and its share of the budget's multiplier, 9.6, cancel
+        // to that. It's below 1e-9 of the terms it's a difference of, |Q|·|x| + |c| = 10.8,
+        // so it's rounding, and x₁ stays at its cap. Measured against the multiplier's share
+        // alone, 9.6, it would be released, to end 5e-9 lower.
+        let q = DMatrix::identity(2, 2);
+        let c = dvector![10.2 - 1e-8, 10.0];
+        let (e, b) = budget(2);
+        let bounds = Bounds::new(dvector![0.0, 0.0], dvector![0.6, 1.0]);
+        let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.6, 0.4]).unwrap();
+        assert_eq!(x[0], 0.6);
+        assert!((x[1] - 0.4).abs() < 1e-15, "{x:?}");
     }
 
     #[test]
