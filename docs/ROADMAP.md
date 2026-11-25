@@ -764,29 +764,44 @@ the internals. Its scope is settled when it starts.
   measured its tolerances against the largest quantity in a problem. With
   assets whose returns differ in size by a few million times or more,
   `MinVariance` and `MeanVariance` within bounds returned weights that
-  weren't the optimum, or `SingularCovariance`. It measures each variable's
-  own now: a step that lands far smaller than where it started is solved
-  for again from there, a held variable is released by its own share of
-  the multipliers, and a target counts as past a bound by more than
-  rounding in its own units. Against optima solved in exact arithmetic,
-  514 of 6,400 results were wrong, and none are. The review found a group
-  capped at 0 failing with `SingularCovariance` for a third of ordinary
-  problems, which is fixed too: the last check on a group's total allows
-  the rounding of the sum. Left as they are, each an error rather than
-  wrong weights:
+  weren't the optimum, or `SingularCovariance`. Two of them changed: a step
+  that lands far smaller than where it started is solved for again from
+  there, and a held variable is released by its own share of the
+  multipliers. Against optima solved in exact arithmetic, 514 of 6,400
+  results were wrong, and none are. The review found a group capped at 0
+  failing with `SingularCovariance` for a third of ordinary problems, which
+  is fixed too: the last check on a group's total allows the rounding of
+  the sum. Left as they are, each an error rather than wrong weights:
+  - with caps and assets at three scales `2²⁴` apart or more, up to four in
+    ten problems end in `NotConverged`. The asset with the least variance
+    can hold its whole cap within the rounding of the others, its target
+    past the cap is clamped as rounding, and the budget goes unmet. Counting
+    a target as past its bound by `1e-12` of the problem in the variable's
+    own units solved these, and stopped rebalancing that `develop` solved,
+    from a gap of `2¹⁴`: that's below what a solve rounds by there, and a
+    variable on its current weight or its bound blocks on nothing. It's not
+    in;
+  - with floors or a risk aversion, the failures from a gap of `2⁴⁰` are
+    the ones `develop` has;
   - a group constraint on assets `4e9` apart or more is
     `SingularCovariance` in about a fifth of cases: two constraints that
     differ only in an asset whose entry is that much smaller than the
     others' are the same constraint to the solve's Gram–Schmidt;
-  - from a gap of about `1e14`, with caps, floors or expected returns, some
-    problems end in `NotConverged` or `SingularCovariance`: a far smaller
-    asset's target is all rounding while a larger one holds weight;
+  - rebalancing with costs and a turnover cap on assets `2e9` apart or more
+    fails more often than it did: measured by each weight's own share, the
+    search for the cap's multiplier doesn't reach the cap on some problems,
+    and doubles until it overflows;
+  - a step that stops at one variable's end can leave another a rounding
+    short of its own, `3.6e-18` in one case, free and not at rest. A search
+    over costs then never sees the weights it's looking for. Of 168,000
+    rebalancing results with assets up to `2²³` apart, one problem that
+    solved ends in `NotConverged` this way, and 12 that did now solve;
   - a direction of zero curvature, which a singular covariance has, still
     counts a component within `1e-12` of the direction's largest as not
     moving, whatever its asset's scale. That's untested with assets of
     different scales;
-  - a target volatility and rebalancing weren't measured with assets of
-    different scales, nor were the methods that don't run on this solver.
+  - a target volatility wasn't measured with assets of different scales,
+    nor were the methods that don't run on this solver.
 - **From that PR's review,** found on the way and not the solver's:
   - at an end of a target return's range, only expected returns that are
     exactly equal are tied and left to the solver. Two sample means a
