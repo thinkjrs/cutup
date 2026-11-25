@@ -421,7 +421,8 @@ impl Returns {
     /// is [`Returns::stats`], errors included: it doesn't check the sample covariance, so a
     /// constant asset isn't [`CutupError::ZeroVariance`] there. Neither is a
     /// [given](CovarianceConfig::matrix) variance rounded below 0, which a method can't
-    /// allocate by: here it counts as 0.
+    /// allocate by: here it counts as 0. One given as exactly 0 is still
+    /// [`CutupError::ZeroVariance`], as for a method, unless shrinkage or regularization is set.
     ///
     /// # Example
     ///
