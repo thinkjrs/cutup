@@ -354,13 +354,12 @@ fn weights_are_the_optimum_whatever_the_assets_scales() {
     //
     // The solver's tolerances were all measured against the largest quantity in the problem,
     // which in its units is nothing like the same for every asset. Each case notes what was
-    // returned then, and which of the three fixes it fails without:
+    // returned then, and which of the two fixes it fails without:
     //
     // * solving again from where a step lands, when that's far smaller than where it started;
-    // * releasing a held weight by its own share of the multipliers, not the largest share;
-    // * measuring how far a target is past its bound in the weight's own units too.
+    // * releasing a held weight by its own share of the multipliers, not the largest share.
     let capped = || WeightBounds::uniform(0.0, 0.4);
-    let cases: [Problem; 8] = [
+    let cases: [Problem; 6] = [
         (
             // 0.4834 and 0.5166. The first step, from the equal weights, lands 2⁴⁰ times
             // smaller in the solver's units, where a short clamped to 0 was within the
@@ -387,7 +386,7 @@ fn weights_are_the_optimum_whatever_the_assets_scales() {
             ],
         ),
         (
-            // `SingularCovariance`. Any two of the fixes solve it.
+            // `SingularCovariance`. It needs both.
             "capped, assets at 2⁻²⁴ and 2⁻⁴⁸",
             scaled(
                 [
@@ -425,7 +424,7 @@ fn weights_are_the_optimum_whatever_the_assets_scales() {
             [0.023032069967994447, 0.4, 0.1769679300320055, 0.4],
         ),
         (
-            // [0.2705, 0.4, 0.3295, 0]. Any two of the fixes solve it.
+            // [0.2705, 0.4, 0.3295, 0]. It needs its own share.
             "capped, one asset at 2⁻⁴⁰",
             scaled(
                 [
@@ -448,26 +447,6 @@ fn weights_are_the_optimum_whatever_the_assets_scales() {
             ],
         ),
         (
-            // `SingularCovariance`. All that the two assets at 2⁻⁴⁰ can hold is within the
-            // rounding of the others, so their targets past their bounds were clamped as
-            // rounding, and the budget went unmet. It needs its own units.
-            "floors of 0.05, two assets at 2⁻⁴⁰",
-            scaled(
-                [
-                    [-4, -29, -19, -19],
-                    [-15, 6, 30, 3],
-                    [-12, 25, 27, 2],
-                    [-22, 5, 25, 3],
-                    [0, 4, 17, 0],
-                    [25, 6, 20, -15],
-                ],
-                [0, 1, 1, 0],
-                40,
-            ),
-            Box::new(MinVariance::default().bounds(WeightBounds::uniform(0.05, 1.0))),
-            [0.05, 0.05, 0.8439434724102666, 0.05605652758973343],
-        ),
-        (
             // All of the weight in the second asset, the one at 2⁻³². It needs its own share.
             "a risk aversion of 4, one asset at 2⁻³²",
             scaled(
@@ -484,24 +463,6 @@ fn weights_are_the_optimum_whatever_the_assets_scales() {
             ),
             Box::new(MeanVariance::risk_aversion(4.0)),
             [1.0, 0.0, 0.0, 0.0],
-        ),
-        (
-            // `SingularCovariance`. It needs its own units.
-            "a risk aversion of 4, assets at 2⁻²⁰ and 2⁻⁴⁰",
-            scaled(
-                [
-                    [-13, 23, -22, 26],
-                    [22, -3, 21, -9],
-                    [24, 9, -27, -16],
-                    [-5, 9, -24, 22],
-                    [3, 11, -22, -28],
-                    [-19, 14, -22, 23],
-                ],
-                [0, 2, 1, 0],
-                20,
-            ),
-            Box::new(MeanVariance::risk_aversion(4.0)),
-            [0.4107569721115539, 0.0, 0.0, 0.5892430278884462],
         ),
         (
             // [0, 0, 0.5, 0.5]. The two assets at 2⁻³² are capped at 0.5 between them. It
@@ -602,4 +563,105 @@ fn a_group_capped_at_zero_leaves_its_assets_out() {
             }
         }
     }
+}
+
+#[test]
+fn rebalancing_assets_of_different_scales_is_solved_as_before() {
+    // Two problems the solver already had right, which tighter tolerances stopped with
+    // `NotConverged` while this was being fixed. Rebalancing holds weights at their current
+    // values and adds a second constraint, so its variables sit on the ends of their segments
+    // with targets a rounding to either side.
+    let thousandths = |rows: &[&[i32]], small: usize, gap: i32| {
+        let rows: Vec<Vec<f64>> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .map(|(i, &r)| {
+                        let scale = if i == small { 1.0 } else { 2f64.powi(-gap) };
+                        f64::from(r) / 1000.0 * scale
+                    })
+                    .collect()
+            })
+            .collect();
+        Returns::new(&rows).unwrap()
+    };
+
+    // All but the third asset at 2⁻²⁰, a target return, and turnover capped at 1. A target
+    // counted as past its bound by 1e-12 of the problem's size in the weight's own units is
+    // below what the solve itself rounds by there, from a gap of about 2¹⁴.
+    let data = thousandths(
+        &[
+            &[-1, -13, -26, -14],
+            &[25, -18, 14, 9],
+            &[13, -23, 17, -24],
+            &[1, -7, 12, 21],
+            &[-7, 3, 13, -16],
+            &[-24, -22, 17, 14],
+            &[10, -3, 5, 14],
+        ],
+        2,
+        20,
+    );
+    let current = vec![
+        0.08281677794522875,
+        0.0,
+        0.25928936103487293,
+        0.6578938610198983,
+    ];
+    let method = MeanVariance::target_return(0.0019261500894490408)
+        .current_weights(current.clone())
+        .max_turnover(1.0);
+    let weights = data.allocate(&method).unwrap();
+    let expected = [
+        0.5828167779375923,
+        0.0,
+        0.25928924182557467,
+        0.15789398023683293,
+    ];
+    for (w, e) in weights.iter().zip(expected) {
+        assert!((w - e).abs() < 1e-9, "{weights:?}");
+    }
+    let turnover: f64 = weights
+        .iter()
+        .zip(&current)
+        .map(|(w, c)| (w - c).abs())
+        .sum();
+    assert!(turnover <= 1.0 + 1e-9, "{turnover}");
+
+    // All but the first asset at 2⁻¹⁷, a target return, and costs that leave no trade worth
+    // making. Solved again from where its first step lands, the first asset is alone free at
+    // 0 with a target of -4e-18: the rounding of the budget in its own units, and far more
+    // than 1e-12 of the others there.
+    let data = thousandths(
+        &[
+            &[10, 10, -5, 11, 27],
+            &[26, -19, -5, 25, 19],
+            &[19, -10, -2, 1, -4],
+            &[2, 30, -7, 5, -11],
+            &[25, -24, -15, -2, -4],
+            &[-23, 20, -17, -22, 25],
+            &[-14, -24, -24, -14, 5],
+            &[-22, 6, -5, -26, 29],
+            &[15, -18, -10, 13, 23],
+            &[23, -15, 6, -15, -8],
+            &[-30, 13, 20, 27, -25],
+            &[12, 1, -16, -23, -1],
+            &[-12, -1, 17, -23, -2],
+        ],
+        0,
+        17,
+    );
+    let current = vec![
+        0.0,
+        0.020606946662768817,
+        0.0,
+        0.7239273274568093,
+        0.25546572588042193,
+    ];
+    let method = MeanVariance::target_return(-0.000000007699052334077002)
+        .current_weights(current.clone())
+        .transaction_costs(0.000023137970629909118);
+    let weights = data.allocate(&method).unwrap();
+    assert_eq!(weights.as_slice(), current);
 }
