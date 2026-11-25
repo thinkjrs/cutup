@@ -28,12 +28,13 @@ All notable changes to this project are documented here. The format follows
   was given as the number of assets. It reports a `DimensionMismatch` of the rows against
   `assets`, also for no values at all, which was `NoAssets`.
 - **`Returns::cvar` with a weight that isn't finite:** it returned NaN or an infinite loss.
-  It returns `NonFiniteWeight`, as `stats`, `mad` and `cdar` do.
+  It returns `NonFiniteWeight`, as `stats`, `mad` and `cdar` do. It's now `stats`'s own CVaR,
+  as they are its MAD and CDaR, so weights near `f64::MAX` that cancel no longer overflow
+  into NaN on the way.
 - **Ledoit-Wolf shrinkage toward a constant correlation, with one asset's returns about
-  `1e162` times smaller than another's:** the small asset's variance underflowed beside the
+  `1e154` times smaller than another's:** the small asset's variance underflowed beside the
   large one's, and no shrinkage was applied, without a word. It returns `ZeroVariance` for
   that asset.
-
 - **Caps on `MinVariance`, `MeanVariance` and rebalancing:** each weight stays within its
   bounds. The solver clamped the weights in its own units, and converting them back and then
   scaling them to sum to 1 could put a weight at its cap a few units in the last place past
