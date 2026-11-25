@@ -760,16 +760,48 @@ the internals. Its scope is settled when it starts.
   every method reports what's wrong with its settings before what's wrong
   with the data, which a test now holds each of them to. Rebalancing with
   `MinVariance` or a risk aversion was the one exception.
-- **From the data and estimation audit,** its own PR, next:
-  - long-only `MinVariance` returns a portfolio that isn't the optimum when
-    some assets' returns are more than about `1e12` times smaller than
-    others': with two of four assets scaled by `2⁻⁴⁰` it gives the long-short
-    split with the short clamped to 0, and by `2⁻⁶⁰` all of the weight to one
-    asset. The solver takes a full step on one solve, whose tolerances are
-    measured against the largest variable, and accepts what that hides of
-    the small ones. Confirming a full step with a second solve from where it
-    lands gives the right split from `2⁻²⁰` to `2⁻²⁰⁰`, and passes the
-    reference suite: benchmark it, and find what still fails at `2⁻⁴⁰⁰`.
+- **From the data and estimation audit,** done in its own PR: the QP solver
+  measured its tolerances against the largest quantity in a problem. With
+  assets whose returns differ in size by a few million times or more,
+  `MinVariance` and `MeanVariance` within bounds returned weights that
+  weren't the optimum, or `SingularCovariance`. It measures each variable's
+  own now: a step that lands far smaller than where it started is solved
+  for again from there, a held variable is released by its own share of
+  the multipliers, and a target counts as past a bound by more than
+  rounding in its own units. Against optima solved in exact arithmetic,
+  514 of 6,400 results were wrong, and none are. The review found a group
+  capped at 0 failing with `SingularCovariance` for a third of ordinary
+  problems, which is fixed too: the last check on a group's total allows
+  the rounding of the sum. Left as they are, each an error rather than
+  wrong weights:
+  - a group constraint on assets `4e9` apart or more is
+    `SingularCovariance` in about a fifth of cases: two constraints that
+    differ only in an asset whose entry is that much smaller than the
+    others' are the same constraint to the solve's Gram–Schmidt;
+  - from a gap of about `1e14`, with caps, floors or expected returns, some
+    problems end in `NotConverged` or `SingularCovariance`: a far smaller
+    asset's target is all rounding while a larger one holds weight;
+  - a direction of zero curvature, which a singular covariance has, still
+    counts a component within `1e-12` of the direction's largest as not
+    moving, whatever its asset's scale. That's untested with assets of
+    different scales;
+  - a target volatility and rebalancing weren't measured with assets of
+    different scales, nor were the methods that don't run on this solver.
+- **From that PR's review,** found on the way and not the solver's:
+  - at an end of a target return's range, only expected returns that are
+    exactly equal are tied and left to the solver. Two sample means a
+    rounding apart aren't, so a target on the higher one returns that
+    asset alone, where the least variance mix of the two has the same
+    return to rounding. The review's case: `[0, 0, 0, 1]` for
+    `[0.52, 0, 0, 0.48]`, at twice the variance;
+  - with a risk aversion, two assets `2²⁸` times smaller than the rest
+    whose expected returns tie come back as one of them: splitting them
+    by variance is worth `4e-11` of the objective, below the `1e-9` a held
+    weight is released by;
+  - a target return next to assets `2³²` or more smaller than the one that
+    carries the return splits the rest among them differently from the
+    exact optimum, by up to all of it: the variance of either split is the
+    same to rounding.
 - **From the data and estimation audit,** left as they are:
   - `Returns::stats` takes its weights relative to the largest, so one more
     than about `1e323` times smaller counts as 0, whatever its asset's

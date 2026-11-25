@@ -123,6 +123,7 @@ In practice:
 - **Rolling allocation** runs the method once per window, so multiply by the number of windows.
 - **`EqualWeight`, `InverseVolatility` and `InverseVariance`** aren't benchmarked: they solve nothing.
 - **Scale:** returns can be in any units. Every method works whatever their common scale, from about `1e-140` to `1e150` in size, given settings that are returns or variances, such as a target return, in the same units. A variance is the square of a return, so beyond that an `f64` can't hold it, and the methods that use one return `ZeroVariance`, `NonFiniteCovariance` or, with shrinkage, `SingularCovariance` rather than weights. The small end comes on gradually: for returns between about `1e-154` and `1e-162` in size, an `f64` holds a variance with only some of its digits, so the methods that still return weights there return them with fewer correct digits the smaller the returns, and no error. `MinCvar`, `MinMad` and `MinCdar` never square a return, and go on down to `1e-300`.
+- **Assets of different scales:** the assets' returns needn't be of like size either, as a pegged asset's aren't next to a volatile one's. `MinVariance`, `MaxSharpe`, and `MeanVariance` with a risk aversion or a target return, return the optimum with returns up to `1e7` times apart, in every case of a sweep checked against exact arithmetic. Further apart, more and more of them fail with `SingularCovariance` or `NotConverged`.
 
 ## Installation
 
