@@ -260,19 +260,28 @@ impl BlackLitterman {
             };
             views.push((p, view.q, scale, given));
         }
-        if views.is_empty() {
-            return Ok(Solved {
-                cov,
-                pi,
-                views: None,
-            });
-        }
-
-        let k = views.len();
-        let p = DMatrix::from_fn(k, n, |i, j| views[i].0[j]);
-        let q = DVector::from_fn(k, |i, _| views[i].1);
-        let tau_sigma_pt = &cov * p.transpose() * self.tau;
-        let mut a = &p * &tau_sigma_pt;
+        // A confidence can be so small that the variance `scale · τpᵀΣp` overflows though the
+        // scale doesn't. That variance is infinite too, so the view is dropped as at a
+        // confidence of 0, and the rest are stacked again without it.
+        let (p, tau_sigma_pt, mut a) = loop {
+            if views.is_empty() {
+                return Ok(Solved {
+                    cov,
+                    pi,
+                    views: None,
+                });
+            }
+            let p = DMatrix::from_fn(views.len(), n, |i, j| views[i].0[j]);
+            let tau_sigma_pt = &cov * p.transpose() * self.tau;
+            let a = &p * &tau_sigma_pt;
+            let overflows =
+                |i: usize| a[(i, i)].is_finite() && views[i].2 * a[(i, i)] == f64::INFINITY;
+            let Some(dropped) = (0..views.len()).find(|&i| overflows(i)) else {
+                break (p, tau_sigma_pt, a);
+            };
+            views.remove(dropped);
+        };
+        let q = DVector::from_fn(views.len(), |i, _| views[i].1);
         let volatilities = cov.diagonal().map(f64::sqrt);
         for (i, (p, _, scale, given)) in views.iter().enumerate() {
             let spread = a[(i, i)];
@@ -817,6 +826,31 @@ mod tests {
                 .expected_returns(&allocator)
                 .unwrap();
             assert!(close(&mu, &prior, 1e-15), "{confidence}: {mu:?}");
+        }
+    }
+
+    #[test]
+    fn a_confidence_whose_variance_overflows_drops_the_view() {
+        // In percent the view's τpᵀΣp is about 14, and (1 − c)/c at the smallest normal
+        // confidence about 4.5e307: finite, but their product isn't.
+        let data = Returns::returns_matrix(sample() * 3e3).unwrap();
+        let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+        let unsure = View::absolute(0, 5.0).confidence(f64::MIN_POSITIVE);
+        let alone = model.clone().view(unsure.clone());
+        assert_eq!(alone.expected_returns(&data), model.prior_returns(&data));
+        assert_eq!(posterior(&alone, &data), &data.cov_matrix * (1.0 + 0.05));
+        // Among other views it leaves them as they'd be without it, wherever it comes.
+        let other = View::relative(1, 2, 2.0);
+        let without = model.clone().view(other.clone());
+        for with in [
+            model.clone().view(unsure.clone()).view(other.clone()),
+            model.clone().view(other).view(unsure),
+        ] {
+            assert_eq!(
+                with.expected_returns(&data),
+                without.expected_returns(&data)
+            );
+            assert_eq!(posterior(&with, &data), posterior(&without, &data));
         }
     }
 
