@@ -329,6 +329,225 @@ fn every_method_reports_its_settings_before_the_data() {
     ));
 }
 
+/// Six periods of four assets' returns, given in thousandths, with each asset's scaled by
+/// `2^(−gap · tier)`.
+fn scaled(base: [[i32; 4]; 6], tiers: [i32; 4], gap: i32) -> Returns {
+    let rows: Vec<Vec<f64>> = base
+        .iter()
+        .map(|row| {
+            (0..4)
+                .map(|i| f64::from(row[i]) / 1000.0 * 2f64.powi(-gap * tiers[i]))
+                .collect()
+        })
+        .collect();
+    Returns::new(&rows).unwrap()
+}
+
+/// A problem's name, its data and method, and its optimum.
+type Problem = (&'static str, Returns, Box<dyn Allocation>, [f64; 4]);
+
+#[test]
+fn weights_are_the_optimum_whatever_the_assets_scales() {
+    // Some assets' returns are from 2⁻²⁰ to 2⁻⁴⁸ times the size of the others', as cash would
+    // be next to anything else, and far past it. The expected weights are each problem's
+    // optimum, solved for in exact rational arithmetic.
+    //
+    // The solver's tolerances were all measured against the largest quantity in the problem,
+    // which in its units is nothing like the same for every asset. Each case notes what was
+    // returned then, and which of the three fixes it fails without:
+    //
+    // * solving again from where a step lands, when that's far smaller than where it started;
+    // * releasing a held weight by its own share of the multipliers, not the largest share;
+    // * measuring how far a target is past its bound in the weight's own units too.
+    let capped = || WeightBounds::uniform(0.0, 0.4);
+    let cases: [Problem; 8] = [
+        (
+            // 0.4834 and 0.5166. The first step, from the equal weights, lands 2⁴⁰ times
+            // smaller in the solver's units, where a short clamped to 0 was within the
+            // rounding of the start. It needs the second solve.
+            "long-only, two assets 2⁻⁴⁰ the others' size",
+            scaled(
+                [
+                    [-25, -1, 23, 2],
+                    [-18, 24, 27, 27],
+                    [-9, -24, 19, 23],
+                    [-28, 30, -20, 3],
+                    [15, 0, 18, -15],
+                    [-10, 24, 6, -26],
+                ],
+                [0, 1, 0, 1],
+                40,
+            ),
+            Box::new(MinVariance::default()),
+            [
+                4.638488265036829e-13,
+                0.4972206244096623,
+                0.0,
+                0.5027793755898738,
+            ],
+        ),
+        (
+            // `SingularCovariance`. Any two of the fixes solve it.
+            "capped, assets at 2⁻²⁴ and 2⁻⁴⁸",
+            scaled(
+                [
+                    [28, -14, 3, 18],
+                    [1, 3, 27, -30],
+                    [10, -8, 2, 12],
+                    [-6, 26, -14, 13],
+                    [-18, -3, 29, 5],
+                    [4, -22, 28, -19],
+                ],
+                [0, 1, 2, 0],
+                24,
+            ),
+            Box::new(MinVariance::default().bounds(capped())),
+            [0.1298676316210788, 0.4, 0.4, 0.07013236837892113],
+        ),
+        (
+            // [0, 0.4, 0.2, 0.4]. The asset at 2⁻³² is at its cap, with a share of the
+            // budget's multiplier 2³² times the others', next to which the first asset's rate
+            // passed for rounding. It needs its own share.
+            "capped, one asset at 2⁻³²",
+            scaled(
+                [
+                    [8, -13, 16, 7],
+                    [-23, -14, 7, -9],
+                    [-10, -9, -26, 3],
+                    [-4, -11, -15, 20],
+                    [-3, -2, 7, 12],
+                    [19, -2, 28, 7],
+                ],
+                [0, 2, 0, 0],
+                16,
+            ),
+            Box::new(MinVariance::default().bounds(capped())),
+            [0.023032069967994447, 0.4, 0.1769679300320055, 0.4],
+        ),
+        (
+            // [0.2705, 0.4, 0.3295, 0]. Any two of the fixes solve it.
+            "capped, one asset at 2⁻⁴⁰",
+            scaled(
+                [
+                    [6, -14, 27, -29],
+                    [30, 12, -29, 18],
+                    [29, 10, 10, 26],
+                    [27, 3, -4, 13],
+                    [-20, 4, 6, 23],
+                    [-21, -3, -27, 8],
+                ],
+                [0, 1, 0, 0],
+                40,
+            ),
+            Box::new(MinVariance::default().bounds(capped())),
+            [
+                0.0751645720802539,
+                0.4,
+                0.2501573161007181,
+                0.27467811181902796,
+            ],
+        ),
+        (
+            // `SingularCovariance`. All that the two assets at 2⁻⁴⁰ can hold is within the
+            // rounding of the others, so their targets past their bounds were clamped as
+            // rounding, and the budget went unmet. It needs its own units.
+            "floors of 0.05, two assets at 2⁻⁴⁰",
+            scaled(
+                [
+                    [-4, -29, -19, -19],
+                    [-15, 6, 30, 3],
+                    [-12, 25, 27, 2],
+                    [-22, 5, 25, 3],
+                    [0, 4, 17, 0],
+                    [25, 6, 20, -15],
+                ],
+                [0, 1, 1, 0],
+                40,
+            ),
+            Box::new(MinVariance::default().bounds(WeightBounds::uniform(0.05, 1.0))),
+            [0.05, 0.05, 0.8439434724102666, 0.05605652758973343],
+        ),
+        (
+            // All of the weight in the second asset, the one at 2⁻³². It needs its own share.
+            "a risk aversion of 4, one asset at 2⁻³²",
+            scaled(
+                [
+                    [6, 20, 28, -28],
+                    [28, -28, -26, -29],
+                    [-12, 8, -25, 22],
+                    [-10, 29, 22, 10],
+                    [3, 9, -15, -20],
+                    [4, -27, -20, -7],
+                ],
+                [0, 1, 0, 0],
+                32,
+            ),
+            Box::new(MeanVariance::risk_aversion(4.0)),
+            [1.0, 0.0, 0.0, 0.0],
+        ),
+        (
+            // `SingularCovariance`. It needs its own units.
+            "a risk aversion of 4, assets at 2⁻²⁰ and 2⁻⁴⁰",
+            scaled(
+                [
+                    [-13, 23, -22, 26],
+                    [22, -3, 21, -9],
+                    [24, 9, -27, -16],
+                    [-5, 9, -24, 22],
+                    [3, 11, -22, -28],
+                    [-19, 14, -22, 23],
+                ],
+                [0, 2, 1, 0],
+                20,
+            ),
+            Box::new(MeanVariance::risk_aversion(4.0)),
+            [0.4107569721115539, 0.0, 0.0, 0.5892430278884462],
+        ),
+        (
+            // [0, 0, 0.5, 0.5]. The two assets at 2⁻³² are capped at 0.5 between them. It
+            // needs its own share.
+            "a group capped at 0.5, its two assets at 2⁻³²",
+            scaled(
+                [
+                    [-22, -3, 23, 23],
+                    [-19, 4, 10, -19],
+                    [29, -27, -27, 17],
+                    [-26, -18, 4, -1],
+                    [-12, -23, -12, -14],
+                    [14, -5, -27, 24],
+                ],
+                [0, 1, 1, 0],
+                32,
+            ),
+            Box::new(MinVariance::default().bounds(WeightBounds::default().group(
+                [1, 2],
+                0.0,
+                0.5,
+            ))),
+            [0.17127071831415666, 0.0, 0.5, 0.32872928168584337],
+        ),
+    ];
+    // To 1e-12 of each weight, not of 1: the first problem's optimum holds 4.6e-13 of its first
+    // asset, which a weight of 0 is within 1e-12 of. A weight the optimum doesn't hold is 0.
+    let missed: Vec<String> = cases
+        .iter()
+        .filter_map(
+            |(name, data, method, exact)| match data.allocate(method.as_ref()) {
+                Ok(weights)
+                    if weights
+                        .iter()
+                        .zip(exact)
+                        .all(|(w, e)| (w - e).abs() <= 1e-12 * e.abs()) =>
+                {
+                    None
+                }
+                other => Some(format!("{name}: {other:?}")),
+            },
+        )
+        .collect();
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 #[test]
 fn a_group_capped_at_zero_leaves_its_assets_out() {
     // Two of six assets are in a group capped at 0, so the weights are those of the other
