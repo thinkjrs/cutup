@@ -21,12 +21,33 @@ use crate::{Asset, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// One side of the bounds: a value for every asset, or values per asset.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(rename = "BoundsSide"))]
 #[serde(untagged)]
 enum Side {
     Uniform(#[cfg_attr(feature = "ts-rs", ts(inline))] Value),
     PerAsset(PerAsset),
+}
+
+impl<'de> Deserialize<'de> for Side {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The same forms, with what a value in neither is told. The attribute on `Side`
+        /// itself would have ts-rs warn on every build.
+        #[derive(Deserialize)]
+        #[serde(
+            untagged,
+            expecting = "expected a bound: a number, or `null` for no cap, for every asset, or \
+                         values per asset"
+        )]
+        enum Read {
+            Uniform(Value),
+            PerAsset(PerAsset),
+        }
+        Read::deserialize(deserializer).map(|read| match read {
+            Read::Uniform(value) => Side::Uniform(value),
+            Read::PerAsset(values) => Side::PerAsset(values),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -214,5 +235,21 @@ mod tests {
                 "{json}"
             );
         }
+    }
+
+    #[test]
+    fn a_bound_of_the_wrong_type_says_what_a_bound_is() {
+        // It named the private enum the two forms are read through.
+        for text in [
+            r#"{"upper": "x"}"#,
+            r#"{"lower": [0.1, "x"]}"#,
+            r#"{"upper": true}"#,
+        ] {
+            let error = serde_json::from_str::<WeightBounds>(text).unwrap_err();
+            assert!(error.to_string().contains("expected a bound"), "{error}");
+        }
+        // Input that ends early is still its own error.
+        let early = serde_json::from_str::<WeightBounds>(r#"{"upper": [0.1, "#).unwrap_err();
+        assert!(early.is_eof(), "{early}");
     }
 }
