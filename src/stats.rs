@@ -422,7 +422,9 @@ impl Returns {
     /// an invalid setting, [`CutupError::ZeroVariance`] for a constant asset, or
     /// [`CutupError::DimensionMismatch`] for a given matrix of another size. The default config
     /// is [`Returns::stats`], errors included: it doesn't check the sample covariance, so a
-    /// constant asset isn't [`CutupError::ZeroVariance`] there.
+    /// constant asset isn't [`CutupError::ZeroVariance`] there. Neither is a
+    /// [given](CovarianceConfig::matrix) variance rounded below 0, which a method can't
+    /// allocate by: here it counts as 0.
     ///
     /// # Example
     ///
@@ -459,7 +461,9 @@ impl Returns {
             return self.stats(weights);
         }
         let mut stats = self.portfolio_stats(weights, false)?;
-        let cov = self.adjusted_covariance(covariance)?;
+        // Not `adjusted_covariance`, which a method allocates by: a variance rounded below 0
+        // counts as 0 here, where a method couldn't divide by it.
+        let cov = self.configured_covariance(covariance)?;
         // Each asset's row and column of the covariance divided by a power of two near the
         // square root of the row's largest entry in size, its volatility unless a covariance is
         // larger, and its weight multiplied by it, so wᵀΣw is unchanged and no held asset's

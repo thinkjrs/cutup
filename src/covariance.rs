@@ -142,7 +142,10 @@ impl CovarianceConfig {
     /// It's checked here, and its size against the data when a method uses it. Rounding can
     /// leave a computed covariance a little asymmetric, or its smallest eigenvalues a little
     /// negative, so entries that differ from their transposes by up to `1e-12` of the largest
-    /// are averaged, and eigenvalues down to `−10nε` of the largest are allowed.
+    /// are averaged, and eigenvalues down to `−10nε` of the largest are allowed. That allows a
+    /// variance rounded a little below 0, which a method takes as a variance of 0: it returns
+    /// [`CutupError::ZeroVariance`] for the asset, unless an adjustment gives it a positive
+    /// variance.
     ///
     /// HRP and HERC still cluster on the correlations of the returns: a given covariance, like
     /// shrinkage, changes only how they split the weight.
@@ -186,10 +189,21 @@ impl CovarianceConfig {
     ///
     /// # Errors
     ///
-    /// As for [`CovarianceConfig::matrix`], with [`CutupError::NoAssets`] for 0 assets and
-    /// [`CutupError::RaggedRows`] if the number of values isn't a multiple of `assets`.
+    /// As for [`CovarianceConfig::matrix`], with [`CutupError::NoAssets`] for 0 assets,
+    /// [`CutupError::RaggedRows`] if the number of values isn't a multiple of `assets`, and
+    /// [`CutupError::DimensionMismatch`] if they don't make `assets` rows.
     pub fn matrix_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
-        CovarianceConfig::given(Returns::flat_matrix(values, assets)?)
+        let matrix = Returns::flat_matrix(values, assets)?;
+        // The caller named the assets, so it's the rows that are short or over: as rows, the
+        // error would say the matrix has as many assets as it happens to have rows.
+        if matrix.nrows() != assets {
+            return Err(CutupError::DimensionMismatch {
+                field: "covariance",
+                expected: assets,
+                actual: matrix.nrows(),
+            });
+        }
+        CovarianceConfig::given(matrix)
     }
 
     /// Uses a covariance matrix given as a nalgebra `DMatrix`, with the `nalgebra` feature.
@@ -371,7 +385,17 @@ impl CovarianceConfig {
         if let Some((row, col)) = Returns::find(&difference, |d| d.abs() > tolerance) {
             return Err(CutupError::AsymmetricCovariance { row, col });
         }
-        let symmetric = (&matrix + matrix.transpose()) / 2.0;
+        // Entries past half of f64::MAX sum to infinity, so those are halved first, which is
+        // exact for them. Either way an entry and its transpose get the same value.
+        let symmetric = DMatrix::from_fn(n, n, |i, j| {
+            let (a, b) = (matrix[(i, j)], matrix[(j, i)]);
+            let sum = a + b;
+            if sum.is_finite() {
+                sum / 2.0
+            } else {
+                a / 2.0 + b / 2.0
+            }
+        });
         // Divided by its largest entry first, so neither the eigenvalues nor the cutoff can
         // overflow or underflow.
         let scale = symmetric.amax();
@@ -524,15 +548,32 @@ impl CovarianceConfig {
 }
 
 impl Returns {
-    /// The covariance `config` sets, adjusted, after checking its values.
+    /// The covariance `config` sets, adjusted, after checking its values, for a method to
+    /// allocate by.
     ///
     /// Returns [`CutupError::DimensionMismatch`] for a given covariance of another size,
     /// [`CutupError::ZeroVariance`] for an asset whose estimated variance is 0, to rounding, or
-    /// one given a variance of 0, unless shrinkage toward a constant variance or regularization
-    /// gives it a positive variance,
+    /// one given a variance of 0 or rounded below it, unless shrinkage toward a constant
+    /// variance or regularization gives it a positive variance,
     /// [`CutupError::NonFiniteCovariance`] if the result isn't finite, and
     /// [`CutupError::SingularCovariance`] if it is zero.
     pub(crate) fn adjusted_covariance(
+        &self,
+        config: &CovarianceConfig,
+    ) -> Result<DMatrix<f64>, CutupError> {
+        let adjusted = self.configured_covariance(config)?;
+        // `CovarianceConfig::matrix` allows a variance rounded a little below 0, which is a
+        // variance of 0 but for the rounding. Taken as given, it would pass for the least
+        // risky asset there is, and an adjustment too small to raise it above 0 leaves it so.
+        match (0..adjusted.ncols()).find(|&i| adjusted[(i, i)] < 0.0) {
+            Some(asset) => Err(self.zero_variance(asset)),
+            None => Ok(adjusted),
+        }
+    }
+
+    /// [`Returns::adjusted_covariance`], but leaving in a given variance rounded below 0, which
+    /// [`Returns::stats_with`] counts as 0 itself.
+    pub(crate) fn configured_covariance(
         &self,
         config: &CovarianceConfig,
     ) -> Result<DMatrix<f64>, CutupError> {
@@ -582,8 +623,7 @@ impl Returns {
 
         let shrunk_cov = match shrinkage {
             Some((lambda, ShrinkageTarget::ConstantVariance)) => {
-                let mean_variance = base.trace() / n as f64;
-                (lambda * mean_variance) * &identity + (1.0 - lambda) * base
+                (lambda * mean_variance(base)) * &identity + (1.0 - lambda) * base
             }
             Some((lambda, ShrinkageTarget::ConstantCorrelation)) => {
                 lambda * constant_correlation(base) + (1.0 - lambda) * base
@@ -720,6 +760,19 @@ impl Returns {
         } else {
             0.0
         })
+    }
+}
+
+/// The average variance in `cov`, `trace(Σ) / n`. Variances whose sum overflows are each
+/// divided by `n` first: their average is finite, and infinity times the identity's zeros
+/// would be NaN.
+fn mean_variance(cov: &DMatrix<f64>) -> f64 {
+    let n = cov.ncols() as f64;
+    let trace = cov.trace();
+    if trace.is_finite() {
+        trace / n
+    } else {
+        cov.diagonal().iter().map(|variance| variance / n).sum()
     }
 }
 
@@ -1003,6 +1056,23 @@ mod tests {
                 row: 1,
                 expected: 2,
                 actual: 1
+            })
+        );
+        // Flat, the assets are named, so it's the rows that are short: two of three, or none.
+        assert_eq!(
+            CovarianceConfig::matrix_flat(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0], 3),
+            Err(CutupError::DimensionMismatch {
+                field: "covariance",
+                expected: 3,
+                actual: 2
+            })
+        );
+        assert_eq!(
+            CovarianceConfig::matrix_flat(&[], 3),
+            Err(CutupError::DimensionMismatch {
+                field: "covariance",
+                expected: 3,
+                actual: 0
             })
         );
         assert_eq!(
@@ -1728,6 +1798,62 @@ mod tests {
         assert!(
             data.allocate(&MinVariance::default().covariance(config.shrinkage(0.5)))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_given_variance_rounded_below_0_is_zero_variance() {
+        // `CovarianceConfig::matrix` allows a variance down to −10nε of the largest eigenvalue.
+        // Taken as given, it's the least risky asset there is: minimum variance held nothing
+        // else, and HERC's weights went below 0.
+        let data = Returns::returns_matrix(factor_returns(3, 12, 2)).unwrap();
+        let below = -20.0 * f64::EPSILON;
+        let given =
+            CovarianceConfig::matrix(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, below]])
+                .unwrap();
+        let zero = Err(CutupError::ZeroVariance {
+            column: 2,
+            asset: "2".into(),
+        });
+        for method in methods(&given) {
+            assert_eq!(data.allocate(method.as_ref()), zero);
+        }
+        // Regularization too small to raise it above 0 leaves it there, and enough doesn't.
+        for method in methods(&given.clone().regularization(1e-20)) {
+            assert_eq!(data.allocate(method.as_ref()), zero);
+        }
+        for method in methods(&given.clone().regularization(1e-6)) {
+            assert!(data.allocate(method.as_ref()).is_ok());
+        }
+        assert!(
+            data.allocate(&MinVariance::default().covariance(given.shrinkage(0.5)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn given_covariances_near_f64_max_are_averaged_without_overflowing() {
+        // An entry past half of f64::MAX plus its transpose is infinite, which no eigenvalue
+        // came back from.
+        let given = CovarianceConfig::matrix(&[[1.5e308, 1e308], [1e308, 1.2e308]]).unwrap();
+        let Estimate::Given(matrix) = &given.estimate else {
+            panic!("a given covariance");
+        };
+        assert_eq!(**matrix, dmatrix![1.5e308, 1e308; 1e308, 1.2e308]);
+        assert!(matches!(
+            CovarianceConfig::matrix(&[[1e308, 1.5e308], [1.5e308, 1e308]]),
+            Err(CutupError::IndefiniteCovariance { .. })
+        ));
+        // Their sum overflows, but not their average, which shrinkage is toward.
+        let data = Returns::returns_matrix(factor_returns(2, 12, 2)).unwrap();
+        let variances = CovarianceConfig::matrix(&[[1e308, 0.0], [0.0, 1.5e308]]).unwrap();
+        assert_eq!(
+            data.adjusted_covariance(&variances.clone().shrinkage(0.0)),
+            Ok(dmatrix![1e308, 0.0; 0.0, 1.5e308])
+        );
+        assert_eq!(
+            data.adjusted_covariance(&variances.shrinkage(0.5)),
+            Ok(dmatrix![1.125e308, 0.0; 0.0, 1.375e308])
         );
     }
 
