@@ -74,11 +74,17 @@ impl<'de> Deserialize<'de> for Limit {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct LimitVisitor;
 
-        impl Visitor<'_> for LimitVisitor {
+        impl<'de> Visitor<'de> for LimitVisitor {
             type Value = Limit;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("a number, or null for no limit")
+            }
+
+            // A limit is written as an `Option`, and a format that spells out `Some`, such as
+            // RON, hands it back as one.
+            fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Limit, D::Error> {
+                f64::deserialize(deserializer).map(Limit)
             }
 
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Limit, E> {
@@ -181,9 +187,14 @@ impl<'de> Deserialize<'de> for Labeled {
     }
 }
 
-/// The forms values per asset can take.
+/// The forms values per asset can take. `expecting` is what a value in none of them is told,
+/// and an error reading the input itself, such as JSON that ends early, is still its own.
 #[derive(Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    expecting = "expected values per asset: an array in column order, an object from label to \
+                 value, or an array of [asset, value] pairs"
+)]
 enum Wire {
     Ordered(Vec<Limit>),
     Pairs(Vec<(Asset, Limit)>),
@@ -192,12 +203,7 @@ enum Wire {
 
 impl<'de> Deserialize<'de> for PerAsset {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer).map_err(|_| {
-            de::Error::custom(
-                "expected values per asset: an array in column order, an object from label \
-                 to value, or an array of [asset, value] pairs",
-            )
-        })?;
+        let wire = Wire::deserialize(deserializer)?;
         Ok(PerAsset(match wire {
             Wire::Ordered(values) => Values::Ordered(values.into_iter().map(|v| v.0).collect()),
             Wire::Pairs(pairs) => {
@@ -270,6 +276,40 @@ mod tests {
             &PerAsset::from(vec![("SPY", f64::INFINITY)]),
             json!({"SPY": null}),
         );
+    }
+
+    /// A format that spells out `Some`, as RON does: it hands a number to `visit_some`.
+    struct Spelled(f64);
+
+    impl<'de> Deserializer<'de> for Spelled {
+        type Error = de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            visitor.visit_some(de::value::F64Deserializer::new(self.0))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+            option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum
+            identifier ignored_any
+        }
+    }
+
+    #[test]
+    fn a_limit_spelled_out_as_some_is_its_number() {
+        assert_eq!(Limit::deserialize(Spelled(0.3)).unwrap().0, 0.3);
+    }
+
+    #[test]
+    fn input_that_ends_early_or_is_malformed_is_its_own_error() {
+        let early = serde_json::from_str::<PerAsset>("[0.5, ").unwrap_err();
+        assert!(early.is_eof(), "{early}");
+        let malformed = serde_json::from_str::<PerAsset>(r#"{"SPY": 0.5, }"#).unwrap_err();
+        assert!(malformed.is_syntax(), "{malformed}");
+        // The same inside a method, where it used to pass for the wrong form.
+        let method = r#"{"risk_budgets": [0.5, }"#;
+        let malformed = serde_json::from_str::<crate::RiskParity>(method).unwrap_err();
+        assert!(malformed.is_syntax(), "{malformed}");
     }
 
     #[test]
