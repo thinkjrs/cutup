@@ -17,6 +17,7 @@
 
 use super::{Limit, WeightBounds};
 use crate::asset::serde_impl::Limit as Value;
+use crate::serde_support::finite;
 use crate::{Asset, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -114,6 +115,12 @@ impl From<Side> for Limit {
 
 impl Serialize for WeightBounds {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // An asset's or a group's lower limit is always a number, so one that isn't finite
+        // would be a `null` that doesn't read back.
+        let assets = self.assets.iter().map(|(_, lower, _)| *lower);
+        for lower in assets.chain(self.groups.iter().map(|(_, lower, _)| *lower)) {
+            finite(&[("lower", Some(lower))])?;
+        }
         Wire {
             lower: (&self.lower).into(),
             upper: (&self.upper).into(),

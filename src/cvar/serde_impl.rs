@@ -31,7 +31,10 @@ fn is_confidence(beta: &f64) -> bool {
 
 impl Serialize for MinCvar {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        finite(&[("target_return", self.target_return)])?;
+        finite(&[
+            ("confidence", Some(self.confidence)),
+            ("target_return", self.target_return),
+        ])?;
         Wire {
             confidence: self.confidence,
             bounds: self.bounds.clone(),

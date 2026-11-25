@@ -14,14 +14,17 @@ pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 /// An error for the first of `settings`, each a key and its value, that's set to a number that
 /// isn't finite.
 ///
-/// A format without NaN or infinities, such as JSON, writes one as `null`, and `null` reads
-/// back as not set. The builders refuse such a setting when a method uses it, so written and
-/// read back, a config that fails would allocate, without the cap or the estimate it named.
+/// A format without NaN or infinities, such as JSON, writes one as `null`. For a setting that
+/// can be left out, `null` reads back as not set. The builders refuse such a setting when a
+/// method uses it, so written and read back, a config that fails would allocate, without the
+/// cap or the estimate it named. For a setting that's always a number, such as a confidence,
+/// `null` doesn't read back at all.
 pub(crate) fn finite<E: ser::Error>(settings: &[(&str, Option<f64>)]) -> Result<(), E> {
     for &(key, value) in settings {
         if let Some(value) = value.filter(|value| !value.is_finite()) {
             return Err(E::custom(format!(
-                "`{key}` is {value}, which can't be written: it would read back as not set"
+                "`{key}` is {value}, which can't be written: it would read back as not set, or \
+                 not at all"
             )));
         }
     }
@@ -207,8 +210,8 @@ mod tests {
     #[test]
     fn a_setting_that_isnt_finite_doesnt_serialize() {
         use crate::{
-            BlackLitterman, CovarianceConfig, MeanVariance, MinCdar, MinCvar, MinMad, MinVariance,
-            View,
+            BlackLitterman, CovarianceConfig, MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad,
+            MinVariance, View,
         };
 
         // JSON writes NaN and the infinities as `null`, and `null` reads back as not set. A
@@ -305,6 +308,38 @@ mod tests {
             let model =
                 BlackLitterman::new([0.5, 0.5], 2.5).view(View::absolute(0, 0.01).variance(not));
             written(serde_json::to_value(model), "variance");
+            // The settings that are always numbers too: their `null` didn't read back at all.
+            written(
+                serde_json::to_value(MinCvar::default().confidence(not)),
+                "confidence",
+            );
+            written(
+                serde_json::to_value(MinCdar::default().confidence(not)),
+                "confidence",
+            );
+            written(
+                serde_json::to_value(MaxSharpe::default().risk_free_rate(not)),
+                "risk_free_rate",
+            );
+            written(
+                serde_json::to_value(BlackLitterman::new([0.5, 0.5], not)),
+                "risk_aversion",
+            );
+            let model = BlackLitterman::new([0.5, 0.5], 2.5);
+            written(
+                serde_json::to_value(model.clone().risk_free_rate(not)),
+                "risk_free_rate",
+            );
+            written(serde_json::to_value(model.tau(not)), "tau");
+            written(serde_json::to_value(View::absolute(0, not)), "q");
+            written(
+                serde_json::to_value(WeightBounds::default().asset(0, not, 1.0)),
+                "lower",
+            );
+            written(
+                serde_json::to_value(WeightBounds::default().group([0, 1], not, 1.0)),
+                "lower",
+            );
         }
         // A finite one is written as before.
         let capped = MinVariance::default()

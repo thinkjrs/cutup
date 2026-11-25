@@ -48,6 +48,11 @@ fn is_tau(tau: &f64) -> bool {
 
 impl Serialize for BlackLitterman {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        finite(&[
+            ("risk_aversion", Some(self.risk_aversion)),
+            ("risk_free_rate", Some(self.risk_free_rate)),
+            ("tau", Some(self.tau)),
+        ])?;
         Wire {
             market_weights: self.market_weights.clone(),
             risk_aversion: self.risk_aversion,
@@ -111,7 +116,11 @@ impl Serialize for View {
             Uncertainty::Variance(omega) => wire.variance = Some(omega),
             Uncertainty::Confidence(confidence) => wire.confidence = Some(confidence),
         }
-        finite(&[("variance", wire.variance), ("confidence", wire.confidence)])?;
+        finite(&[
+            ("q", Some(wire.q)),
+            ("variance", wire.variance),
+            ("confidence", wire.confidence),
+        ])?;
         wire.serialize(serializer)
     }
 }

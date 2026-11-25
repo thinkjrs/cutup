@@ -2,7 +2,7 @@
 //! `expected_returns`, `covariance` and `allow_short: true`. `{}` is [`MaxSharpe::default`].
 
 use super::MaxSharpe;
-use crate::serde_support::is_default;
+use crate::serde_support::{finite, is_default};
 use crate::{CovarianceConfig, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Not;
@@ -23,6 +23,7 @@ pub(super) struct Wire {
 
 impl Serialize for MaxSharpe {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        finite(&[("risk_free_rate", Some(self.risk_free_rate))])?;
         Wire {
             risk_free_rate: self.risk_free_rate,
             expected_returns: self.expected_returns.clone(),
