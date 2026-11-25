@@ -1,5 +1,10 @@
 //! `Serialize` and `Deserialize` for [`Weights`]: an object from each asset's label to its
 //! weight, in column order.
+//!
+//! Read back, the columns are in the order of the keys. A reader that doesn't keep that order,
+//! as `serde_json::Value` doesn't without serde_json's `preserve_order` feature, hands the
+//! weights back in another: used with the data, they're a
+//! [`LabelMismatch`](crate::CutupError::LabelMismatch).
 
 use super::Weights;
 use crate::serde_support::reserved;
