@@ -552,6 +552,12 @@ pub(crate) fn solve_bounded(
 ///
 /// A variable whose bounds are equal is fixed and never leaves the active set.
 ///
+/// Rounding is measured for each variable, since in [`Units`] variables can differ in size by
+/// as much as their variances do. A target counts as past an end of its segment by
+/// [`end_tolerances`], which measure it in the variable's own units too. A held variable is
+/// released against its own share of the multipliers. And a step that lands [`FAR`] smaller
+/// than the point it was solved from is solved for again from where it lands.
+///
 /// Each row `l ≤ aᵀx ≤ u` gets a slack variable `s = aᵀx` bounded by its limits, from
 /// [`with_slacks`], so a row reaches a limit, is held there and is released as a variable is.
 /// A slack that isn't held only measures its row, so each solve leaves it and its row out and
@@ -610,7 +616,7 @@ pub(crate) fn solve_piecewise(
     .component_mul(&units.scales);
     let u = solve_piecewise_in_units(
         (&units.k, &units.c, &units.e, &units.b),
-        &segments,
+        (&segments, &units.scales),
         start,
         n,
     )?;
@@ -748,10 +754,12 @@ fn split_slacks(indices: &[usize], originals: usize) -> (&[usize], &[usize]) {
 }
 
 /// [`solve_piecewise`] for a problem already in [`Units`], whose variables after the first
-/// `originals` are [`with_slacks`]' slacks, one for each of the last columns of `E`.
+/// `originals` are [`with_slacks`]' slacks, one for each of the last columns of `E`. `scales`
+/// are the units' scales, each variable's size over its size in the units the problem was
+/// given in.
 fn solve_piecewise_in_units(
     (q, c, e, b): (&DMatrix<f64>, &DVector<f64>, &DMatrix<f64>, &DVector<f64>),
-    segments: &[Segments],
+    (segments, scales): (&[Segments], &DVector<f64>),
     start: DVector<f64>,
     originals: usize,
 ) -> Result<DVector<f64>, CutupError> {
@@ -920,18 +928,19 @@ fn solve_piecewise_in_units(
         // segment. Entries within rounding of an end don't block, and are clamped to it
         // instead. Rounding is measured against all of x, since variables held at a nonzero
         // point feed the step: a lone free variable at its bound would otherwise block on a
-        // step of 1e-17.
+        // step of 1e-17. And in each variable's own units, where that's less.
         let size = target.rows(0, solved.len()).amax().max(variables.amax());
         let tolerance = 1e-12 * size;
+        let ends = end_tolerances(scales, &x, (&indices, &target), originals, tolerance);
         let blocking = (0..indices.len())
             .filter_map(|k| {
-                if target[k] < lower[k] - tolerance {
+                if target[k] < lower[k] - ends[k] {
                     Some((
                         (x_free[k] - lower[k]) / (x_free[k] - target[k]),
                         k,
                         Side::Lower,
                     ))
-                } else if target[k] > upper[k] + tolerance {
+                } else if target[k] > upper[k] + ends[k] {
                     Some((
                         (upper[k] - x_free[k]) / (target[k] - x_free[k]),
                         k,
@@ -1023,6 +1032,39 @@ fn solve_piecewise_in_units(
         }
     }
     Err(CutupError::NotConverged)
+}
+
+/// How far past an end of its segment each free variable's `target` can be and still count as
+/// at it, for the free variables `indices` of `x`: `tolerance`, the step's rounding in the
+/// solver's units, or `1e-12` of the problem's size in the variable's own units, if that's
+/// less. `scales` are [`Units`]' scales, and the size is what the first `originals` variables
+/// hold between them in the units the problem was given in, `Σᵢ max(|xᵢ|, |targetᵢ|) / scaleᵢ`.
+///
+/// The step's rounding is measured against the largest variable. In [`Units`] a variable with
+/// far less variance than the others is far smaller than they are: all it can hold is within
+/// that rounding, though that may be most of what there is to hold. Clamped to its bound as
+/// rounding, it would leave a constraint like the budget unmet by what its target was past
+/// the bound, which the other variables' targets counted on.
+///
+/// The size is the whole problem's, not that of the constraints the variable is in: a group
+/// that holds nothing has a row with no terms, against which a target a rounding below 0
+/// would be all of it.
+fn end_tolerances(
+    scales: &DVector<f64>,
+    x: &DVector<f64>,
+    (indices, target): (&[usize], &DVector<f64>),
+    originals: usize,
+    tolerance: f64,
+) -> Vec<f64> {
+    let mut reach = x.abs();
+    for (k, &i) in indices.iter().enumerate() {
+        reach[i] = reach[i].max(target[k].abs());
+    }
+    let size: f64 = (0..originals).map(|i| reach[i] / scales[i]).sum();
+    indices
+        .iter()
+        .map(|&i| tolerance.min(1e-12 * (scales[i] * size)))
+        .collect()
 }
 
 /// How many times smaller than the point it was solved from a full step of
@@ -2536,6 +2578,25 @@ mod tests {
         let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.6, 0.4]).unwrap();
         assert_eq!(x[0], 0.6);
         assert!((x[1] - 0.4).abs() < 1e-15, "{x:?}");
+    }
+
+    #[test]
+    fn test_end_tolerances_are_the_steps_or_the_variables_own_if_less() {
+        // Two variables and a slack, with scales of 0.5, 4 and 2. With the targets, the two
+        // reach 6 and 2, which in their own units is 12 and 0.5: a problem of size 12.5.
+        let scales = dvector![0.5, 4.0, 2.0];
+        let x = dvector![4.0, -2.0, 8.0];
+        let target = dvector![-6.0, 1.0];
+        let ends = |tolerance: f64| end_tolerances(&scales, &x, (&[0, 1], &target), 2, tolerance);
+        // 1e-12 of that size, in each variable's units again.
+        assert_eq!(ends(1.0), [1e-12 * 6.25, 1e-12 * 50.0]);
+        // The step's own rounding, where that's less.
+        assert_eq!(ends(2e-11), [1e-12 * 6.25, 2e-11]);
+        assert_eq!(ends(1e-13), [1e-13, 1e-13]);
+        // A free slack has the size of the variables it sums in its own units: it adds
+        // nothing to the size itself, whatever its target.
+        let slack = end_tolerances(&scales, &x, (&[0, 2], &dvector![-6.0, 99.0]), 2, 1.0);
+        assert_eq!(slack, [1e-12 * 6.25, 1e-12 * 25.0]);
     }
 
     #[test]
