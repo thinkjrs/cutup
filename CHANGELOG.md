@@ -113,7 +113,9 @@ All notable changes to this project are documented here. The format follows
   exponentially weighted covariance with a half-life of NaN came back as the sample
   covariance. Serializing such a setting is now an error: the caps, penalties, costs and
   targets of the methods, the numbers of a `CovarianceConfig`, and a view's variance and
-  confidence.
+  confidence. So is serializing a setting that's always a number, whose `null` didn't read
+  back at all: the confidence of `MinCvar` and `MinCdar`, a risk-free rate, Black-Litterman's
+  risk aversion and `τ`, a view's return, and an asset's or a group's lower limit.
 - **A bound of NaN or `-f64::INFINITY`, written to JSON and read back:** it was `null` too,
   which reads back as no cap, so an upper bound the builders refuse came back as none at
   all, and a NaN among values per asset as infinity. Only `f64::INFINITY` is written as
@@ -126,11 +128,12 @@ All notable changes to this project are documented here. The format follows
 - **A bound of the wrong type:** `{"upper": "x"}` said `data did not match any variant of
   untagged enum Side`. It says what a bound is.
 - **A Black-Litterman view with a confidence near 0:** a confidence so small that its
-  variance overflows, such as `f64::MIN_POSITIVE` on returns in percent, failed with
-  `DegenerateViews`. It's left out, as at a confidence of 0.
+  variance overflows, such as `f64::MIN_POSITIVE` on returns with a variance above 80,
+  failed with `DegenerateViews`. It's left out, as at a confidence of 0.
 - **A Black-Litterman prior that overflows:** with a risk aversion so large that `δΣw` isn't
   finite, `prior_returns` and `expected_returns` returned infinite returns as `Ok`. They
-  return `InvalidConfig` for the risk aversion.
+  return `InvalidConfig` for the risk aversion, or for a risk-free rate that takes a finite
+  `δΣw` past `f64::MAX`.
 - **The unit tests from the published crate:** they read four fixtures that the package
   left out, so `cargo test` didn't build there. The package has them.
 
