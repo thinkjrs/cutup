@@ -1074,19 +1074,43 @@ mod tests {
     }
 
     #[test]
+    fn infeasibility_at_the_tolerance_itself_is_rounding() {
+        // 0 = r alongside x = 0.5, a scale of 1: nothing can take the first row's artificial
+        // variable below r. At exactly 1e-9 of the scale that's still rounding. Beyond it, the
+        // problem is infeasible.
+        let off_by = |r: f64| {
+            solve(
+                &dvector![1.0],
+                &dmatrix![0.0; 1.0],
+                &dvector![r, 0.5],
+                &dvector![0.0],
+                &dvector![1.0],
+            )
+            .unwrap()
+        };
+        assert_eq!(optimal(off_by(1e-9)).x[0], 0.5);
+        assert_eq!(off_by(1.5e-9), Outcome::Infeasible);
+    }
+
+    #[test]
     fn without_constraints_each_variable_takes_the_bound_its_cost_favors() {
-        let bounds = (dvector![0.5, 0.0, -2.0, 1.0], dvector![3.0, 2.0, 5.0, 4.0]);
+        // The last has a cost and a floor below zero: it takes the floor, not the zero that a
+        // variable without a cost would.
+        let bounds = (
+            dvector![0.5, 0.0, -2.0, 1.0, -1.5],
+            dvector![3.0, 2.0, 5.0, 4.0, 2.5],
+        );
         let solution = optimal(
             solve(
-                &dvector![1.0, -1.0, 0.0, 0.0],
-                &DMatrix::zeros(0, 4),
+                &dvector![1.0, -1.0, 0.0, 0.0, 1.0],
+                &DMatrix::zeros(0, 5),
                 &DVector::zeros(0),
                 &bounds.0,
                 &bounds.1,
             )
             .unwrap(),
         );
-        assert_eq!(solution.x.as_slice(), &[0.5, 2.0, 0.0, 1.0]);
+        assert_eq!(solution.x.as_slice(), &[0.5, 2.0, 0.0, 1.0, -1.5]);
         assert!(matches!(
             solve(
                 &dvector![-1.0],
@@ -1135,6 +1159,90 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(solution.x.as_slice(), &[3.0, 1.0]);
+    }
+
+    #[test]
+    fn an_entering_variables_range_is_the_difference_of_its_bounds() {
+        // x₀, in no row, runs from 1e308 to 1.2e308. The bounds' sum overflows, but its range,
+        // their difference, doesn't, and it stops at its cap rather than running off.
+        let solution = optimal(
+            solve(
+                &dvector![-1.0, 0.0],
+                &dmatrix![0.0, 1.0],
+                &dvector![1.0],
+                &dvector![1e308, 0.0],
+                &dvector![1.2e308, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[1.2e308, 1.0]);
+    }
+
+    #[test]
+    fn the_steepest_reduced_cost_enters_first() {
+        // 0.5x₀ + x₁ = 1 with no costs, so the solve ends where phase 1 does. Either variable
+        // lowers the row's residual, x₁ twice as fast, so it enters (Dantzig's rule) and meets
+        // the row alone. The lowest-indexed, x₀, would meet it at (2, 0).
+        let solution = optimal(
+            solve(
+                &dvector![0.0, 0.0],
+                &dmatrix![0.5, 1.0],
+                &dvector![1.0],
+                &dvector![0.0, 0.0],
+                &dvector![INF, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[0.0, 1.0]);
+    }
+
+    #[test]
+    fn only_the_variables_asked_start_at_their_upper_bound() {
+        // x₀ + 2x₁ = 2 within [0, 1] and [0, 5], with no costs, so the solve ends where phase 1
+        // does. From the lower bounds, x₁ rises to 1 and meets the row alone. With x₀ started
+        // at its cap, the row is half met already, and x₁ rises to 0.5.
+        let (c, a, b) = (dvector![0.0, 0.0], dmatrix![1.0, 2.0], dvector![2.0]);
+        let (lower, upper) = (dvector![0.0, 0.0], dvector![1.0, 5.0]);
+        let from_lower = optimal(solve(&c, &a, &b, &lower, &upper).unwrap());
+        assert_eq!(from_lower.x.as_slice(), &[0.0, 1.0]);
+        let from_upper = optimal(solve_from(&c, &a, &b, &lower, &upper, &[0]).unwrap());
+        assert_eq!(from_upper.x.as_slice(), &[1.0, 0.5]);
+    }
+
+    #[test]
+    fn a_reduced_cost_within_rounding_of_its_terms_doesnt_enter() {
+        // 0.5x₀ + x₁ = 1: phase 1 meets the row with x₁, at a cost of 2. x₀ would meet it for
+        // 2e-10 less, but its reduced cost, c₀ − 0.5y = −1e-10, is a difference of terms of 1:
+        // within 1e-9 of them it's rounding, and x₀ stays out.
+        let solution = optimal(
+            solve(
+                &dvector![1.0 - 1e-10, 2.0],
+                &dmatrix![0.5, 1.0],
+                &dvector![1.0],
+                &dvector![0.0, 0.0],
+                &dvector![INF, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_free_variable_with_no_reduced_cost_stays_out() {
+        // x₀ + 0.5x₁ = 1 with no costs and x₁ free: phase 1 meets the row with x₀, and x₁
+        // stays at zero. With no costs every tolerance in phase 2 is zero, and so is x₁'s
+        // reduced cost, which is no reason to move it: it would take x₀ off without limit.
+        let solution = optimal(
+            solve(
+                &dvector![0.0, 0.0],
+                &dmatrix![1.0, 0.5],
+                &dvector![1.0],
+                &dvector![0.0, -INF],
+                &dvector![INF, INF],
+            )
+            .unwrap(),
+        );
+        assert_eq!(solution.x.as_slice(), &[1.0, 0.0]);
     }
 
     #[test]
@@ -1698,6 +1806,32 @@ mod tests {
         // At exactly zero, nothing moves, but entries within rounding of zero, below 1e-9 of
         // the artificial's own, don't pivot.
         assert_eq!(basis_after(0.0, [1e-12, 1e-13], 0.0), [2]);
+        // Nor does one at exactly 1e-9 of it. Just above, it does.
+        assert_eq!(basis_after(0.0, [0.0, 1e-9], 0.0), [2]);
+        assert_eq!(basis_after(0.0, [0.0, 2e-9], 0.0), [1]);
+    }
+
+    #[test]
+    fn an_entry_within_rounding_of_its_rows_largest_takes_no_artificial_variables_place() {
+        // x₀ is basic in the second row, on an entry of 1e-3, and the first row keeps its
+        // artificial variable, at zero. That row of B⁻¹A has −1000 under the second row's
+        // artificial variable and 1e-7 under x₁, which would count against the artificial's
+        // own entry of 1. Against the row's largest it's within 1e-9, and doesn't pivot.
+        let a = dmatrix![1.0, 1e-7, 1.0, 0.0; 1e-3, 0.0, 0.0, 1.0];
+        let mut problem = Problem {
+            a_abs: a.abs(),
+            a,
+            b: DVector::zeros(2),
+            lower: DVector::zeros(4),
+            upper: DVector::from_element(4, INF),
+            x: DVector::zeros(4),
+            basis: vec![2, 0],
+            status: vec![Status::Basic, Status::Lower, Status::Basic, Status::Lower],
+            perturbation: PERTURBATION,
+            repairs: usize::MAX,
+        };
+        problem.drive_out_artificials(2).unwrap();
+        assert_eq!(problem.basis, [2, 0]);
     }
 
     /// Checks that `solution` is optimal for the problem: feasible, with reduced costs of the
@@ -2018,6 +2152,167 @@ mod tests {
         );
         assert!(solution.x[0] <= 1e-6 * (1.0 + 1e-12), "{:?}", solution.x);
         assert!((solution.x[1] - 1e6).abs() <= 1e-6, "{:?}", solution.x);
+    }
+
+    /// Where `x` ends when `x₀` is raised from zero as far as it goes: maximizes `x₀ ≤ cap`
+    /// subject to `column·x₀ + s = b`, from the basis of the slacks `s`, which have the bounds
+    /// given. So the first pivot's ratio test has `column` to weigh, with no phase 1 before it.
+    fn raised<const M: usize>(
+        column: [f64; M],
+        b: [f64; M],
+        cap: f64,
+        (lower, upper): ([f64; M], [f64; M]),
+    ) -> DVector<f64> {
+        let a = DMatrix::from_fn(M, M + 1, |i, j| match j {
+            0 => column[i],
+            _ => f64::from(j == i + 1),
+        });
+        let with_slacks = |own: f64, slacks: [f64; M]| {
+            DVector::from_fn(M + 1, |j, _| if j == 0 { own } else { slacks[j - 1] })
+        };
+        let mut problem = Problem {
+            a_abs: a.abs(),
+            a,
+            b: DVector::from_column_slice(&b),
+            lower: with_slacks(0.0, lower),
+            upper: with_slacks(cap, upper),
+            x: DVector::zeros(M + 1),
+            basis: (1..=M).collect(),
+            status: std::iter::once(Status::Lower)
+                .chain(std::iter::repeat_n(Status::Basic, M))
+                .collect(),
+            perturbation: PERTURBATION,
+            repairs: usize::MAX,
+        };
+        let cost = with_slacks(-1.0, [0.0; M]);
+        let bounded = problem.minimize(&cost, Perturbation::Off).unwrap();
+        assert!(bounded.is_some());
+        problem.x
+    }
+
+    #[test]
+    fn a_change_counts_against_the_largest_in_its_column() {
+        // x₀ rises toward a cap of 1e-4 while the second slack, at its floor of 0, falls by
+        // 1e-9 per unit of it. Against a largest change of 1 that's exactly at the pivot
+        // tolerance, so it's rounding, and over so short a step the slack would end only 1e-13
+        // below its floor: x₀ reaches its cap. Against a largest change of 0.01 it's a change
+        // like any other, and blocks x₀ where it is.
+        let x0 =
+            |largest: f64| raised([largest, 1e-9], [1.0, 0.0], 1e-4, ([0.0, 0.0], [INF, INF]))[0];
+        assert_eq!(x0(1.0), 1e-4);
+        assert_eq!(x0(0.01), 0.0);
+    }
+
+    #[test]
+    fn a_tiny_change_blocks_only_beyond_rounding_of_its_bound() {
+        let floors = ([0.0, 0.0], [INF, INF]);
+        // The second slack starts at its floor of 0 and falls by 1e-10 per unit of x₀, within
+        // rounding of the largest change, 1. Over a step of 1e-4 it ends 1e-14 below its
+        // floor, which is rounding too, and x₀ reaches its cap.
+        assert_eq!(raised([1.0, 1e-10], [1.0, 0.0], 1e-4, floors)[0], 1e-4);
+        // Rounding is up to 1e-12 of max(1, |x|). A step of 1 at 1e-12 per unit ends exactly
+        // there, and isn't blocked. A step of 1.5 ends beyond it, and is, where it starts.
+        assert_eq!(raised([1.0, 1e-12], [2.0, 0.0], 1.0, floors)[0], 1.0);
+        assert_eq!(raised([1.0, 1e-12], [2.0, 0.0], 1.5, floors)[0], 0.0);
+        // The same for a slack that rises from its cap of 0.
+        let caps = ([0.0, -INF], [INF, 0.0]);
+        assert_eq!(raised([1.0, -1e-12], [2.0, 0.0], 1.0, caps)[0], 1.0);
+        assert_eq!(raised([1.0, -1e-12], [2.0, 0.0], 1.5, caps)[0], 0.0);
+        // And relative to the variable: 1e-11 below a floor of 1000 is within rounding of it.
+        let high = ([0.0, 1000.0], [INF, INF]);
+        assert_eq!(raised([1.0, 1e-10], [1.0, 1000.0], 0.1, high)[0], 0.1);
+    }
+
+    #[test]
+    fn a_tiny_change_within_rounding_of_its_bound_doesnt_block_when_another_does() {
+        // x₀ can rise by 10 before the first slack reaches zero. The third falls by 1e-10 per
+        // unit from 9.7e-10, and would end well below its floor of 0, so it blocks, at 9.7.
+        // The second falls from just above its floor of 1000, by a change at the pivot
+        // tolerance or below it, and would reach the floor at 9.5. But at 9.7, as at 10, it's
+        // within rounding of 1000, so it doesn't block, though the third's blocking has the
+        // ratio test taken again.
+        for (change, above) in [(1e-9, 9.5e-9), (5e-10, 4.75e-9)] {
+            let x = raised(
+                [1.0, change, 1e-10],
+                [10.0, 1000.0 + above, 9.7e-10],
+                INF,
+                ([0.0, 1000.0, 0.0], [INF; 3]),
+            );
+            assert!((x[0] - 9.7).abs() < 1e-9, "{change}: {x}");
+        }
+    }
+
+    /// The problem [`Problem::minimize`] leaves after [`STALL`] pivots and then running off
+    /// without limit. Each `xᵢ`, at zero, enters row `i` of `entry·xᵢ + sᵢ = b`, where its
+    /// slack `sᵢ ≥ floor` leaves; they cost the most, so they go first. Then `w` and `u`, in
+    /// no row, are left: `w` improves faster but stops at a cap of 1, and `u`, the
+    /// lower-indexed, has nothing to stop it. An unbounded solve returns with the bounds as
+    /// they are, so they show whether the run of pivots was counted as stalled, and `w`
+    /// which rule chose after it.
+    fn ray_after_a_run(entry: f64, b: f64, floor: f64, free: bool) -> Problem {
+        // The columns: the xᵢ, their slacks, then u and w.
+        let (m, u, total) = (STALL, 2 * STALL, 2 * STALL + 2);
+        let mut a = DMatrix::zeros(m, total);
+        for i in 0..m {
+            a[(i, i)] = entry;
+            a[(i, m + i)] = 1.0;
+        }
+        let per_kind = |x: f64, slack: f64, u_value: f64, w_value: f64| {
+            DVector::from_fn(total, |j, _| match j {
+                _ if j < m => x,
+                _ if j < u => slack,
+                _ if j == u => u_value,
+                _ => w_value,
+            })
+        };
+        let mut problem = Problem {
+            a_abs: a.abs(),
+            a,
+            b: DVector::from_element(m, b),
+            lower: per_kind(if free { -INF } else { 0.0 }, floor, 0.0, 0.0),
+            upper: per_kind(INF, INF, INF, 1.0),
+            x: DVector::zeros(total),
+            basis: (m..u).collect(),
+            status: (0..total)
+                .map(|j| match j {
+                    _ if j < m && free => Status::Free,
+                    _ if (m..u).contains(&j) => Status::Basic,
+                    _ => Status::Lower,
+                })
+                .collect(),
+            perturbation: PERTURBATION,
+            repairs: usize::MAX,
+        };
+        let cost = per_kind(-3.0, 0.0, -1.0, -2.0);
+        assert_eq!(problem.minimize(&cost, Perturbation::Off), Ok(None));
+        problem
+    }
+
+    #[test]
+    fn a_step_stalls_when_the_leaving_variable_moves_within_rounding_of_nothing() {
+        // After STALL stalled pivots the bounds of the basic variables, the xᵢ, are widened,
+        // so x₀'s floor ends below zero only if its run was counted as stalled.
+        let floor_of_x0 =
+            |entry: f64, b: f64, floor: f64| ray_after_a_run(entry, b, floor, false).lower[0];
+        // Each slack leaves from 0.5 above its floor: x moves, and no bound is widened.
+        assert_eq!(floor_of_x0(1.0, 0.5, 0.0), 0.0);
+        // From 1e-13 above, it moves by rounding only, though with an entry of 0.01 the step
+        // that takes it there is 1e-11.
+        assert!(floor_of_x0(0.01, 1e-13, 0.0) < 0.0);
+        // Rounding is relative to the variable: from 1e-10 above a floor of 1000 it is too.
+        assert!(floor_of_x0(1.0, 1000.0 + 1e-10, 1000.0) < 0.0);
+    }
+
+    #[test]
+    fn blands_rule_takes_over_once_stall_pivots_have_stalled_with_no_bounds_to_widen() {
+        let w = 2 * STALL + 1;
+        // Free variables enter on STALL degenerate pivots, and have no bounds to widen. So
+        // the lowest-indexed improving variable enters next: u, which runs off at once, and w
+        // is left where it was.
+        assert_eq!(ray_after_a_run(1.0, 0.0, 0.0, true).x[w], 0.0);
+        // After pivots that moved x, the fastest-improving one does, and w reaches its cap
+        // before u runs off.
+        assert_eq!(ray_after_a_run(1.0, 0.5, 0.0, false).x[w], 1.0);
     }
 
     #[test]
