@@ -43,8 +43,11 @@ jobs:
         with:
           tool: cargo-mutants
 
+      # The branch's name reaches the shell as a variable's value, not as part of the command.
       - name: Diff against the base branch
-        run: git diff "origin/${{ github.base_ref }}...HEAD" > pr.diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff "origin/$BASE_REF...HEAD" > pr.diff
 
       # A mutant that makes the tests time out, as one that loops forever does, counts as
       # caught: cargo-mutants exits 3 for those, and 2 for missed ones, which fail the job.

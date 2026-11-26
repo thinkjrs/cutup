@@ -94,10 +94,13 @@ jobs:
       - name: Build ${{ matrix.target }}
         run: cargo fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
-      # Five minutes on the schedule, and as long as asked by hand.
+      # Five minutes on the schedule, and as long as asked by hand. The seconds are whatever
+      # was typed, so they reach the shell as a variable's value, not as part of the command.
       - name: Fuzz ${{ matrix.target }}
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || 300 }} -max_len=4096
+        env:
+          FUZZ_SECONDS: ${{ inputs.seconds || 300 }}
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" -max_len=4096
 
       - name: Upload the crashing input
         if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
