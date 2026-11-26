@@ -862,7 +862,7 @@ The forms:
   - Keys that exclude each other, such as `bounds` with `allow_short`, or two objectives.
   - A missing required key, such as mean-variance's objective.
 - **No cap is `null`:** an upper bound of `f64::INFINITY` is written as `null`, which JSON can carry. Only an explicit `null` reads back as infinity, so an asset's or a group's missing `upper` is still an error.
-- **Nothing else that isn't finite is written:** serializing a setting, a bound or a value per asset that's NaN or `-f64::INFINITY` is an error, and so is a setting, or an asset's or a group's `lower`, that's `f64::INFINITY`, and a weight among `Weights` that isn't finite. JSON would write each as `null`, which reads back as not set, as no cap, or not at all. A value per asset of `f64::INFINITY` is `null`, as a cap is. What cutup computes or reports is written as it is: an error's value, or a frontier point's return or volatility, that isn't finite is `null`, and such a frontier point doesn't read back.
+- **Nothing else that isn't finite is written:** serializing a setting, a bound or a value per asset that's NaN or `-f64::INFINITY` is an error, and so is a setting, or an asset's or a group's `lower`, that's `f64::INFINITY`, and a weight among `Weights`, or a frontier point's return or volatility, that isn't finite. JSON would write each as `null`, which reads back as not set, as no cap, or not at all. A value per asset of `f64::INFINITY` is `null`, as a cap is. An error's value is written as it is, so one that isn't finite is `null`.
 - **Weights are in the order of their keys:** read them with a reader that keeps it, as `serde_json::from_str`, `from_slice` and `from_reader` do. `serde_json::Value` sorts an object's keys unless serde_json's `preserve_order` feature is on, and weights read through it in another order than the data's are a `LabelMismatch` when used with the data.
 - **Checks:** a given covariance matrix is checked as `CovarianceConfig::matrix` checks it. Everything else is checked when a method uses it, as for the builders.
 - **Formats:** values per asset take several forms and limits can be `null`, so this needs a self-describing format such as JSON, not one like bincode. serde_json's `arbitrary_precision` feature, turned on anywhere in a build, hands numbers over in a form these don't read: a bound or a value per asset written as a decimal then fails to parse.
@@ -947,7 +947,7 @@ Besides unit tests and doctests, `tests/reference.rs` and the solvers' unit test
 
 `cargo bench` times the solver and clustering methods at 10, 100 and 500 assets, and the linear programs at 250 to 5,000 periods: [size limits](#size-limits) sums them up. [`docs/BENCHMARKS.md`](https://github.com/thinkjrs/cutup/blob/main/docs/BENCHMARKS.md) has the baseline numbers.
 
-`fuzz/` holds fuzz targets for the constructors, every allocation method and `Weights`, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](https://github.com/thinkjrs/cutup/blob/main/docs/FUZZING.md) describes them.
+`fuzz/` holds fuzz targets for the constructors, every allocation method, `Weights` and the JSON every type reads, run with `cargo +nightly fuzz run <target>`. [`docs/FUZZING.md`](https://github.com/thinkjrs/cutup/blob/main/docs/FUZZING.md) describes them.
 
 `cargo mutants` checks that the tests notice small changes to the code. [`docs/MUTATION.md`](https://github.com/thinkjrs/cutup/blob/main/docs/MUTATION.md) describes the setup and the mutants known to survive.
 

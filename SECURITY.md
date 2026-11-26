@@ -33,7 +33,7 @@ The sample app does this in [`apps/campaigns/engine`](apps/campaigns/engine/src/
 ## How it's kept
 
 - **No `unsafe`:** the crate is `#![forbid(unsafe_code)]`.
-- **Fuzzing:** three targets build data, weights and every method with its settings from arbitrary bytes, and write and read their JSON, weekly in CI and before each release. [`docs/FUZZING.md`](docs/FUZZING.md) says what each checks.
+- **Fuzzing:** three targets build data, weights and every method with its settings from arbitrary bytes, and write and read their JSON, and a fourth reads arbitrary text as JSON for every type that deserializes, weekly in CI and before each release. [`docs/FUZZING.md`](docs/FUZZING.md) says what each checks.
 - **Advisories:** cargo-deny checks the dependencies' advisories, licenses and sources on every PR, and weekly on `main`. [`deny.toml`](deny.toml) has the one advisory that's ignored, and why.
 
 ## The dependencies' `unsafe`
