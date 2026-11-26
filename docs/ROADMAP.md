@@ -817,6 +817,28 @@ the internals. Its scope is settled when it starts.
     carries the return splits the rest among them differently from the
     exact optimum, by up to all of it: the variance of either split is the
     same to rounding.
+- **From the analysis,** left as they are:
+  - the active-set solver returns `NotConverged` for a solvable problem
+    whose last free variable is in no equality constraint and has its
+    optimum at a bound, such as `½x² − 2x` on `0 ≤ x ≤ 1` alone. It frees
+    every variable, blocks again with a step of 0 and gives up. No method
+    reaches it: the budget is over every asset, and the max-ratio methods
+    keep a variable of their one constraint free. The solver's own docs
+    promise the general problem;
+  - a variable of a linear program whose finite bounds are more than
+    `f64::MAX` apart, such as −1.5e308 to 1.5e308, has a range that
+    overflows, and where nothing else blocks its step the program reads as
+    unbounded;
+  - the simplex solver ignores a change at or below 1e-9 of the largest in
+    its column unless its variable would end past a bound by more than
+    rounding. A program built on that tolerance, with a coefficient of 1e-9
+    beside one of 1, ends 2e-10 past a bound with an objective 2% off. A
+    test pins it;
+  - risk parity at its limit, budgets more than about 1e14 apart, repeats an
+    iteration that no longer moves the weights until its cap of 500 before
+    it returns `NotConverged`. It could stop as soon as they stop moving;
+  - 48 mutants no test catches, each of which can't change a result:
+    `docs/MUTATION.md` has them by kind.
 - **From the security audit,** done:
   - the campaign app, the one place here that takes requests from anyone,
     caps a request at 16 KiB of JSON and 32 groups and takes each metric
