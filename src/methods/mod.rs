@@ -437,6 +437,58 @@ mod tests {
     }
 
     #[test]
+    fn a_sum_that_overflows_is_scaled_by_the_largest_entry_first() {
+        // These sum to infinity, which would divide each of them to 0. Over the largest they're
+        // 1, ½ and ½, which sum to 2.
+        let x = [f64::MAX, f64::MAX / 2.0, f64::MAX / 2.0];
+        assert!(x.iter().sum::<f64>().is_infinite());
+        assert_eq!(
+            normalized(DVector::from_column_slice(&x)),
+            [0.5, 0.25, 0.25]
+        );
+        // Only then: a finite sum divides the entries as they are, into 3/8 and 5/8. Over the
+        // largest first they'd be 0.6 and 1, and 0.6 over their sum is an ulp short of 3/8.
+        let scaled = [3.0 / 5.0, 1.0];
+        assert!(scaled[0] / (scaled[0] + scaled[1]) < 0.375);
+        assert_eq!(
+            normalized(DVector::from_column_slice(&[3.0, 5.0])),
+            [0.375, 0.625]
+        );
+    }
+
+    #[test]
+    fn the_smallest_hierarchical_variance_is_accepted() {
+        // Returns of 2⁻⁴⁸⁵, its negative and 0 have a variance of exactly 2⁻⁹⁷⁰, the smallest
+        // accepted. The two assets' correlation is −½, so they're sqrt(¾) apart.
+        let returns = |a: f64| Returns::new(&[[a, 0.0], [-a, a], [0.0, -a]]).unwrap();
+        let data = returns(SMALLEST_HIERARCHICAL_VARIANCE.sqrt());
+        assert_eq!(data.cov_matrix[(0, 0)], SMALLEST_HIERARCHICAL_VARIANCE);
+        let distance = data.correlation_distance().unwrap();
+        assert_eq!(distance[(0, 1)], 0.75f64.sqrt());
+        // Returns half as large have a quarter of that variance, which isn't.
+        assert_eq!(
+            returns(SMALLEST_HIERARCHICAL_VARIANCE.sqrt() / 2.0).correlation_distance(),
+            Err(CutupError::NonFiniteCovariance)
+        );
+    }
+
+    #[test]
+    fn an_asset_is_at_no_distance_from_itself() {
+        // Two periods of ±1/32 have a variance of 2⁻⁹, and that over its square root twice
+        // rounds to an ulp under 1: taken as a correlation, the asset would be 2⁻²⁷ from itself.
+        let h = 0.03125;
+        let data = Returns::new(&[[h, -h], [-h, h]]).unwrap();
+        let variance = data.cov_matrix[(0, 0)];
+        assert_eq!(variance, 2f64.powi(-9));
+        assert!(variance / variance.sqrt() / variance.sqrt() < 1.0);
+        // The two move exactly against each other, as far apart as assets can be.
+        assert_eq!(
+            data.correlation_distance().unwrap(),
+            DMatrix::from_row_slice(2, 2, &[0.0, 1.0, 1.0, 0.0])
+        );
+    }
+
+    #[test]
     fn capped_qp_weights_stay_within_their_caps() {
         // On 0.3.12, which scaled them to sum to 1, 48 of these 2000 weights ended a few units
         // in the last place past their caps, from min variance and mean-variance alike: the
