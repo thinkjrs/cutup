@@ -3,10 +3,9 @@
 //! `allow_short`. A setting left out is the default, and an unknown key is an error.
 
 use crate::WeightBounds;
-use serde::de::{Error, MapAccess, Visitor, value::MapAccessDeserializer};
+use serde::de::{Error, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser};
 use std::fmt;
-use std::marker::PhantomData;
 
 /// Whether `value` is its type's default, so that it's left out.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -38,26 +37,58 @@ pub(crate) fn finite<E: ser::Error>(settings: &[(&str, Option<f64>)]) -> Result<
 /// A derived struct also reads from an array, its fields by position: `[[0, 1]]` was a
 /// method with bounds, and `[]` any method's defaults. Nothing documents that form, and a
 /// field added or moved would change what it means without an error.
+///
+/// `T` still asks its format for a struct, and is only kept from being handed an array. Asked
+/// for a map instead, a format loses what it does for a struct: RON writes one as
+/// `(key: value)` and reads only `{key: value}` as a map, and a `T` flattened into another
+/// struct is handed every key left over, not just its own.
 pub(crate) fn object<'de, T, D>(deserializer: D) -> Result<T, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,
 {
-    struct Object<T>(PhantomData<T>);
+    T::deserialize(ObjectOnly(deserializer))
+}
 
-    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
-        type Value = T;
+/// A deserializer that hands what reads from it an object, or an error.
+struct ObjectOnly<D>(D);
 
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("an object")
-        }
+impl<'de, D: Deserializer<'de>> Deserializer<'de> for ObjectOnly<D> {
+    type Error = D::Error;
 
-        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
-            T::deserialize(MapAccessDeserializer::new(map))
-        }
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, D::Error> {
+        self.0.deserialize_any(Object(visitor))
     }
 
-    deserializer.deserialize_map(Object(PhantomData))
+    fn deserialize_struct<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.0.deserialize_struct(name, fields, Object(visitor))
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier
+        ignored_any
+    }
+}
+
+/// A visitor that takes an object for the one it wraps, and refuses anything else.
+struct Object<V>(V);
+
+impl<'de, V: Visitor<'de>> Visitor<'de> for Object<V> {
+    type Value = V::Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<V::Value, A::Error> {
+        self.0.visit_map(map)
+    }
 }
 
 /// How many entries to reserve for a map that says it has `hint`: what it says, up to 4096.
@@ -121,6 +152,7 @@ no_settings!(InverseVariance);
 mod tests {
     use super::*;
     use crate::{EqualWeight, InverseVariance, InverseVolatility};
+    use serde::de::value::MapDeserializer;
     use serde_json::json;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -487,5 +519,86 @@ mod tests {
             error.to_string().contains("unknown field `uper`"),
             "{error}"
         );
+    }
+
+    /// A format in which a struct isn't a map, as RON's `(key: value)` isn't its
+    /// `{key: value}`: it has these keys only for a reader that asks for a struct.
+    struct Record(Vec<(&'static str, f64)>);
+
+    impl<'de> Deserializer<'de> for Record {
+        type Error = serde::de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+            Err(Error::custom("a struct, asked for as something else"))
+        }
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            _: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            visitor.visit_map(MapDeserializer::new(self.0.into_iter()))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+            option unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier
+            ignored_any
+        }
+    }
+
+    #[test]
+    fn a_config_is_asked_for_as_a_struct() {
+        use crate::MinCvar;
+
+        // Asked for as a map, neither would be read at all.
+        assert_eq!(
+            MinCvar::deserialize(Record(vec![("confidence", 0.9)])),
+            Ok(MinCvar::default().confidence(0.9))
+        );
+        assert_eq!(
+            EqualWeight::deserialize(Record(Vec::new())),
+            Ok(EqualWeight)
+        );
+        // And a key that isn't the struct's is still refused.
+        let error = MinCvar::deserialize(Record(vec![("confidense", 0.9)])).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `confidense`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_object_is_one_however_its_reader_asks_for_it() {
+        use std::collections::BTreeMap;
+
+        // A reader that asks for a map, or for anything, is still handed an object alone.
+        let map: BTreeMap<String, f64> = object(json!({"a": 1.5})).unwrap();
+        assert_eq!(map, BTreeMap::from([("a".to_owned(), 1.5)]));
+        for other in [json!(1.5), json!([1.5]), json!("a"), json!(null)] {
+            let error = object::<BTreeMap<String, f64>, _>(other).unwrap_err();
+            assert!(error.to_string().contains("expected an object"), "{error}");
+        }
+        let error = object::<f64, _>(json!(1.5)).unwrap_err();
+        assert!(error.to_string().contains("expected an object"), "{error}");
+    }
+
+    #[test]
+    fn a_config_flattened_beside_another_reads_its_own_keys() {
+        use crate::{CovarianceConfig, MinCvar};
+
+        // Each takes its own keys and leaves the other's, where a config asked for as a map
+        // was handed both and refused the other's as unknown.
+        #[derive(Deserialize)]
+        struct Both {
+            #[serde(flatten)]
+            cvar: MinCvar,
+            #[serde(flatten)]
+            covariance: CovarianceConfig,
+        }
+        let both: Both = serde_json::from_str(r#"{"confidence": 0.9, "shrinkage": 0.1}"#).unwrap();
+        assert_eq!(both.cvar, MinCvar::default().confidence(0.9));
+        assert_eq!(both.covariance, CovarianceConfig::default().shrinkage(0.1));
     }
 }
