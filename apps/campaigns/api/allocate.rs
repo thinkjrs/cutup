@@ -1,8 +1,9 @@
 //! `POST /api/allocate`: a JSON [`Request`](campaign_engine::Request) in, the engine's JSON
 //! reply out, with its status: 200 for a response, 400 for a body that isn't UTF-8 or a
-//! request that isn't JSON for one, 422 for one that can't be allocated, and 405 for anything
-//! but `POST`. A reply that allocated says how long that took in `server-timing`, as
-//! `engine;dur=` milliseconds, for the frontend to show beside the round trip.
+//! request that isn't JSON for one, 413 for one longer than the engine reads, 422 for one that
+//! can't be allocated, and 405 for anything but `POST`. A reply that allocated says how long
+//! that took in `server-timing`, as `engine;dur=` milliseconds, for the frontend to show beside
+//! the round trip.
 
 use http_body_util::BodyExt;
 use std::time::Instant;

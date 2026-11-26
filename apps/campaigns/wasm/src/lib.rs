@@ -15,8 +15,8 @@ pub struct Reply(campaign_engine::Reply);
 
 #[wasm_bindgen]
 impl Reply {
-    /// 200 for a response, 400 for a request that isn't JSON for one, and 422 for one that
-    /// can't be allocated.
+    /// 200 for a response, 400 for a request that isn't JSON for one, 413 for one longer than
+    /// the engine reads, and 422 for one that can't be allocated.
     #[wasm_bindgen(getter)]
     pub fn status(&self) -> u16 {
         self.0.status
