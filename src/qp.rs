@@ -45,7 +45,11 @@ pub(crate) fn solve_kkt(
 }
 
 /// `x`, if it satisfies `Eᵀx = b` in the original units: each constraint to within `1e-8` of
-/// the size of its terms `|Eᵢⱼxᵢ|` and `|bⱼ|`, computed so that huge terms can't overflow.
+/// the size of its terms `|Eᵢⱼxᵢ|` and `|bⱼ|`, computed so that huge terms can't overflow, or
+/// of its largest coefficient times the largest variable where that's more. The terms alone
+/// are no measure where the solution leaves out what a constraint weighs: a target return of
+/// 0 with one asset's expected return and the rest at 0 holds none of that asset, and its
+/// term is all rounding.
 ///
 /// [`solve_noisy_kkt`] checks its solution in [`Units`], where a variable with a near-zero variance
 /// has a tiny entry in `E`. Converting back multiplies that variable's rounding by its inverse
@@ -72,8 +76,9 @@ fn checked(
         let residual = terms.iter().map(|t| t / largest).sum::<f64>() - target / largest;
         let size =
             terms.iter().map(|t| (t / largest).abs()).sum::<f64>() + (target / largest).abs();
+        let reach = (column / scale).amax() * x.amax() / largest;
         // A NaN entry, which `amax` skips over, leaves a NaN residual that no comparison fails.
-        if residual.is_nan() || residual.abs() > 1e-8 * size {
+        if residual.is_nan() || residual.abs() > 1e-8 * size.max(reach) {
             return Err(CutupError::SingularCovariance);
         }
     }
@@ -2714,5 +2719,32 @@ mod tests {
             );
             assert_eq!(meets_rows(x.clone(), &held, &alike), Ok(x), "{left:e}");
         }
+    }
+
+    #[test]
+    fn a_constraint_is_measured_against_its_coefficients_and_the_solution() {
+        // One constraint, `x₀ = 0`, and a solution that misses it by rounding next to a second
+        // variable the constraint doesn't weigh. Its one term is the miss itself.
+        let e = dmatrix![1.0; 0.0];
+        let b = dvector![0.0];
+        // Within 1e-8 of the largest coefficient, 1, times the largest variable, 100.
+        let x = dvector![5e-7, 100.0];
+        assert_eq!(checked(x.clone(), &e, &b, &[1.0]), Ok(x));
+        // And not within it of 0.01.
+        let x = dvector![1e-9, 0.01];
+        assert_eq!(
+            checked(x, &e, &b, &[1.0]),
+            Err(CutupError::SingularCovariance)
+        );
+        // A constraint that weighs every variable alike is measured by its terms, as before.
+        let e = dmatrix![1.0; 1.0];
+        let b = dvector![1.0];
+        let x = dvector![0.25, 0.75 + 1e-9];
+        assert_eq!(checked(x.clone(), &e, &b, &[1.0]), Ok(x));
+        let x = dvector![0.25, 0.75 + 1e-7];
+        assert_eq!(
+            checked(x, &e, &b, &[1.0]),
+            Err(CutupError::SingularCovariance)
+        );
     }
 }

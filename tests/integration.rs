@@ -665,3 +665,55 @@ fn rebalancing_assets_of_different_scales_is_solved_as_before() {
     let weights = data.allocate(&method).unwrap();
     assert_eq!(weights.as_slice(), current);
 }
+
+#[test]
+fn a_target_that_leaves_out_the_one_asset_with_a_return_is_solved() {
+    // Long-short, only the first asset has an expected return, and the target is 0: the
+    // optimum holds none of it, so its term in the return's constraint is all rounding. That
+    // was measured against itself, and the solve was refused as `SingularCovariance`.
+    let rows = [
+        [0.010, -0.020, 0.005],
+        [-0.004, 0.015, 0.002],
+        [0.007, 0.003, -0.006],
+        [0.002, -0.001, 0.004],
+        [-0.003, 0.006, 0.001],
+    ];
+    let data = Returns::new(&rows).unwrap();
+    // Without the first asset, the least variance of the other two is in closed form.
+    let column = |j: usize| rows.iter().map(|row| row[j]).collect::<Vec<f64>>();
+    let covariance = |a: &[f64], b: &[f64]| {
+        let n = a.len() as f64;
+        let (mean_a, mean_b) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let products = a.iter().zip(b).map(|(x, y)| (x - mean_a) * (y - mean_b));
+        products.sum::<f64>() / (n - 1.0)
+    };
+    let (second, third) = (column(1), column(2));
+    let (v2, v3, c23) = (
+        covariance(&second, &second),
+        covariance(&third, &third),
+        covariance(&second, &third),
+    );
+    let w2 = (v3 - c23) / (v2 + v3 - 2.0 * c23);
+    for expected in [[-0.01, 0.0, 0.0], [0.01, 0.0, 0.0]] {
+        for target in [0.0, 1e-13, -1e-13] {
+            let method = MeanVariance::target_return(target)
+                .allow_short()
+                .expected_returns(expected);
+            let weights = data.allocate(&method).unwrap();
+            let first = target / expected[0];
+            for (got, want) in
+                weights
+                    .iter()
+                    .zip([first, w2 * (1.0 - first), (1.0 - w2) * (1.0 - first)])
+            {
+                assert!((got - want).abs() < 1e-9, "{target}: {weights:?}");
+            }
+        }
+        // And the frontier, whose last or first target is that 0.
+        let method = MeanVariance::risk_aversion(1.0)
+            .allow_short()
+            .expected_returns(expected);
+        let frontier = data.frontier(&method, 5).unwrap();
+        assert_eq!(frontier.len(), 5);
+    }
+}
