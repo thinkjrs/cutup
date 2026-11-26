@@ -1745,6 +1745,49 @@ mod tests {
     }
 
     #[test]
+    fn a_ray_moves_every_free_variable_along_it() {
+        // With Q = 0 and x₀ + 2x₁ + x₂ = 1, the ray is c = (1, 2, 0) less its part along the
+        // constraint, (1, 2, −5) / 6, and x₂ reaches 0 after a step of 0.6. On the other two
+        // c is the constraint's own (1, 2), so every point left is optimal, and they stay
+        // where the ray put them: 0.6 of it from the start. The next solve only restores the
+        // constraint, so a step that put them anywhere else would end at another optimum.
+        let q = DMatrix::zeros(3, 3);
+        let c = dvector![1.0, 2.0, 0.0];
+        let e = dmatrix![1.0; 2.0; 1.0];
+        let start = dvector![0.2, 0.15, 0.5];
+        let x = solve_nonnegative(&q, &c, &e, &dvector![1.0], start).unwrap();
+        assert_close(&x, &dvector![0.3, 0.35, 0.0], 1e-14);
+    }
+
+    #[test]
+    fn the_descent_ray_is_the_projection_of_c_onto_the_flat_feasible_directions() {
+        // With no curvature, the budget leaves every direction that sums to 0: c less its mean.
+        let (e, _) = budget(3);
+        let ray = descent_ray(&DMatrix::zeros(3, 3), &dvector![3.0, 0.0, 0.0], &e).unwrap();
+        assert_close(&ray, &dvector![2.0, -1.0, -1.0], 1e-14);
+        // Curvature in x₀ leaves (0, 1, −1) alone, and c = (3, 2, 0) has 2 / √2 along it.
+        let q = dmatrix![1.0, 0.0, 0.0; 0.0, 0.0, 0.0; 0.0, 0.0, 0.0];
+        let ray = descent_ray(&q, &dvector![3.0, 2.0, 0.0], &e).unwrap();
+        assert_close(&ray, &dvector![0.0, 1.0, -1.0], 1e-14);
+    }
+
+    #[test]
+    fn a_descent_ray_that_is_rounding_next_to_c_is_singular() {
+        // c is (1, −1) along the one feasible direction, next to 1e14 across it: 1e-14 of c,
+        // where 1e-12 of it counts as rounding.
+        let (e, _) = budget(2);
+        let c = dvector![1e14 + 1.0, 1e14 - 1.0];
+        assert_eq!(
+            descent_ray(&DMatrix::zeros(2, 2), &c, &e),
+            Err(CutupError::SingularCovariance)
+        );
+        // A c that is all along that direction is its own ray, however small.
+        let c = dvector![1e-14, -1e-14];
+        let ray = descent_ray(&DMatrix::zeros(2, 2), &c, &e).unwrap();
+        assert_close(&ray, &c, 1e-26);
+    }
+
+    #[test]
     fn ratio_test_ignores_rounding_noise() {
         let x = dvector![1.0, 1.0, 1.0];
         let (lower, upper) = ([0.0; 3], [f64::INFINITY; 3]);
@@ -1775,6 +1818,38 @@ mod tests {
             ratio_test(&x, &dvector![-1.0, 0.0], &lower, &[2.0, 2.0]),
             None
         );
+    }
+
+    #[test]
+    fn ratio_test_divides_the_distance_to_an_end_by_the_speed_toward_it() {
+        // From 1, a floor of 0.25 is 0.75 away and a cap of 2 is 1 away.
+        let x = dvector![1.0, 1.0];
+        let (lower, upper) = ([0.25, 0.0], [4.0, 2.0]);
+        assert_eq!(
+            ratio_test(&x, &dvector![-3.0, 2.0], &lower, &upper),
+            Some((0.25, 0, Side::Lower))
+        );
+        assert_eq!(
+            ratio_test(&x, &dvector![-1.0, 4.0], &lower, &upper),
+            Some((0.25, 1, Side::Upper))
+        );
+    }
+
+    #[test]
+    fn ratio_test_takes_1e_12_of_the_largest_component_for_rounding() {
+        // The first component has no end to reach. The second has one on either side, 1 away.
+        let x = dvector![1.0, 1.0];
+        let (lower, upper) = ([f64::NEG_INFINITY, 0.0], [f64::INFINITY, 2.0]);
+        let step =
+            |first: f64, second: f64| ratio_test(&x, &dvector![first, second], &lower, &upper);
+        // Exactly 1e-12 of the first is rounding, and twice that isn't.
+        assert_eq!(step(1.0, -1e-12), None);
+        assert_eq!(step(1.0, 1e-12), None);
+        assert_eq!(step(1.0, -2e-12), Some((1.0 / 2e-12, 1, Side::Lower)));
+        assert_eq!(step(1.0, 2e-12), Some((1.0 / 2e-12, 1, Side::Upper)));
+        // It grows and shrinks with the largest component.
+        assert_eq!(step(1e6, -1e-9), None);
+        assert_eq!(step(1e-6, -1e-15), Some((1.0 / 1e-15, 1, Side::Lower)));
     }
 
     #[test]
@@ -2089,6 +2164,45 @@ mod tests {
         };
         let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), 1.0, dvector![0.0]);
         assert_eq!(x, Err(CutupError::NotConverged));
+    }
+
+    #[test]
+    fn a_secant_step_onto_an_end_of_the_bracket_is_bisected_instead() {
+        // g steps down from `before` to the limit of 3 at λ = 6 and to `after` at λ = 8, so
+        // the bracket is 4 to 8. Where g is 0.5 past the limit at 4 and 1e30 within it at 8,
+        // the secant step rounds to 4 itself, and where it's 1e30 past at 4 and 0.5 within
+        // at 8, to 8 itself. Neither splits the bracket, so the search bisects it, to 6.
+        for (before, after) in [(3.5, -1e30), (1e30, 2.5)] {
+            let mut tried = Vec::new();
+            let solve = |lambda: f64, _: DVector<f64>| {
+                tried.push(lambda);
+                let g = match lambda {
+                    l if l < 6.0 => before,
+                    l if l < 8.0 => 3.0,
+                    _ => after,
+                };
+                Ok((g, Some(dvector![lambda])))
+            };
+            let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), 1.0, dvector![0.0]);
+            assert_eq!(x, Ok(dvector![6.0]), "{before:e}");
+            assert_eq!(tried, [0.0, 1.0, 2.0, 4.0, 8.0, 6.0], "{before:e}");
+        }
+    }
+
+    #[test]
+    fn the_multiplier_search_doubles_up_to_the_largest_multiplier_and_stops() {
+        // No λ meets the limit. From a quarter of the largest float the bracket doubles to
+        // half of it and to all of it, and the search ends there rather than at infinity.
+        let mut tried = Vec::new();
+        let solve = |lambda: f64, _: DVector<f64>| {
+            assert!(lambda.is_finite());
+            tried.push(lambda);
+            Ok((10.0, Some(dvector![lambda])))
+        };
+        let first = f64::MAX / 4.0;
+        let x = search_multiplier(solve, (3.0, |_: &DVector<f64>| 0.0), first, dvector![0.0]);
+        assert_eq!(x, Err(CutupError::NotConverged));
+        assert_eq!(tried, [0.0, first, f64::MAX / 2.0, f64::MAX]);
     }
 
     #[test]
@@ -2615,6 +2729,28 @@ mod tests {
     }
 
     #[test]
+    fn an_optimum_at_the_origin_under_caps_of_0_doesnt_block_there() {
+        // The same with x ≤ 0: every variable is freed at its cap, and its target is the cap
+        // itself, with nothing for a tolerance to be measured against. A target at the cap
+        // isn't past it, so nothing blocks; blocking there would step 0 / 0 of the way.
+        let q = DMatrix::identity(2, 2);
+        let e = dmatrix![1.0; -1.0];
+        let bounds = Bounds::new(
+            DVector::from_element(2, f64::NEG_INFINITY),
+            DVector::zeros(2),
+        );
+        let x = solve_bounded(
+            &q,
+            &DVector::zeros(2),
+            &e,
+            &dvector![0.0],
+            &bounds,
+            DVector::zeros(2),
+        );
+        assert_eq!(x, Ok(dvector![0.0, 0.0]));
+    }
+
+    #[test]
     fn test_a_rate_within_rounding_of_its_terms_leaves_a_variable_held() {
         // x₁ is held at its cap of 0.6, where moving down would lower the objective at a rate
         // of 1e-8: its gradient, −9.6, and its share of the budget's multiplier, 9.6, cancel
@@ -2628,6 +2764,29 @@ mod tests {
         let x = solve_bounded(&q, &c, &e, &b, &bounds, dvector![0.6, 0.4]).unwrap();
         assert_eq!(x[0], 0.6);
         assert!((x[1] - 0.4).abs() < 1e-15, "{x:?}");
+    }
+
+    #[test]
+    fn a_rate_of_exactly_1e_9_of_its_terms_leaves_a_variable_held() {
+        // x₀ is kept at 0.5 by its constraint. x₁ is in no constraint, and is held at a bound
+        // of 0 with only its own linear term to pull it off: a rate of |c₁|, against terms of
+        // |Q|·|x| + |c| = 0.5 + 0.5. From a floor it would go up, and from a cap down.
+        let q = DMatrix::identity(2, 2);
+        let e = dmatrix![1.0; 0.0];
+        let b = dvector![0.5];
+        let floor = Bounds::nonnegative(2);
+        let cap = Bounds::new(dvector![0.0, -1.0], dvector![1.0, 0.0]);
+        for (bounds, sign) in [(&floor, 1.0), (&cap, -1.0)] {
+            let solve = |rate: f64| {
+                let c = dvector![0.5, sign * rate];
+                solve_bounded(&q, &c, &e, &b, bounds, dvector![0.5, 0.0]).unwrap()
+            };
+            // Exactly 1e-9 of the terms is still rounding.
+            assert_eq!(solve(1e-9)[1], 0.0, "{sign}");
+            // The next rate up isn't, and x₁ goes where its term sends it.
+            let past = f64::from_bits(1e-9f64.to_bits() + 1);
+            assert!((solve(past)[1] - sign * past).abs() < 1e-20, "{sign}");
+        }
     }
 
     #[test]
@@ -2745,6 +2904,180 @@ mod tests {
         assert_eq!(
             checked(x, &e, &b, &[1.0]),
             Err(CutupError::SingularCovariance)
+        );
+    }
+
+    #[test]
+    fn a_constraint_counts_its_target_among_its_terms() {
+        // A budget of 0.25 missed by 3.75e-9, which is 1.5e-8 of it. Next to the budget the
+        // weights' terms come to 1 and the target to 1 more: 1e-8 of the two covers the miss,
+        // and 1e-8 of the weights' alone wouldn't.
+        let e = dmatrix![1.0; 1.0];
+        let b = dvector![0.25];
+        let x = dvector![0.0625, 0.1875 + 3.75e-9];
+        assert_eq!(checked(x.clone(), &e, &b, &[1.0]), Ok(x));
+        // Twice the miss is past both.
+        let x = dvector![0.0625, 0.1875 + 7.5e-9];
+        assert_eq!(
+            checked(x, &e, &b, &[1.0]),
+            Err(CutupError::SingularCovariance)
+        );
+    }
+
+    #[test]
+    fn a_miss_of_exactly_1e_8_of_a_constraints_measure_passes() {
+        // `x₀ = 0` missed by 1, next to a second variable of 1e8 that it doesn't weigh: the
+        // measure is the 1e8, and 1e-8 of it is the miss exactly.
+        let e = dmatrix![1.0; 0.0];
+        let b = dvector![0.0];
+        let x = dvector![1.0, 1e8];
+        assert_eq!(checked(x.clone(), &e, &b, &[1.0]), Ok(x));
+        // Next to the largest variable below 1e8, the miss is past it.
+        let x = dvector![1.0, f64::from_bits(1e8f64.to_bits() - 1)];
+        assert_eq!(
+            checked(x, &e, &b, &[1.0]),
+            Err(CutupError::SingularCovariance)
+        );
+    }
+
+    #[test]
+    fn the_reduced_hessians_cutoff_is_relative_to_k_and_grows_with_its_size() {
+        // Z keeps the second variable alone, so ZᵀKZ is 1 where K is as large as 2. The
+        // cutoff is n + 1 = 3 ulps of the 2.
+        let k = dmatrix![2.0, 0.0; 0.0, 1.0];
+        let (eigen, cutoff) = reduced_hessian(&k, &dmatrix![0.0; 1.0]).unwrap();
+        assert_eq!(eigen.values, dvector![1.0]);
+        assert_eq!(cutoff, 6.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn a_problem_with_no_variables_has_the_empty_solution() {
+        // Nothing is free and nothing can be, which the first iteration finds.
+        let none = DVector::zeros(0);
+        let (q, e) = (DMatrix::zeros(0, 0), DMatrix::zeros(0, 0));
+        let x = solve_bounded(&q, &none, &e, &none, &Bounds::nonnegative(0), none.clone());
+        assert_eq!(x, Ok(none));
+    }
+
+    #[test]
+    fn the_iterations_allowed_grow_by_several_for_each_variable() {
+        // Fifty variables each go from 0 through a kink at 0.5 to a cap of 1, pulled by c = 2
+        // against a cost of 0.25. Each is released from 0, blocks at its kink, is released
+        // again and blocks at its cap, one of those an iteration: x₀, which its own constraint
+        // keeps at 0.5, stays free, so they're never all freed at once. That's 200 iterations
+        // and one more to find nothing left to release: more than 100, and more than 100 with
+        // only one more for each variable.
+        let n = 51;
+        let but_first =
+            |first: f64, rest: f64| DVector::from_fn(n, |i, _| if i == 0 { first } else { rest });
+        let q = DMatrix::identity(n, n);
+        let e = DMatrix::from_fn(n, 1, |i, _| if i == 0 { 1.0 } else { 0.0 });
+        let kinks = Kinks {
+            at: DVector::from_element(n, 0.5),
+            slopes: but_first(0.0, 0.25),
+        };
+        let x = solve_piecewise(
+            &q,
+            &but_first(0.0, 2.0),
+            &e,
+            &dvector![0.5],
+            &capped(DVector::from_element(n, 1.0)),
+            &kinks,
+            but_first(0.5, 0.0),
+        )
+        .unwrap();
+        assert_close(&x, &but_first(0.5, 1.0), 1e-15);
+    }
+
+    #[test]
+    fn a_variable_that_blocks_at_once_after_its_release_is_refused_until_x_moves() {
+        let segments = [
+            Segments::new(0.0, 1.0, 0.0, 0.0),
+            Segments::new(0.0, 1.0, 0.0, 0.0),
+        ];
+        let blocked = |i: usize, side: Side, step: f64, released: Option<usize>| {
+            let mut x = dvector![0.25, 0.5];
+            let mut state = [State::Free(0), State::Free(0)];
+            // The first variable was refused earlier.
+            let mut refused = [true, false];
+            block(
+                &mut x,
+                &mut state,
+                &mut refused,
+                (i, side),
+                &segments,
+                step,
+                released,
+            );
+            (x[i], state[i], refused)
+        };
+        // Released and blocked without a step: back at its end and refused, as the first
+        // variable still is.
+        assert_eq!(
+            blocked(1, Side::Lower, 0.0, Some(1)),
+            (0.0, State::At(0), [true, true])
+        );
+        // Blocked without a step, but not the one just released.
+        assert_eq!(
+            blocked(1, Side::Upper, 0.0, Some(0)),
+            (1.0, State::At(1), [true, false])
+        );
+        assert_eq!(
+            blocked(1, Side::Upper, 0.0, None),
+            (1.0, State::At(1), [true, false])
+        );
+        // After a step x has moved, and every refusal is lifted.
+        assert_eq!(
+            blocked(1, Side::Lower, 0.5, Some(1)),
+            (0.0, State::At(0), [false, false])
+        );
+    }
+
+    /// `½‖x‖² − cᵀx` with `c = (at + 1, 4, c₂)` over `x₀ + x₁ + x₂ = at + η` and
+    /// `x₀ + 2x₁ = at`, with `x₁, x₂ ≥ 0`, from `(at, 0, 0)`: a start that meets the second
+    /// constraint and misses the first by `η = 1e-9`, within what a solve takes for rounding.
+    ///
+    /// With `x₀` alone free the two constraints say the same of it, so the solve keeps the
+    /// second, on which `x₀` stays where it is, and puts its multiplier there. That gives
+    /// `x₁` a rate of 2 and `x₂` one of `c₂`. Released, `x₁` is in both constraints with
+    /// `x₀`, and together they send it to `−η`: it blocks at once, without `x` moving.
+    fn solve_from_a_start_off_by_rounding(at: f64, c2: f64) -> Result<DVector<f64>, CutupError> {
+        let q = DMatrix::identity(3, 3);
+        let c = dvector![at + 1.0, 4.0, c2];
+        let e = dmatrix![1.0, 1.0; 1.0, 2.0; 1.0, 0.0];
+        let b = dvector![at + 1e-9, at];
+        let bounds = Bounds::new(
+            dvector![f64::NEG_INFINITY, 0.0, 0.0],
+            DVector::from_element(3, f64::INFINITY),
+        );
+        solve_bounded(&q, &c, &e, &b, &bounds, dvector![at, 0.0, 0.0])
+    }
+
+    #[test]
+    fn a_refused_variable_is_released_again_once_x_has_moved() {
+        // x₁ has the larger rate, is released first, blocks at once and is refused. The next
+        // solve leaves x where it is, so x₁ stays refused and x₂, with a rate of 1, is released
+        // instead. It takes up the η, which moves x, so x₁ is released again, and this time
+        // has x₂ to move with: (−2, 1, 1) keeps both constraints, and the optimum is
+        // (3 − η) / 6 along it from (at, 0, η).
+        let eta = 1e-9;
+        // From 1, the solve that leaves x where it is is measured against x₀. From the
+        // origin there's nothing to measure it against, and no move is still no move.
+        for at in [1.0, 0.0] {
+            let x = solve_from_a_start_off_by_rounding(at, 1.0).unwrap();
+            let along = (3.0 - eta) / 6.0;
+            let expected = dvector![at - 2.0 * along, along, eta + along];
+            assert_close(&x, &expected, 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_refused_variable_that_would_still_lower_the_objective_is_not_converged() {
+        // With c₂ = −1, x₂ belongs at 0 and nothing else moves x: x₁ would lower the
+        // objective, and can't enter.
+        assert_eq!(
+            solve_from_a_start_off_by_rounding(1.0, -1.0),
+            Err(CutupError::NotConverged)
         );
     }
 }
