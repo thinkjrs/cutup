@@ -210,6 +210,30 @@ mod tests {
     }
 
     #[test]
+    fn test_max_diversification_with_variances_too_small_to_invert() {
+        // Uncorrelated assets with volatilities in the ratio 1 : 2 : 4 get inverse volatility
+        // weights whatever the scale of their returns. At 1e-155 the variances are near
+        // 1e-309, and one over the largest is past f64::MAX: the volatilities are divided by
+        // the largest, so the most volatile asset's is 1 and one unit of it meets the
+        // constraint as it stands.
+        let x = 1e-155;
+        let returns = dmatrix![
+            x, 2.0 * x, 4.0 * x;
+            -x, 2.0 * x, -4.0 * x;
+            x, -2.0 * x, -4.0 * x;
+            -x, -2.0 * x, 4.0 * x
+        ];
+        let allocator = Returns::returns_matrix(returns).unwrap();
+        assert!(allocator.cov_matrix[(2, 2)] < 1.0 / f64::MAX);
+        let weights = allocator.allocate(&MaxDiversification::default()).unwrap();
+        assert_weights_close(
+            &weights,
+            &Weights::from(vec![4.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0]),
+            1e-12,
+        );
+    }
+
+    #[test]
     fn test_max_diversification_on_singular_covariance() {
         // [4/7, 0, 3/7] is long-only with zero variance, so the ratio has no upper bound.
         let allocator = Returns::returns_matrix(rank_one_returns()).unwrap();
