@@ -409,10 +409,28 @@ mod tests {
         assert!(weights.iter().all(|&w| w >= 0.0), "{weights:?}");
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
 
+        // The only excess return is too small, next to the largest return, for its square to
+        // be more than 0. Its asset still holds everything: the excess returns are divided by
+        // it, which leaves its own at 1.
+        assert_weights_close(
+            &at(0.0, dvector![1e-170, -1.0, -1.0]).unwrap(),
+            &Weights::from(vec![1.0, 0.0, 0.0]),
+            1e-12,
+        );
+
         // Every return and the rate zero: no excess return at all.
         assert!(matches!(
             at(0.0, DVector::zeros(3)),
             Err(CutupError::NoPositiveExcessReturn { .. })
+        ));
+
+        // Nor is a return of zero at a rate of zero one, with the other returns below it.
+        assert!(matches!(
+            at(0.0, dvector![0.0, -0.01, -0.02]),
+            Err(CutupError::NoPositiveExcessReturn {
+                highest_return: 0.0,
+                ..
+            })
         ));
     }
 
@@ -545,11 +563,114 @@ mod tests {
             Some(CutupError::Unbounded)
         );
 
+        // The fully invested zero-variance portfolio the rate is checked against returns
+        // 0.0143. At a rate above that it no longer beats the rate, but the mean still has a
+        // part that isn't along the budget: a change that takes no budget and adds no variance
+        // adds return.
+        assert_eq!(
+            allocator
+                .allocate(&MaxSharpe::default().risk_free_rate(0.02).allow_short())
+                .err(),
+            Some(CutupError::Unbounded)
+        );
+
         let shrunk = MaxSharpe::default()
             .risk_free_rate(-0.01)
             .covariance(CovarianceConfig::default().shrinkage(0.5));
         let weights = allocator.allocate(&shrunk.allow_short()).unwrap();
         assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_max_sharpe_identical_assets() {
+        // Two assets with the same returns: long one and short the other has no variance and
+        // takes no budget, so no fully invested portfolio is free of variance. Expected to
+        // return differently, that hedge earns the difference for nothing, and the Sharpe
+        // ratio is unbounded whatever the rate.
+        let rows = [0.01, -0.02, 0.015, -0.005].map(|r| [r, r]);
+        let allocator = Returns::new(&rows).unwrap();
+        for rate in [-0.01, 0.0, 0.01] {
+            let max_sharpe = MaxSharpe::default()
+                .risk_free_rate(rate)
+                .expected_returns([0.002, 0.001]);
+            assert_eq!(
+                allocator.allocate(&max_sharpe.allow_short()).err(),
+                Some(CutupError::Unbounded),
+                "rate {rate}"
+            );
+        }
+
+        // Expected to return the same, the hedge earns nothing, and the minimum-norm optimum
+        // holds the two equally.
+        let max_sharpe = MaxSharpe::default().expected_returns([0.002, 0.002]);
+        assert_weights_close(
+            &allocator.allocate(&max_sharpe.allow_short()).unwrap(),
+            &Weights::from(vec![0.5, 0.5]),
+            1e-12,
+        );
+    }
+
+    #[test]
+    fn test_max_sharpe_null_space_cutoff_grows_with_the_number_of_assets() {
+        // The first two of four assets are correlated at 1 − kε, so long one and short the
+        // other is an eigenvector of the correlation matrix with eigenvalue kε, under a
+        // largest of 2. The cutoff is n·ε times the largest, 8ε for four assets. The covariance
+        // and the expected returns are given, so the returns only count the assets.
+        let allocator = Returns::new(&[[0.0; 4]; 2]).unwrap();
+        let at = |k: f64| {
+            let rho = 1.0 - k * f64::EPSILON;
+            let covariance = CovarianceConfig::matrix(&[
+                [1.0, rho, 0.0, 0.0],
+                [rho, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ])
+            .unwrap();
+            let max_sharpe = MaxSharpe::default()
+                .covariance(covariance)
+                .expected_returns([0.02, 0.01, 0.01, 0.01]);
+            allocator.allocate(&max_sharpe.allow_short())
+        };
+
+        // At 2ε the pair's hedge has no variance, and it earns the difference in their
+        // expected returns, so the Sharpe ratio is unbounded.
+        assert_eq!(at(2.0).err(), Some(CutupError::Unbounded));
+
+        // At 32ε it has a variance, however small, and the maximum is an enormous position
+        // in it.
+        let weights = at(32.0).unwrap();
+        assert!(weights[0] > 1e12 && weights[1] < -1e12, "{weights:?}");
+    }
+
+    #[test]
+    fn test_max_sharpe_rate_tolerance_is_relative_to_the_min_variance_return() {
+        // Two assets of variance 1 correlated at −0.98. The minimum variance portfolio holds
+        // them equally and returns 0.015, the sum of 0.01 and 0.005, so a rate within 1.5e-12
+        // of that counts as at it, however large Σ⁻¹1 is: 50 for each asset here. The
+        // covariance and the expected returns are given, so the returns only count the assets.
+        let allocator = Returns::new(&[[0.0; 2]; 2]).unwrap();
+        let covariance = CovarianceConfig::matrix(&[[1.0, -0.98], [-0.98, 1.0]]).unwrap();
+        let below = |gap: f64| {
+            let max_sharpe = MaxSharpe::default()
+                .covariance(covariance.clone())
+                .expected_returns([0.02, 0.01])
+                .risk_free_rate(0.015 - gap);
+            allocator.allocate(&max_sharpe.allow_short())
+        };
+        assert!(matches!(
+            below(1.5e-13),
+            Err(CutupError::RiskFreeRateTooHigh { .. })
+        ));
+
+        // Ten times the tolerance below it, the tangency portfolio exists, with
+        // w₀ = ½ + (μ₀ − μ₁)(1 + ρ) / (4·gap·(1 − ρ)).
+        let weights = below(1.5e-11).unwrap();
+        let expected = 0.5 + 0.01 * 0.02 / (4.0 * 1.5e-11 * 1.98);
+        assert!((weights[0] / expected - 1.0).abs() < 1e-6, "{weights:?}");
+        assert!(
+            (weights[0] + weights[1] - 1.0).abs() < 1e-9 * weights[0],
+            "{weights:?}"
+        );
     }
 
     #[test]
