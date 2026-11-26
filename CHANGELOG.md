@@ -136,15 +136,39 @@ All notable changes to this project are documented here. The format follows
   `δΣw` past `f64::MAX`.
 - **The unit tests from the published crate:** they read four fixtures that the package
   left out, so `cargo test` didn't build there. The package has them.
+- **A weight that isn't finite, written to JSON:** `Weights` with a NaN or an infinite weight
+  wrote it as `null`, which doesn't read back as weights. Serializing them is now an error
+  that names the asset. The weights `allocate` returns are always finite.
 
 ### Security
 
 - **`Weights` read from a format that writes a map's length first,** such as MessagePack or
   CBOR: the length was reserved as claimed, so a few bytes claiming billions of entries
   could panic or abort on allocation. No more than 4,096 entries are reserved ahead.
+- **`SECURITY.md`:** how to report a vulnerability, what counts as one, what cutup doesn't
+  cap and a service should, and where the dependencies' `unsafe` is.
+- **CI:**
+  - the coverage, tests and reference workflows' tokens only read the repository, as the
+    others' did;
+  - the seconds typed into a fuzz run, and a PR's base branch, reach the shell as a
+    variable's value, not as part of the command;
+  - the campaign app's dependencies, which have a lock file of their own, are checked for
+    advisories and sources.
+- **The sample campaign app,** which isn't part of the published crate and is the one place
+  here that takes requests from anyone:
+  - **Limits:** a request is at most 16 KiB of JSON, which is a 413 past that, has at most
+    32 groups in its method's bounds, and names each metric once. With the 100 frontier
+    points and 100 rolling windows it already had, the slowest request found within them
+    takes 1.5 s, where 400 groups took a frontier half a minute.
+  - **Yields whose sum overflows:** each finite, with a sum past `f64::MAX`, they gave every
+    platform a return of −1. Their average is taken without the sum.
 
 ### Changed
 
+- nalgebra's `macros` feature is off: only cutup's tests and doc examples used it. A build
+  without features no longer compiles `nalgebra-macros`, `syn`, `quote` and `proc-macro2`.
+  A crate that used `dmatrix!` or `dvector!` with its own nalgebra's default features off,
+  relying on cutup to turn `macros` on, now turns it on itself.
 - `MeanVariance::target_volatility` within bounds checks its portfolio against the frontier's
   own at the same return, at the cost of one more solve. Its search stops early between two
   portfolios that hold the same assets, which it reads from their weights, and those round:
