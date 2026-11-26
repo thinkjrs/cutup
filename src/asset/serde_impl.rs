@@ -311,6 +311,34 @@ mod tests {
     }
 
     #[test]
+    fn a_limit_written_as_an_integer_is_its_number() {
+        // JSON's `1` and `-1` are integers to a reader, not the floats `1.0` and `-1.0`.
+        let values: PerAsset = serde_json::from_str("[1, -1, 0.5]").unwrap();
+        assert_eq!(values, PerAsset::from(vec![1.0, -1.0, 0.5]));
+        let limit = |text: &str| serde_json::from_str::<Limit>(text).unwrap().0;
+        assert_eq!((limit("3"), limit("-3")), (3.0, -3.0));
+        // And a format's `None`, as JSON's `null`, is no limit.
+        assert_eq!(Limit::deserialize(Absent).unwrap().0, f64::INFINITY);
+    }
+
+    /// A format that hands `None` over as one, where JSON's `null` is a unit.
+    struct Absent;
+
+    impl<'de> Deserializer<'de> for Absent {
+        type Error = de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            visitor.visit_none()
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+            option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum
+            identifier ignored_any
+        }
+    }
+
+    #[test]
     fn input_that_ends_early_or_is_malformed_is_its_own_error() {
         let early = serde_json::from_str::<PerAsset>("[0.5, ").unwrap_err();
         assert!(early.is_eof(), "{early}");

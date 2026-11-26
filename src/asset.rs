@@ -398,6 +398,18 @@ mod tests {
     }
 
     #[test]
+    fn an_asset_and_values_are_taken_by_reference_too() {
+        let label = String::from("TLT");
+        assert_eq!(Asset::from(&label), Asset::from("TLT"));
+        // An asset prints as its column or its label.
+        assert_eq!(Asset::from(&label).to_string(), "TLT");
+        assert_eq!(Asset::from(2).to_string(), "column 2");
+        let values = vec![0.6, 0.4];
+        assert_eq!(PerAsset::from(&values), PerAsset::from(values.clone()));
+        assert_eq!(PerAsset::from(&[0.6, 0.4]), PerAsset::from(values));
+    }
+
+    #[test]
     fn values_in_column_order_are_as_given() {
         let labels = labels();
         // One per asset, even where pairs could leave some out.

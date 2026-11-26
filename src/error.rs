@@ -465,6 +465,55 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
+    fn test_errors_without_an_asset_say_what_went_wrong() {
+        for (error, message) in [
+            (CutupError::NoAssets, "input has no assets"),
+            (
+                CutupError::NonFiniteValue { row: 2, col: 1 },
+                "value at row 2, column 1 is NaN or infinite",
+            ),
+            (
+                CutupError::NonPositivePrice { row: 0, col: 3 },
+                "price at row 0, column 3 is zero or negative",
+            ),
+            (
+                CutupError::NonFiniteCovariance,
+                "input is too extreme to compute a finite covariance matrix",
+            ),
+            (
+                CutupError::SingularCovariance,
+                "covariance matrix is singular; no finite weights could be computed",
+            ),
+            (
+                CutupError::MissingCurrentWeights,
+                "turnover and transaction cost settings need current weights to measure from",
+            ),
+            (
+                CutupError::InfeasibleTurnover {
+                    minimum: 0.4,
+                    cap: 0.1,
+                },
+                "turnover cap 0.1 is below 0.4, the least turnover that reaches the weight \
+                 bounds from the current weights",
+            ),
+            (
+                CutupError::NotSupported {
+                    setting: "max_turnover",
+                    with: "a frontier",
+                },
+                "`max_turnover` isn't supported with a frontier yet",
+            ),
+            (
+                CutupError::DegenerateViews,
+                "views repeat or contradict each other, or one with a default or confidence \
+                 variance is on a portfolio with no variance; give it an explicit variance",
+            ),
+        ] {
+            assert_eq!(error.to_string(), message);
+        }
+    }
+
+    #[test]
     fn test_error_display() {
         let err = CutupError::InsufficientData {
             required: 3,
