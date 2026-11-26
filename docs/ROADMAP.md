@@ -817,6 +817,22 @@ the internals. Its scope is settled when it starts.
     carries the return splits the rest among them differently from the
     exact optimum, by up to all of it: the variance of either split is the
     same to rounding.
+- **From the analysis,** done:
+  - a full mutation run, seeded, without the 1,100 mutants that never
+    compile: 49 missed of 3,259 viable, against 142 at 0.3.12. Tests catch 95
+    of the 143 the run before them missed, and the 48 left can't change a
+    result. `docs/MUTATION.md` has the baseline and the 48 by kind;
+  - coverage is 98.7% of lines, and the 57 outside the tests that nothing
+    runs are in `docs/MUTATION.md` by kind;
+  - a fourth fuzz target, `json`, reads arbitrary text as every type that
+    deserializes;
+  - three of clippy's pedantic lints are kept on: the types whose builders
+    return `Self` and the getters are `#[must_use]`, and every public
+    function that returns a `Result` documents its errors;
+  - found and fixed: a long-short target that leaves out the one asset with
+    a return was refused as `SingularCovariance`, a frontier point could
+    have a return that isn't finite, and every config also read from an
+    array of its fields.
 - **From the analysis,** left as they are:
   - the active-set solver returns `NotConverged` for a solvable problem
     whose last free variable is in no equality constraint and has its
