@@ -843,6 +843,13 @@ the internals. Its scope is settled when it starts.
     16 KiB limit applies, so the limit bounds what's parsed and not what's
     read, and a long body that isn't UTF-8 is a 400, not a 413. Stopping the
     read early needs checking on Vercel that the reply still arrives;
+  - a frontier point whose expected return or volatility overflows, as with
+    expected returns near `f64::MAX` and shorting, is `Ok`, and writes that
+    number to JSON as `null`, which doesn't read back. Refusing to write it
+    would panic a caller that expects its replies to serialize, as the
+    campaign app does. The fix is for `Returns::frontier` to return an error
+    for such a point, which is a new error from a public method, and which
+    error it is has to be chosen;
   - the workflows take six third-party actions by a tag or a branch their
     owners can move, `dtolnay/rust-toolchain@master` among them. Every
     workflow's token only reads and nothing publishes from CI, so what a
