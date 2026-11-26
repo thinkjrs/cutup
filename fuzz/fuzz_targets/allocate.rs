@@ -20,10 +20,10 @@
 
 use arbitrary::Arbitrary;
 use cutup::{
-    Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, Herc, Hrp,
-    InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe, MeanVariance,
-    MinCdar, MinCvar, MinMad, MinVariance, PerAsset, Returns, RiskParity, ShrinkageTarget, View,
-    WeightBounds, Weights,
+    Allocation, Asset, BlackLitterman, CovarianceConfig, CutupError, EqualWeight, FrontierPoint,
+    Herc, Hrp, InverseVariance, InverseVolatility, Linkage, MaxDiversification, MaxSharpe,
+    MeanVariance, MinCdar, MinCvar, MinMad, MinVariance, PerAsset, Returns, RiskParity,
+    ShrinkageTarget, View, WeightBounds, Weights,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::Serialize;
@@ -585,7 +585,8 @@ fn check_rolling(
 }
 
 /// Checks that `method`'s efficient frontier, if it has one, is `points` finite portfolios, or
-/// one, each with a return that isn't NaN and a volatility that isn't negative.
+/// one, each with a finite return and a finite volatility that isn't negative, and that each
+/// point reads back from its JSON equal to itself.
 fn check_frontier(data: &Returns, method: &MeanVariance, points: usize) {
     let Ok(frontier) = data.frontier(method, points) else {
         return;
@@ -598,8 +599,16 @@ fn check_frontier(data: &Returns, method: &MeanVariance, points: usize) {
     for point in &frontier {
         assert_eq!(point.weights().len(), data.labels().len());
         assert!(point.weights().iter().all(|w| w.is_finite()), "{point:?}");
-        assert!(!point.expected_return().is_nan(), "{point:?}");
-        assert!(point.volatility() >= 0.0, "{point:?}");
+        assert!(point.expected_return().is_finite(), "{point:?}");
+        assert!(
+            point.volatility().is_finite() && point.volatility() >= 0.0,
+            "{point:?}"
+        );
+        // So it has JSON, which reads back equal to it.
+        let json = serde_json::to_string(point).expect("a frontier point serializes");
+        let back: FrontierPoint =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        assert_eq!(&back, point, "{json}");
     }
 }
 

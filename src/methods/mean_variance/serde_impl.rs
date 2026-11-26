@@ -141,6 +141,13 @@ pub(super) struct PointWire {
 
 impl Serialize for FrontierPoint {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A point from `Returns::frontier` is finite. One read from a format that carries NaN
+        // or infinities needn't be, and JSON would write such a number as a `null` that
+        // doesn't read back.
+        finite(&[
+            ("expected_return", Some(self.expected_return)),
+            ("volatility", Some(self.volatility)),
+        ])?;
         PointWire {
             expected_return: self.expected_return,
             volatility: self.volatility,
@@ -232,6 +239,24 @@ mod tests {
                 serde_json::from_value::<MeanVariance>(json.clone()).is_err(),
                 "{json}"
             );
+        }
+    }
+
+    #[test]
+    fn a_frontier_point_that_isnt_finite_doesnt_serialize() {
+        for not in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (expected_return, volatility, key) in
+                [(not, 0.02, "expected_return"), (0.01, not, "volatility")]
+            {
+                let point = FrontierPoint {
+                    expected_return,
+                    volatility,
+                    weights: Weights::from(vec![0.5, 0.5]),
+                };
+                let error = serde_json::to_value(&point).unwrap_err().to_string();
+                let named = format!("`{key}` is {not}, which can't be written");
+                assert!(error.contains(&named), "{error}");
+            }
         }
     }
 

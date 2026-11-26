@@ -2,6 +2,7 @@
 import type { Weights } from "./Weights";
 
 /**
- * A portfolio on the efficient frontier, from [`Returns::frontier`].
+ * A portfolio on the efficient frontier. The weights, expected return and volatility of one
+ * from [`Returns::frontier`] are finite.
  */
 export type FrontierPoint = { expected_return: number, volatility: number, weights: Weights, };

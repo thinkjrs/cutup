@@ -3,6 +3,7 @@
 use super::min_variance::{bounded_min_variance, min_variance};
 use super::{budget_rounding, correlation, in_null_space, long_only_weights, within_bounds};
 use crate::bounds::{ReturnRange, feasible_start};
+use crate::stats::{binary_exponent, pow2_scaled};
 use crate::turnover::{Costs, Trading};
 use crate::{
     Allocation, CovarianceConfig, CutupError, PerAsset, Returns, WeightBounds, Weights, qp,
@@ -449,6 +450,11 @@ impl Returns {
     /// * [`CutupError::NotSupported`] if `method` has rebalancing settings.
     /// * [`CutupError::NonFiniteWeight`] if a point's weights aren't finite, as for
     ///   [`Returns::allocate`].
+    /// * [`CutupError::NonFiniteCovariance`] if a point's volatility isn't finite, which
+    ///   takes weights past about `1e154`.
+    /// * [`CutupError::InvalidAssetValue`] for the expected return that's largest in size,
+    ///   whichever its sign, if a point's expected return isn't finite, as with expected
+    ///   returns near `f64::MAX` held long and short. So every point's numbers are finite.
     /// * Otherwise, the errors [`MeanVariance`] returns for its settings, other than for its
     ///   objective.
     ///
@@ -521,7 +527,7 @@ impl Returns {
         let highest = range
             .as_ref()
             .map_or_else(|| mu.max(), ReturnRange::highest);
-        let lowest = mu.dot(&minimum);
+        let lowest = portfolio_return(&mu, &minimum);
         let highest = highest.max(lowest);
         let mut portfolios = vec![minimum];
         if highest - lowest > 1e-12 * lowest.abs().max(highest.abs()) {
@@ -539,25 +545,67 @@ impl Returns {
         }
         portfolios
             .into_iter()
-            .map(|w| {
-                // As `allocate` checks every method's weights.
-                if let Some(column) = w.iter().position(|w| !w.is_finite()) {
-                    return Err(CutupError::NonFiniteWeight {
-                        column,
-                        asset: self.labels[column].clone(),
-                    });
-                }
-                Ok(FrontierPoint {
-                    expected_return: mu.dot(&w),
-                    volatility: risk.volatility(&w) * risk.scale,
-                    weights: self.weights(w.iter().copied().collect()),
-                })
-            })
+            .map(|w| self.frontier_point(&mu, &risk, &w))
             .collect()
+    }
+
+    /// The frontier's point at the weights `w`, or an error if a number of it isn't finite.
+    fn frontier_point(
+        &self,
+        mu: &DVector<f64>,
+        risk: &Risk,
+        w: &DVector<f64>,
+    ) -> Result<FrontierPoint, CutupError> {
+        // As `allocate` checks every method's weights.
+        if let Some(column) = w.iter().position(|w| !w.is_finite()) {
+            return Err(CutupError::NonFiniteWeight {
+                column,
+                asset: self.labels[column].clone(),
+            });
+        }
+        // A point's numbers are finite, as its weights are: one is read back from its JSON,
+        // which has no number for one that isn't. Weights large enough to overflow the return
+        // overflow the volatility first, so past that check it's the expected returns that
+        // are too large.
+        let volatility = risk.volatility(w) * risk.scale;
+        if !volatility.is_finite() {
+            return Err(CutupError::NonFiniteCovariance);
+        }
+        let expected_return = portfolio_return(mu, w);
+        if !expected_return.is_finite() {
+            let column = mu.iamax();
+            return Err(CutupError::InvalidAssetValue {
+                field: "expected_returns",
+                column,
+                asset: self.labels[column].clone(),
+                value: mu[column],
+            });
+        }
+        Ok(FrontierPoint {
+            expected_return,
+            volatility,
+            weights: self.weights(w.iter().copied().collect()),
+        })
     }
 }
 
-/// A portfolio on the efficient frontier, from [`Returns::frontier`].
+/// `μᵀw`. Where a term or a partial sum overflows and the sum itself doesn't, as with expected
+/// returns near `f64::MAX` held long and short, both are scaled by powers of two first, which
+/// is exact, so the result is infinite only where the sum is.
+fn portfolio_return(mu: &DVector<f64>, w: &DVector<f64>) -> f64 {
+    let direct = mu.dot(w);
+    if direct.is_finite() {
+        return direct;
+    }
+    let (a, b) = (binary_exponent(mu.amax()), binary_exponent(w.amax()));
+    let scaled: f64 = (mu.iter().zip(w.iter()))
+        .map(|(&mu, &w)| pow2_scaled(mu, -a) * pow2_scaled(w, -b))
+        .sum();
+    pow2_scaled(scaled, a + b)
+}
+
+/// A portfolio on the efficient frontier. The weights, expected return and volatility of one
+/// from [`Returns::frontier`] are finite.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::PointWire"))]
 #[non_exhaustive]
@@ -2188,5 +2236,111 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Two assets that move together, the second twice as far, and a third on its own: the
+    /// minimum variance portfolio is long the first and short the second.
+    fn hedged() -> Returns {
+        Returns::returns_matrix(dmatrix![
+             0.010,  0.021,  0.003;
+            -0.020, -0.041,  0.004;
+             0.015,  0.0305, -0.002;
+            -0.005, -0.009,  0.001;
+             0.020,  0.0395, -0.003;
+            -0.010, -0.020,  0.002
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn test_frontier_return_is_finite_where_only_its_terms_overflow() {
+        // Every expected return is the same, near the largest number. Held long and short,
+        // the terms of μᵀw overflow, and their sum is that return.
+        let data = hedged();
+        let method = MeanVariance::risk_aversion(1.0)
+            .allow_short()
+            .expected_returns([1.7e308; 3]);
+        let frontier = data.frontier(&method, 5).unwrap();
+        assert_eq!(frontier.len(), 1);
+        let weights = frontier[0].weights();
+        let terms: f64 = weights.iter().map(|w| 1.7e308 * w).sum();
+        assert!(!terms.is_finite(), "{weights:?}");
+        let rho = frontier[0].expected_return();
+        assert!((rho / 1.7e308 - 1.0).abs() < 1e-12, "{rho}");
+        // An ordinary return is the dot product itself, to the bit.
+        let (mu, w) = (dvector![0.004, 0.006, 0.002], dvector![0.5, 0.25, 0.25]);
+        assert_eq!(portfolio_return(&mu, &w), mu.dot(&w));
+        // Scaled, each factor's power of two comes back: the largest number, 1.5 times and
+        // less half of itself, is itself to a rounding of the products.
+        let (mu, w) = (dvector![f64::MAX, f64::MAX], dvector![1.5, -0.5]);
+        let rho = portfolio_return(&mu, &w);
+        assert!((rho / f64::MAX - 1.0).abs() < 1e-15, "{rho}");
+        // The weights' power of two comes back too: 3 and −2 are scaled by a half.
+        let (mu, w) = (dvector![1e308, 1e308], dvector![3.0, -2.0]);
+        let rho = portfolio_return(&mu, &w);
+        assert!((rho / 1e308 - 1.0).abs() < 1e-15, "{rho}");
+        let (mu, w) = (dvector![1e308, -1e308], dvector![1.5, -0.5]);
+        assert_eq!(portfolio_return(&mu, &w), f64::INFINITY);
+        let (mu, w) = (dvector![-1e308, 1e308], dvector![1.5, -0.5]);
+        assert_eq!(portfolio_return(&mu, &w), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_frontier_return_that_overflows_is_an_error() {
+        // Long the first and short the second, the minimum variance portfolio's return is
+        // past the largest number: an error for the largest expected return, not a point
+        // with an infinite one.
+        let data = hedged();
+        let method = MeanVariance::risk_aversion(1.0)
+            .allow_short()
+            .expected_returns([1.7e308, -1.6e308, 0.0]);
+        assert_eq!(
+            data.frontier(&method, 5).err(),
+            Some(CutupError::InvalidAssetValue {
+                field: "expected_returns",
+                column: 0,
+                asset: "0".into(),
+                value: 1.7e308,
+            })
+        );
+        // The largest in size, whichever its sign.
+        let method = method.expected_returns([1.6e308, -1.7e308, 0.0]);
+        assert_eq!(
+            data.frontier(&method, 5).err(),
+            Some(CutupError::InvalidAssetValue {
+                field: "expected_returns",
+                column: 1,
+                asset: "1".into(),
+                value: -1.7e308,
+            })
+        );
+    }
+
+    #[test]
+    fn test_frontier_point_with_a_number_that_isnt_finite_is_an_error() {
+        let data = hedged();
+        let mu = dvector![0.004, 0.006, 0.002];
+        let risk = Risk::new(&data.cov_matrix).unwrap();
+        // Ordinary weights are a point with their return and volatility.
+        let w = dvector![0.5, 0.25, 0.25];
+        let point = data.frontier_point(&mu, &risk, &w).unwrap();
+        assert_eq!(point.expected_return(), mu.dot(&w));
+        let variance = (w.transpose() * &data.cov_matrix * &w)[(0, 0)];
+        assert!((point.volatility() / variance.sqrt() - 1.0).abs() < 1e-12);
+        // Weights whose variance overflows have no volatility, whatever their return.
+        let w = dvector![1e200, -1e200, 1.0];
+        assert_eq!(
+            data.frontier_point(&mu, &risk, &w).err(),
+            Some(CutupError::NonFiniteCovariance)
+        );
+        // And a weight that isn't finite is reported as one, before either.
+        let w = dvector![0.5, f64::INFINITY, 0.5];
+        assert_eq!(
+            data.frontier_point(&mu, &risk, &w).err(),
+            Some(CutupError::NonFiniteWeight {
+                column: 1,
+                asset: "1".into(),
+            })
+        );
     }
 }
