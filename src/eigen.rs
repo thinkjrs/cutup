@@ -225,7 +225,10 @@ mod tests {
     fn a_rotation_by_a_tiny_angle_does_not_overflow() {
         // τ = 5e199, whose square overflows: the rotation is by about 1e-200.
         let v = assert_rotates(&dmatrix![0.0, 1e-200; 1e-200, 1.0], 0, 1);
-        assert!((v - DMatrix::<f64>::identity(2, 2)).amax() <= 1e-199);
+        assert!((&v - DMatrix::<f64>::identity(2, 2)).amax() <= 1e-199);
+        // By 1 / 2τ, and not by the 0 that the general formula makes of a τ² that overflowed.
+        assert!((v[(0, 1)] - 1e-200).abs() <= 1e-215, "{}", v[(0, 1)]);
+        assert_eq!(v[(1, 0)], -v[(0, 1)]);
     }
 
     #[test]
