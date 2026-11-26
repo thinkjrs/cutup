@@ -315,6 +315,7 @@ impl Returns {
 
     /// Returns the assets' labels, in column order: those set with [`Returns::labeled`], or
     /// each asset's column.
+    #[must_use]
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
@@ -332,6 +333,7 @@ impl Returns {
     /// assert_eq!(Returns::from_prices(&prices)?.period_count(), 2);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
+    #[must_use]
     pub fn period_count(&self) -> usize {
         self.returns.nrows()
     }

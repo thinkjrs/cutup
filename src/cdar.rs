@@ -80,6 +80,7 @@ const STABILITY: f64 = 0.5;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct MinCdar {
     confidence: f64,
     bounds: WeightBounds,

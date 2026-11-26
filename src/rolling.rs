@@ -18,6 +18,7 @@ mod serde_impl;
 /// covariance and expected returns, and none feeds its weights into the next. A method's settings,
 /// such as its current weights, are the same for every window.
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct Rolling<'a> {
     data: &'a Returns,
     window: usize,
@@ -209,6 +210,7 @@ pub struct Window {
 
 impl Window {
     /// The periods the window covers, as rows of the returns: the last is the most recent.
+    #[must_use]
     pub fn periods(&self) -> Range<usize> {
         self.periods.clone()
     }

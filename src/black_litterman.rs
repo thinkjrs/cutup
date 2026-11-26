@@ -55,6 +55,7 @@ mod serde_impl;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct BlackLitterman {
     market_weights: PerAsset,
     risk_aversion: f64,
@@ -429,6 +430,7 @@ fn factor_views(a: DMatrix<f64>) -> Result<Cholesky<f64, Dyn>, CutupError> {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::ViewWire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct View {
     assets: Assets,
     q: f64,

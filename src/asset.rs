@@ -69,6 +69,7 @@ impl fmt::Display for Asset {
 
 impl Asset {
     /// The asset's label, if it was given by label.
+    #[must_use]
     pub fn label(&self) -> Option<&str> {
         match &self.0 {
             Key::Label(label) => Some(label),
@@ -77,6 +78,7 @@ impl Asset {
     }
 
     /// The asset's column, if it was given by column.
+    #[must_use]
     pub fn column(&self) -> Option<usize> {
         match &self.0 {
             Key::Column(column) => Some(*column),

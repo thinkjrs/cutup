@@ -171,6 +171,7 @@ mod serde_impl;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct MeanVariance {
     objective: Objective,
     expected_returns: Option<PerAsset>,
@@ -617,16 +618,19 @@ pub struct FrontierPoint {
 
 impl FrontierPoint {
     /// The portfolio's expected return, `μᵀw`, under the method's expected returns.
+    #[must_use]
     pub fn expected_return(&self) -> f64 {
         self.expected_return
     }
 
     /// The portfolio's volatility, `sqrt(wᵀΣw)`, under the method's adjusted covariance.
+    #[must_use]
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
 
     /// The portfolio's weights.
+    #[must_use]
     pub fn weights(&self) -> &Weights {
         &self.weights
     }

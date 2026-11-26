@@ -63,21 +63,25 @@ impl Weights {
     }
 
     /// Returns the weight of the asset in column `asset`, or `None` if out of range.
+    #[must_use]
     pub fn get(&self, asset: usize) -> Option<f64> {
         self.values.get(asset).copied()
     }
 
     /// Returns the weight of the asset labeled `label`, or `None` if no asset has that label.
+    #[must_use]
     pub fn weight(&self, label: &str) -> Option<f64> {
         self.position(label).map(|i| self.values[i])
     }
 
     /// Returns the number of assets.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns `true` if there are no weights.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -96,16 +100,19 @@ impl Weights {
     }
 
     /// Returns the assets' labels, in column order.
+    #[must_use]
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
 
     /// Returns the weights as a slice, in column order.
+    #[must_use]
     pub fn as_slice(&self) -> &[f64] {
         &self.values
     }
 
     /// Consumes the weights and returns them as a `Vec`, in column order.
+    #[must_use]
     pub fn into_vec(self) -> Vec<f64> {
         self.values
     }

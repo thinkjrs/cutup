@@ -43,6 +43,7 @@ mod serde_impl;
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
+#[must_use]
 pub struct CovarianceConfig {
     estimate: Estimate,
     regularization: Option<f64>,
@@ -494,6 +495,7 @@ impl CovarianceConfig {
     /// The fixed shrinkage intensity `λ` set with [`CovarianceConfig::shrinkage`], or `None`,
     /// including under [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf), whose intensity
     /// depends on the returns.
+    #[must_use]
     pub fn lambda(&self) -> Option<f64> {
         match self.shrinkage {
             Some(Shrinkage::Fixed(lambda)) => Some(lambda),
@@ -502,6 +504,7 @@ impl CovarianceConfig {
     }
 
     /// The regularization `ε` set with [`CovarianceConfig::regularization`], or `None`.
+    #[must_use]
     pub fn epsilon(&self) -> Option<f64> {
         self.regularization
     }

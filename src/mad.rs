@@ -63,6 +63,7 @@ mod serde_impl;
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct MinMad {
     bounds: WeightBounds,
     target_return: Option<f64>,

@@ -71,6 +71,7 @@ pub struct PortfolioStats {
 
 impl PortfolioStats {
     /// The expected return `μᵀw`, with the sample mean of each asset's returns as `μ`.
+    #[must_use]
     pub fn expected_return(&self) -> f64 {
         self.expected_return
     }
@@ -84,6 +85,7 @@ impl PortfolioStats {
     /// trace, and neither do positions that cancel to within rounding. So does a volatility too
     /// small to represent, below about `5e-324`. [`Returns::stats_with`] has a rule of its own,
     /// relative to the positions' volatilities under its covariance.
+    #[must_use]
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
@@ -94,6 +96,7 @@ impl PortfolioStats {
     ///
     /// `None` if the [volatility](Self::volatility) is 0, or the rate isn't finite. A ratio
     /// past `f64::MAX` is infinite.
+    #[must_use]
     pub fn sharpe_ratio(&self, risk_free_rate: f64) -> Option<f64> {
         if self.deviation == 0.0 || !risk_free_rate.is_finite() {
             return None;
@@ -115,6 +118,7 @@ impl PortfolioStats {
     /// least 1, and 1 only when the assets held are perfectly correlated.
     ///
     /// `None` if the [volatility](Self::volatility) is 0.
+    #[must_use]
     pub fn diversification_ratio(&self) -> Option<f64> {
         self.diversification_ratio
     }
@@ -124,6 +128,7 @@ impl PortfolioStats {
     /// 1. A short position, or a long one that hedges others, can have a negative share.
     ///
     /// `None` if the [volatility](Self::volatility) is 0.
+    #[must_use]
     pub fn risk_contributions(&self) -> Option<&[f64]> {
         self.risk_contributions.as_deref()
     }
@@ -144,6 +149,7 @@ impl PortfolioStats {
     /// The mean absolute deviation, `(1/T) Σₜ |rₜ − r̄|`, of the portfolio's return in each
     /// period `rₜ` around their mean `r̄`, the same as [`Returns::mad`]. It's historical, so a
     /// covariance given to [`Returns::stats_with`] doesn't change it.
+    #[must_use]
     pub fn mad(&self) -> f64 {
         let total: f64 = self.scaled.iter().map(|r| (r - self.mean).abs()).sum();
         pow2_scaled(total / self.scaled.len() as f64, self.exponent)
@@ -207,6 +213,7 @@ impl PortfolioStats {
     }
 
     /// The average drawdown over every period. See [`cdar`](Self::cdar) for the drawdowns.
+    #[must_use]
     pub fn average_drawdown(&self) -> f64 {
         let total: f64 = drawdowns(&self.scaled).sum();
         pow2_scaled(total / self.scaled.len() as f64, self.exponent)

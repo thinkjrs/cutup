@@ -45,6 +45,12 @@ serde = ["dep:serde"]
 # TypeScript types, with ts-rs, for the JSON the `serde` feature reads and writes.
 ts-rs = ["dep:ts-rs", "serde"]
 
+# Two of clippy's pedantic lints: a builder whose result is dropped does nothing, so the types
+# the builders return, and the getters, are `#[must_use]`.
+[lints.clippy]
+must_use_candidate = "warn"
+return_self_not_must_use = "warn"
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

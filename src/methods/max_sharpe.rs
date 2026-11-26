@@ -114,6 +114,7 @@ mod serde_impl;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
 #[non_exhaustive]
+#[must_use]
 pub struct MaxSharpe {
     risk_free_rate: f64,
     expected_returns: Option<PerAsset>,
