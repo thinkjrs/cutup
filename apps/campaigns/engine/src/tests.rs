@@ -264,6 +264,12 @@ fn a_request_that_cant_be_allocated_says_why() {
             EngineError::NoMetrics,
         ),
         (
+            json!({"platforms": ["A"], "metrics": ["clicks", "views", "clicks"], "method": method}),
+            EngineError::DuplicateMetric {
+                metric: Metric::Clicks,
+            },
+        ),
+        (
             json!({"platforms": ["A"], "from": "2025-9-1", "method": method}),
             EngineError::InvalidDate {
                 date: "2025-9-1".into(),
@@ -374,6 +380,97 @@ fn too_many_rolling_windows_are_refused_before_any_is_solved() {
         .unwrap()
         .len();
     assert_eq!(windows, MAX_ROLLING_WINDOWS);
+}
+
+#[test]
+fn too_many_groups_are_refused_before_any_is_solved() {
+    let sample = small();
+    let group = json!({"members": ["A", "B"], "lower": 0.0, "upper": 1.0});
+    let grouped = |mut method: serde_json::Value, groups: usize| {
+        method["bounds"] = json!({"groups": vec![group.clone(); groups]});
+        request(json!({"platforms": ["A", "B"], "metrics": ["clicks"], "method": method}))
+    };
+    // Every method that takes bounds takes groups.
+    for method in [
+        json!({"name": "min_variance"}),
+        json!({"name": "mean_variance", "risk_aversion": 2.0}),
+        json!({"name": "min_cvar"}),
+        json!({"name": "min_mad"}),
+        json!({"name": "min_cdar"}),
+    ] {
+        assert_eq!(
+            allocate_over(&sample, &grouped(method.clone(), MAX_GROUPS + 1)),
+            Err(EngineError::Groups {
+                groups: MAX_GROUPS + 1
+            }),
+            "{method}"
+        );
+    }
+    // Exactly the most is allowed, and so is a method with no bounds to count.
+    let least = json!({"name": "min_variance"});
+    let most = allocate_over(&sample, &grouped(least, MAX_GROUPS)).unwrap();
+    assert!(most.results[0].weights.is_some(), "{most:?}");
+    let none = request(json!({"method": {"name": "hrp"}}));
+    assert_eq!(none.method.groups(), Some(0));
+    // serde reads a struct from an array of its fields in order too, so bounds spelled
+    // `[lower, upper, assets, groups]` with each group `[members, lower, upper]` have no
+    // `groups` key in the request. They're counted all the same.
+    let spelled = vec![json!([["A", "B"], 0.0, 1.0]); MAX_GROUPS + 1];
+    let positional = request(json!({
+        "platforms": ["A", "B"],
+        "method": {"name": "min_variance", "bounds": [0.0, null, [], spelled]}
+    }));
+    assert_eq!(
+        allocate_over(&sample, &positional),
+        Err(EngineError::Groups {
+            groups: MAX_GROUPS + 1
+        })
+    );
+}
+
+#[test]
+fn groups_that_cant_be_counted_get_no_frontier() {
+    // A risk aversion that isn't finite, which JSON can't carry, doesn't serialize, so the
+    // method's groups aren't counted. Its allocation refuses the risk aversion, and its
+    // frontier, which doesn't take it, would be traced with every one of them.
+    let bounds = (0..=MAX_GROUPS).fold(WeightBounds::default(), |bounds, _| {
+        bounds.group(["A", "B"], 0.0, 1.0)
+    });
+    let mut read = request(json!({
+        "platforms": ["A", "B"],
+        "metrics": ["clicks"],
+        "method": {"name": "equal_weight"},
+        "frontier": 4
+    }));
+    read.method = Method::MeanVariance(MeanVariance::risk_aversion(f64::INFINITY).bounds(bounds));
+    assert_eq!(read.method.groups(), None);
+    let result = &allocate_over(&small(), &read).unwrap().results[0];
+    let refused = Some(CutupError::InvalidConfig {
+        field: "risk_aversion",
+        value: f64::INFINITY,
+    });
+    assert_eq!(result.error, refused);
+    assert!(result.weights.is_none() && result.frontier.is_none());
+    assert_eq!(result.frontier_error, refused);
+}
+
+#[test]
+fn a_request_longer_than_the_engine_reads_is_refused_unread() {
+    let request = r#"{"method": {"name": "equal_weight"}, "metrics": ["views"]}"#;
+    // JSON allows whitespace after its value, so a request can be padded to any length.
+    let padded = |bytes: usize| format!("{request}{}", " ".repeat(bytes - request.len()));
+    assert_eq!(respond(&padded(MAX_REQUEST_BYTES)).status, 200);
+    let long = respond(&padded(MAX_REQUEST_BYTES + 1));
+    assert_eq!(long.status, 413);
+    let body: serde_json::Value = serde_json::from_str(&long.body).unwrap();
+    let message = body["error"]["request"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!("at most {MAX_REQUEST_BYTES}")),
+        "{message}"
+    );
+    // Unread: text that isn't JSON gets the same reply, where a shorter one is a 400.
+    assert_eq!(respond(&"[".repeat(MAX_REQUEST_BYTES + 1)).status, 413);
+    assert_eq!(respond(&"[".repeat(MAX_REQUEST_BYTES)).status, 400);
 }
 
 #[test]

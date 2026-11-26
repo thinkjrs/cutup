@@ -42,6 +42,16 @@ pub const MAX_FRONTIER_POINTS: usize = 100;
 /// native function answers within a time limit.
 pub const MAX_ROLLING_WINDOWS: usize = 100;
 
+/// The most groups a method's bounds can have. Each is a row of every solve, and a solve's
+/// time grows with about the cube of them: 400 take a frontier of 100 points half a minute.
+pub const MAX_GROUPS: usize = 32;
+
+/// The most bytes a request's text can be. A request is read whole before any of it is
+/// checked, and a covariance matrix given in one is checked as it's read, in time that grows
+/// with the cube of its side: a megabyte of one takes seconds. The largest of the parity
+/// fixtures' requests is under 200 bytes.
+pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
+
 /// An allocation method, by `"name"`, with its settings as cutup reads them, such as
 /// `{"name": "min_variance", "bounds": {"upper": 0.6}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -84,6 +94,18 @@ impl Method {
             Method::MinMad(m) => Box::new(m.clone()),
             Method::MinCdar(m) => Box::new(m.clone()),
         }
+    }
+
+    /// How many groups the method's bounds have, from the method's own JSON, where its
+    /// `bounds` list them. cutup's bounds don't say, and the request's text wouldn't either:
+    /// serde reads a method's settings from an array as well as from an object. `None` for a
+    /// method that doesn't serialize: it has a setting that isn't finite, which no request's
+    /// JSON carries and `allocate` refuses by itself.
+    fn groups(&self) -> Option<usize> {
+        let method = serde_json::to_value(self).ok()?;
+        let groups = method.get("bounds").and_then(|bounds| bounds.get("groups"));
+        let groups = groups.and_then(|groups| groups.as_array());
+        Some(groups.map_or(0, Vec::len))
     }
 }
 
@@ -244,6 +266,10 @@ pub enum EngineError {
         platform: String,
     },
     NoMetrics,
+    /// A metric named twice would be allocated twice, frontier and rolling windows included.
+    DuplicateMetric {
+        metric: Metric,
+    },
     InvalidDate {
         date: String,
     },
@@ -266,6 +292,10 @@ pub enum EngineError {
     RollingWindows {
         windows: usize,
     },
+    /// More groups in the method's bounds than [`MAX_GROUPS`]: each is a row of every solve.
+    Groups {
+        groups: usize,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -281,6 +311,11 @@ impl std::fmt::Display for EngineError {
                 write!(f, "`{platform}` is named twice")
             }
             EngineError::NoMetrics => write!(f, "a request needs at least one metric"),
+            EngineError::DuplicateMetric { metric } => {
+                // As a request names it, quotes included.
+                let name = serde_json::to_string(metric).map_err(|_| std::fmt::Error)?;
+                write!(f, "the metric {name} is named twice")
+            }
             EngineError::InvalidDate { date } => write!(f, "`{date}` isn't a YYYY-MM-DD date"),
             EngineError::TooFewDays { days } => write!(
                 f,
@@ -298,6 +333,10 @@ impl std::fmt::Display for EngineError {
                 f,
                 "{windows} rolling windows; at most {MAX_ROLLING_WINDOWS}, so take a longer step"
             ),
+            EngineError::Groups { groups } => write!(
+                f,
+                "{groups} groups in the method's bounds; at most {MAX_GROUPS}"
+            ),
         }
     }
 }
@@ -309,8 +348,8 @@ impl std::error::Error for EngineError {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reply {
     /// 200 for a response, 400 for a request that isn't JSON for a [`Request`] or a body that
-    /// isn't UTF-8, 405 for the wrong HTTP method, and 422 for a request that can't be
-    /// allocated.
+    /// isn't UTF-8, 405 for the wrong HTTP method, 413 for a request longer than
+    /// [`MAX_REQUEST_BYTES`], and 422 for a request that can't be allocated.
     pub status: u16,
     pub body: String,
 }
@@ -322,8 +361,15 @@ pub struct ErrorBody {
 }
 
 /// The JSON reply to a JSON request, over the bundled sample: what both backends send, so
-/// they can't diverge.
+/// they can't diverge. A request longer than [`MAX_REQUEST_BYTES`] is refused before it's read.
 pub fn respond(request: &str) -> Reply {
+    if request.len() > MAX_REQUEST_BYTES {
+        let bytes = request.len();
+        return reject(
+            413,
+            &format!("a request of {bytes} bytes; at most {MAX_REQUEST_BYTES}"),
+        );
+    }
     let request = match serde_json::from_str::<Request>(request) {
         Ok(request) => request,
         Err(e) => return reject(400, &e.to_string()),
@@ -337,9 +383,9 @@ pub fn respond(request: &str) -> Reply {
     }
 }
 
-/// A reply refusing a request before it's read as one, such as a 405 for the wrong HTTP method
-/// or a 400 for a body that isn't UTF-8: `status`, with an [`EngineError::Request`] saying
-/// `message`.
+/// A reply refusing a request before it's read as one, such as a 405 for the wrong HTTP method,
+/// a 400 for a body that isn't UTF-8 or a 413 for one that's too long: `status`, with an
+/// [`EngineError::Request`] saying `message`.
 pub fn reject(status: u16, message: &str) -> Reply {
     let error = EngineError::Request {
         message: message.to_owned(),
@@ -383,9 +429,7 @@ pub fn allocate(request: &Request) -> Result<Response, EngineError> {
 pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, EngineError> {
     let platforms = &request.platforms;
     check_platforms(sample, platforms)?;
-    if request.metrics.is_empty() {
-        return Err(EngineError::NoMetrics);
-    }
+    check_metrics(&request.metrics)?;
     for date in [&request.from, &request.to].into_iter().flatten() {
         if !sample::is_date(date) {
             return Err(EngineError::InvalidDate { date: date.clone() });
@@ -399,6 +443,14 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
         (_, Some(_)) => return Err(EngineError::FrontierNeedsMeanVariance),
         _ => None,
     };
+    // Groups that can't be counted are those of a method with a setting that isn't finite.
+    // Every allocation refuses the setting before it solves, but a frontier doesn't take the
+    // objective, so one that isn't finite would be traced with however many groups there are.
+    let groups = request.method.groups();
+    if let Some(groups) = groups.filter(|&groups| groups > MAX_GROUPS) {
+        return Err(EngineError::Groups { groups });
+    }
+    let counted = groups.is_some();
     let (days, totals): (Vec<&str>, Vec<Vec<Totals>>) = sample
         .days_with_spend(platforms, request.from.as_deref(), request.to.as_deref())
         .unzip();
@@ -426,6 +478,7 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
                 method.as_ref(),
                 request,
                 mean_variance,
+                counted,
             )?,
             Err(error) => result.error = Some(error),
         }
@@ -441,7 +494,8 @@ pub fn allocate_over(sample: &Sample, request: &Request) -> Result<Response, Eng
 /// Fills in `result` from one metric's returns, `data`, and the yields they come from. The
 /// rolling windows are checked first, through cutup's, which count them without solving, so a
 /// request whose windows don't fit, or are more than [`MAX_ROLLING_WINDOWS`], fails before
-/// anything is solved.
+/// anything is solved. A method whose groups weren't `counted` gets no frontier: its
+/// allocation's error is the frontier's too.
 fn allocate_metric(
     result: &mut MetricResult,
     data: &Returns,
@@ -449,6 +503,7 @@ fn allocate_metric(
     method: &dyn Allocation,
     request: &Request,
     mean_variance: Option<&MeanVariance>,
+    counted: bool,
 ) -> Result<(), EngineError> {
     let rolling = match request.rolling {
         Some(rolling) => {
@@ -473,9 +528,13 @@ fn allocate_metric(
         Err(error) => result.error = Some(error),
     }
     if let (Some(points), Some(m)) = (request.frontier, mean_variance) {
-        match data.frontier(m, points) {
-            Ok(frontier) => result.frontier = Some(frontier),
-            Err(error) => result.frontier_error = Some(error),
+        if counted {
+            match data.frontier(m, points) {
+                Ok(frontier) => result.frontier = Some(frontier),
+                Err(error) => result.frontier_error = Some(error),
+            }
+        } else {
+            result.frontier_error = result.error.clone();
         }
     }
     result.rolling = rolling.map(|(rolling, count)| {
@@ -527,6 +586,18 @@ fn check_platforms(sample: &Sample, platforms: &[String]) -> Result<(), EngineEr
         }
     }
     Ok(())
+}
+
+/// Checks there's at least one of `metrics`, each once: every one is allocated on its own, so
+/// one named again would repeat all of its solves.
+fn check_metrics(metrics: &[Metric]) -> Result<(), EngineError> {
+    if metrics.is_empty() {
+        return Err(EngineError::NoMetrics);
+    }
+    match (1..metrics.len()).find(|&i| metrics[..i].contains(&metrics[i])) {
+        Some(i) => Err(EngineError::DuplicateMetric { metric: metrics[i] }),
+        None => Ok(()),
+    }
 }
 
 /// Each platform's yield of `metric` on each day: what a unit of spend bought.
