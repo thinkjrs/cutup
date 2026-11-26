@@ -455,6 +455,34 @@ fn groups_that_cant_be_counted_get_no_frontier() {
 }
 
 #[test]
+fn yields_whose_sum_overflows_still_have_an_average() {
+    // Each click yield is finite, and their sum isn't: an infinite average would leave every
+    // return at −1, where they're within a tenth of it either way.
+    let huge = "date,platform,spend,impressions,clicks,link_clicks,views
+2025-09-01,A,1,1,1.0e308,1,1
+2025-09-01,B,1,1,1.2e308,1,1
+2025-09-02,A,1,1,1.1e308,1,1
+2025-09-02,B,1,1,1.0e308,1,1
+2025-09-03,A,1,1,1.2e308,1,1
+2025-09-03,B,1,1,1.1e308,1,1
+";
+    let sample = Sample::parse(huge).unwrap();
+    let read = request(json!({
+        "platforms": ["A", "B"],
+        "metrics": ["clicks"],
+        "method": {"name": "equal_weight"}
+    }));
+    let response = allocate_over(&sample, &read).unwrap();
+    let stats = response.results[0].stats.as_ref().unwrap();
+    // The returns average 0 over every platform and day, so equal weights' do too.
+    assert!(stats.expected_return.abs() < 1e-12, "{stats:?}");
+    assert!(
+        stats.volatility > 0.0 && stats.volatility < 0.1,
+        "{stats:?}"
+    );
+}
+
+#[test]
 fn a_request_longer_than_the_engine_reads_is_refused_unread() {
     let request = r#"{"method": {"name": "equal_weight"}, "metrics": ["views"]}"#;
     // JSON allows whitespace after its value, so a request can be padded to any length.

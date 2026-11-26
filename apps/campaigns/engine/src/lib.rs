@@ -618,7 +618,14 @@ fn yields(totals: &[Vec<Totals>], metric: Metric) -> Vec<Vec<f64>> {
 /// small that their ratio overflows, and cutup's errors for too few days.
 fn excess(yields: &[Vec<f64>], platforms: &[String]) -> Result<Returns, CutupError> {
     let count = (yields.len() * platforms.len()) as f64;
-    let mean = yields.iter().flatten().sum::<f64>() / count;
+    // Yields whose sum overflows are each divided by the count first: their average is
+    // finite, where an infinite one would leave every return at −1.
+    let sum = yields.iter().flatten().sum::<f64>();
+    let mean = if sum.is_finite() {
+        sum / count
+    } else {
+        yields.iter().flatten().map(|y| y / count).sum()
+    };
     // A metric none of the platforms delivered has no yield to compare, so its returns are 0.
     let rows: Vec<Vec<f64>> = yields
         .iter()
