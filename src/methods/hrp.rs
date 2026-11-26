@@ -432,6 +432,35 @@ mod tests {
     }
 
     #[test]
+    fn test_hrp_two_halves_with_no_variance_split_evenly() {
+        // Assets 0 and 1 move together, as do 2 and 3, so each pair is a half of the order. By
+        // the covariance given, each pair is a perfect hedge instead, and neither half has any
+        // variance to split by: each takes half of the weight, and each asset a quarter.
+        let returns = dmatrix![
+            0.01, 0.011, -0.02, -0.019;
+            -0.02, -0.021, 0.01, 0.012;
+            0.015, 0.014, 0.005, 0.004;
+            -0.005, -0.004, -0.015, -0.016
+        ];
+        let allocator = Returns::returns_matrix(returns).unwrap();
+        assert_eq!(
+            Hrp::default().cluster_order(&allocator).unwrap(),
+            [0, 1, 2, 3]
+        );
+        let hedged = CovarianceConfig::matrix(&[
+            [1.0, -1.0, 0.0, 0.0],
+            [-1.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, -1.0],
+            [0.0, 0.0, -1.0, 1.0],
+        ])
+        .unwrap();
+        let weights = allocator
+            .allocate(&Hrp::default().covariance(hedged))
+            .unwrap();
+        assert_eq!(weights.as_slice(), [0.25; 4]);
+    }
+
+    #[test]
     fn test_hrp_and_herc_match_unit_scale_on_tiny_variances() {
         // Variances between about 1e-180 and 1e-290, whose products underflow to zero, so
         // dividing by sqrt(σᵢᵢ·σⱼⱼ) would give an infinite or NaN correlation.

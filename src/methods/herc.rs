@@ -376,6 +376,34 @@ mod tests {
     }
 
     #[test]
+    fn test_herc_two_clusters_with_no_variance_split_evenly() {
+        // Assets 0 and 1 move together, as do 2 and 3, so each pair is one of two clusters. By
+        // the covariance given, each pair is a perfect hedge instead, and neither cluster has
+        // any variance to split by: each takes half of the weight, and each asset a quarter.
+        let returns = dmatrix![
+            0.01, 0.011, -0.02, -0.019;
+            -0.02, -0.021, 0.01, 0.012;
+            0.015, 0.014, 0.005, 0.004;
+            -0.005, -0.004, -0.015, -0.016
+        ];
+        let allocator = Returns::returns_matrix(returns).unwrap();
+        let distance = allocator.correlation_distance().unwrap();
+        let clusters = cluster::hierarchy(&distance, Linkage::Single).cut(2);
+        assert_eq!(clusters, [(4, vec![0, 1]), (5, vec![2, 3])]);
+        let hedged = CovarianceConfig::matrix(&[
+            [1.0, -1.0, 0.0, 0.0],
+            [-1.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, -1.0],
+            [0.0, 0.0, -1.0, 1.0],
+        ])
+        .unwrap();
+        let weights = allocator
+            .allocate(&Herc::default().clusters(2).covariance(hedged))
+            .unwrap();
+        assert_eq!(weights.as_slice(), [0.25; 4]);
+    }
+
+    #[test]
     fn test_herc_rejects_invalid_config() {
         let allocator = Returns::returns_matrix(two_block_returns()).unwrap();
         for clusters in [0, 6] {
