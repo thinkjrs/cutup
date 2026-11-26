@@ -50,7 +50,8 @@ The sample has six platforms' daily spend, impressions, clicks, link clicks and 
 - **Defaults:** everything but `method` is optional. The platforms default to Meta, Google and TikTok, the three that spent on every day, and the metrics to all four.
 - **Methods:** a method is cutup's own JSON with a `name`, such as `{"name": "mean_variance", "risk_aversion": 5.0}`, `{"name": "min_mad", "downside": -0.1}` or `{"name": "min_cdar", "confidence": 0.9}`. A frontier, `"frontier": 10`, takes a mean-variance method.
 - **Statistics:** each result has the expected return, volatility, Sharpe ratio, diversification ratio and risk shares, then CVaR, the mean absolute deviation, the mean shortfall below the average, CDaR, and the maximum and average drawdowns. CVaR and CDaR are at 95%.
-- **Replies:** a response, with each metric's weights and statistics or its own error, comes with status 200. A request that isn't JSON for one is 400, and one that can't be allocated is 422. Both come as `{"error": ..}`.
+- **Limits:** a request is at most 16 KiB of text, names each metric once, and asks for a frontier of 2 to 100 points, at most 100 rolling windows, and at most 32 groups in the method's bounds. Each bounds how much one request can ask the server to solve.
+- **Replies:** a response, with each metric's weights and statistics or its own error, comes with status 200. A request that isn't JSON for one is 400, one over 16 KiB is 413, and one that can't be allocated is 422. Each comes as `{"error": ..}`.
 
 `GET /api/platforms`, and the wasm `platforms`, list the sample's platforms, each with its first and last dates and how many days it spent on.
 
