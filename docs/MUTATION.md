@@ -18,7 +18,19 @@ Results go to `mutants.out/`, with the missed mutants in `missed.txt`.
 `cargo mutants -f src/lp.rs` mutates one file, `--iterate` retests only the
 mutants that weren't caught last time, and `--in-diff <file>` only the lines a
 diff changes. `.cargo/mutants.toml` turns on every feature, so the `nalgebra`
-constructors are tested too, and sets a test timeout of at least 60 s.
+constructors are tested too, and sets a test timeout of at least 60 s. It also
+leaves out the return-value replacements for `lp::scaled` and
+`methods::correlation`, which return tuples of matrices: cargo-mutants tries
+every combination of its guesses for each matrix, 1,100 mutants in all, and
+none of them compiles.
+
+The property tests draw random cases, so a mutant that only some cases catch
+is caught in one run and missed in the next. To compare two runs, give both
+the same seed, as CI does:
+
+```bash
+PROPTEST_RNG_SEED=20261126 cargo mutants -j 4
+```
 
 The whole crate has 3,213 mutants and takes about 2 hours at four jobs. A
 mutant that makes a solver loop forever times out, which counts as caught.
