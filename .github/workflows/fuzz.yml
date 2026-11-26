@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [returns, allocate, weights]
+        target: [returns, allocate, weights, json]
     defaults:
       run:
         working-directory: fuzz
