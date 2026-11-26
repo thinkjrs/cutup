@@ -216,6 +216,9 @@ impl Window {
     }
 
     /// The window's weights, or why the method couldn't allocate over it.
+    // With a reason: clippy before 1.93 takes a bare attribute on a function that returns a
+    // reference to a `Result` as said twice, and clippy since asks for one.
+    #[must_use = "reading a window's weights does nothing by itself"]
     pub fn weights(&self) -> &Result<Weights, CutupError> {
         &self.weights
     }
