@@ -136,6 +136,18 @@ All notable changes to this project are documented here. The format follows
   `δΣw` past `f64::MAX`.
 - **The unit tests from the published crate:** they read four fixtures that the package
   left out, so `cargo test` didn't build there. The package has them.
+- **A frontier point with a return that isn't finite:** `Returns::frontier` could return a
+  point whose expected return was infinite or NaN, which JSON writes as `null` and doesn't
+  read back.
+  - **Where only the terms overflow:** with expected returns near `f64::MAX` held long and
+    short, `μᵀw` overflowed term by term though the sum is an ordinary number. It's computed
+    scaled by powers of two there, and is that number. Every other return is the same to
+    the bit.
+  - **Where the return itself overflows:** `InvalidAssetValue` for the expected return
+    that's largest in size, and `NonFiniteCovariance` for a volatility that isn't finite. So
+    every point's weights, return and volatility are finite.
+  - **A point from elsewhere:** one read from a format that carries NaN or infinities isn't
+    written when its return or volatility isn't finite, as a weight isn't.
 - **A weight that isn't finite, written to JSON:** `Weights` with a NaN or an infinite weight
   wrote it as `null`, which doesn't read back as weights. Serializing them is now an error
   that names the asset, in any format, as for a setting. The weights `allocate` returns are
@@ -166,6 +178,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The types whose builders return `Self` are `#[must_use]`: every method with settings,
+  `WeightBounds`, `CovarianceConfig`, `BlackLitterman`, `View` and `Rolling`. So are the
+  getters. A builder call whose result is dropped, such as `method.bounds(b);` on a line of
+  its own, does nothing, and the compiler now warns about it.
+- Tests and tooling:
+  - a fourth fuzz target, `json`, reads arbitrary text as every type that deserializes. The
+    `allocate` target only read JSON that cutup had written;
+  - the mutants job's property tests are seeded, so a mutant is caught or missed the same
+    way in every run, and it skips 1,100 mutants that never compiled;
+  - three of clippy's pedantic lints are kept on: the two behind `#[must_use]`, and one
+    that every public function returning a `Result` documents its errors;
+  - tests for an asset's and values' conversions from references, a bound written as an
+    integer in JSON, and nine errors' messages, which nothing covered.
 - nalgebra's `macros` feature is off: only cutup's tests and doc examples used it. A build
   without features no longer compiles `nalgebra-macros`, `syn`, `quote` and `proc-macro2`.
   A crate that used `dmatrix!` or `dvector!` with its own nalgebra's default features off,
