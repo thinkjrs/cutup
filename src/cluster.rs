@@ -365,6 +365,17 @@ mod tests {
     }
 
     #[test]
+    fn cluster_count_takes_the_smallest_of_tied_gaps() {
+        // Nine points all 1 apart: the distances within any cluster are all the same, so every
+        // W_k is 0, and the gaps at k = 2 and k = 3 tie at 0. The first of them wins.
+        let distance = DMatrix::from_fn(9, 9, |i, j| if i == j { 0.0 } else { 1.0 });
+        for linkage in [Linkage::Single, Linkage::Average] {
+            let h = hierarchy(&distance, linkage);
+            assert_eq!(h.cluster_count(&distance, 3), 2, "{linkage:?}");
+        }
+    }
+
+    #[test]
     fn cluster_count_with_too_few_assets_is_one() {
         for n in [2, 3] {
             let distance = DMatrix::from_fn(n, n, |i, j| if i == j { 0.0 } else { 0.5 });
