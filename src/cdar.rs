@@ -432,6 +432,26 @@ mod tests {
     }
 
     #[test]
+    fn a_cdar_far_below_the_returns_is_met_as_closely_as_a_large_one() {
+        // Both assets gain a half, then lose about a billionth of that: δ and 3δ, then 2δ and
+        // −3δ. With `w` in the first, the drawdown is (3 − 2w)δ after the second period and 3wδ
+        // after the third, so the larger is least at w = 0.6, where it's 1.8δ. The first round's
+        // bound is δ, from all in the first asset, whose drawdown is 3δ. That's 2δ apart: next
+        // to nothing beside the returns, but more than the CDaR itself, and the tolerance
+        // shrinks with the CDaR, down to the rounding of the sums.
+        let d = 2f64.powi(-30);
+        let data = Returns::new(&[[0.5, 0.5], [-d, -3.0 * d], [-2.0 * d, 3.0 * d]]).unwrap();
+        let weights = data.allocate(&MinCdar::default()).unwrap();
+        assert!(
+            (weights[0] - 0.6).abs() < 1e-12 && (weights[1] - 0.4).abs() < 1e-12,
+            "{weights:?}"
+        );
+        // To the rounding of running sums of about a half.
+        let cdar = data.cdar(&weights, 0.95).unwrap();
+        assert!((cdar - 1.8 * d).abs() <= f64::EPSILON, "{cdar}");
+    }
+
+    #[test]
     fn the_scale_of_the_returns_changes_nothing() {
         let base = data();
         let method = MinCdar::default().confidence(0.9);
