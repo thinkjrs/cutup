@@ -817,6 +817,37 @@ the internals. Its scope is settled when it starts.
     carries the return splits the rest among them differently from the
     exact optimum, by up to all of it: the variance of either split is the
     same to rounding.
+- **From the security audit,** done:
+  - the campaign app, the one place here that takes requests from anyone,
+    caps a request at 16 KiB of JSON and 32 groups and takes each metric
+    once, beside its 100 frontier points and 100 rolling windows;
+  - nalgebra's `macros` feature is off, so a build without features has no
+    `nalgebra-macros`, `syn`, `quote` or `proc-macro2`;
+  - the workflows' tokens only read, what's typed into one reaches its shell
+    as a value, and the campaign app's dependencies are checked for
+    advisories;
+  - `SECURITY.md` says how to report a vulnerability, what cutup doesn't cap
+    and where the dependencies' `unsafe` is.
+- **From the security audit,** left as they are:
+  - cutup caps no problem's size. Nothing found reserves or computes out of
+    proportion to its input, and time and memory in proportion to it, about
+    the cube of the assets, are a service's to cap for its callers:
+    `SECURITY.md` says what to cap. A cap inside cutup would be a new error
+    and a new default;
+  - an integer setting of 2^32 or more, such as `Herc::clusters` or an
+    asset's column, parses on a 64-bit target and not on wasm32, where
+    `usize` is 32 bits. Both refuse it, the one when it's used and the other
+    when it's read. Reading it the same on both would change the settings'
+    types;
+  - the campaign app's function reads a request's whole body before its
+    16 KiB limit applies, so the limit bounds what's parsed and not what's
+    read, and a long body that isn't UTF-8 is a 400, not a 413. Stopping the
+    read early needs checking on Vercel that the reply still arrives;
+  - the workflows take six third-party actions by a tag or a branch their
+    owners can move, `dtolnay/rust-toolchain@master` among them. Every
+    workflow's token only reads and nothing publishes from CI, so what a
+    moved tag could reach is Codecov's token. Pinning each to a commit
+    means bumping the pins, by hand or with Dependabot.
 - **From the API and serde audit,** left as they are:
   - weights read from JSON are in the order of their keys, which not every
     reader keeps: `serde_json::Value` sorts them. Used with the data in
