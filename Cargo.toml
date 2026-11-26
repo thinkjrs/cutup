@@ -29,7 +29,10 @@ rust-version = "1.85.0"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-nalgebra = "0.33.2"
+# Without nalgebra's `macros` feature, which only the tests and the doc examples use: it's a
+# proc-macro crate, and brings syn, quote and proc-macro2 into a build that has no other use
+# for them.
+nalgebra = { version = "0.33.2", default-features = false, features = ["std"] }
 serde = { version = "1.0.219", optional = true, features = ["derive"] }
 ts-rs = { version = "12.0.1", optional = true }
 
@@ -47,6 +50,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
+# `dmatrix!` and `dvector!`, for the tests and the doc examples.
+nalgebra = { version = "0.33.2", features = ["macros"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 
 # proptest needs other features and a getrandom backend to build for wasm, so the property
