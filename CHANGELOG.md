@@ -136,6 +136,18 @@ All notable changes to this project are documented here. The format follows
   `δΣw` past `f64::MAX`.
 - **The unit tests from the published crate:** they read four fixtures that the package
   left out, so `cargo test` didn't build there. The package has them.
+- **A long-short target that leaves out the one asset with a return:** with expected
+  returns such as `[-0.01, 0, 0]` and a target return of 0, or within about 1e-11 of it,
+  `MeanVariance::target_return(..).allow_short()` returned `SingularCovariance`, and so did
+  `Returns::frontier` at its last point. The optimum holds none of that asset, and the check
+  on the solved system measured the constraint's miss against that asset's term, which is
+  all rounding. A constraint is also allowed 1e-8 of its largest coefficient times the
+  largest variable.
+- **A config written as an array:** every method, `WeightBounds`, `CovarianceConfig`,
+  `BlackLitterman`, a view and a frontier point also read from a JSON array, their fields by
+  position: `[]` was any method's defaults, and `[[0, 1]]` a method with bounds. Each is
+  documented as an object, and a field added or moved would have changed what an array
+  meant. An array is now an error, as it is for an asset's bounds and a group's limits.
 - **A frontier point with a return that isn't finite:** `Returns::frontier` could return a
   point whose expected return was infinite or NaN, which JSON writes as `null` and doesn't
   read back.
@@ -190,7 +202,11 @@ All notable changes to this project are documented here. The format follows
   - three of clippy's pedantic lints are kept on: the two behind `#[must_use]`, and one
     that every public function returning a `Result` documents its errors;
   - tests for an asset's and values' conversions from references, a bound written as an
-    integer in JSON, and nine errors' messages, which nothing covered.
+    integer in JSON, and nine errors' messages, which nothing covered;
+  - tests for 95 of the 143 mutants that a full mutation run left uncaught: the solvers'
+    tolerances, iteration caps and stall handling, max Sharpe's null-space branches, HRP's
+    and HERC's split between halves with no variance, and others. The other 48 can't change
+    a result, and `docs/MUTATION.md` says why.
 - nalgebra's `macros` feature is off: only cutup's tests and doc examples used it. A build
   without features no longer compiles `nalgebra-macros`, `syn`, `quote` and `proc-macro2`.
   A crate that used `dmatrix!` or `dvector!` with its own nalgebra's default features off,
