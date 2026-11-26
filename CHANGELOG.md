@@ -138,7 +138,8 @@ All notable changes to this project are documented here. The format follows
   left out, so `cargo test` didn't build there. The package has them.
 - **A weight that isn't finite, written to JSON:** `Weights` with a NaN or an infinite weight
   wrote it as `null`, which doesn't read back as weights. Serializing them is now an error
-  that names the asset. The weights `allocate` returns are always finite.
+  that names the asset, in any format, as for a setting. The weights `allocate` returns are
+  always finite.
 
 ### Security
 
