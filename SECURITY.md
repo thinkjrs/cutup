@@ -45,14 +45,15 @@ Without features, cutup depends on nalgebra alone:
 | Crate | Lines with `unsafe` | What it is |
 | --- | --- | --- |
 | nalgebra | 460 | The matrices |
-| matrixmultiply, rawpointer | 95 and 20 | The matrix product |
+| matrixmultiply, rawpointer | 90 and 20 | The matrix product |
 | simba | 21 | The number traits nalgebra is generic over |
 | wide, safe_arch, bytemuck | 312, 859 and 323 | SIMD number types under simba. cutup's matrices are of `f64` |
 | num-complex, num-traits | 2 and 1 | Number traits |
 | approx, num-integer, num-rational, typenum | 0 | |
 | paste | 0 | A macro, run at build time |
+| autocfg | 0 | Asks the compiler what it supports, for num-traits' and matrixmultiply's build scripts, run at build time |
 
 The features add:
 
 - **`serde`:** serde and serde_core, with 2 lines each, and serde_derive, run at build time, with syn, quote, proc-macro2 and unicode-ident under it.
-- **`ts-rs`:** ts-rs and thiserror, with none, and their macros, run at build time. On Windows those macros bring in winapi-util and windows-sys, which are bindings to the system's API.
+- **`ts-rs`:** ts-rs and thiserror, with none, and their macros, run at build time, with termcolor, which has none, under ts-rs's. On Windows termcolor brings in winapi-util, windows-sys and windows-link, which are bindings to the system's API.
