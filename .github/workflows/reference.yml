@@ -20,6 +20,9 @@ on:
       - "tests/fixtures/**"
       - ".github/workflows/reference.yml"
 
+permissions:
+  contents: read
+
 jobs:
   fixtures:
     runs-on: ubuntu-latest

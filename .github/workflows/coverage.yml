@@ -5,6 +5,10 @@ on:
     branches: [main, develop]
   pull_request:
 
+# The upload goes by Codecov's token, so the job's own token only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   coverage:
     runs-on: ubuntu-latest
