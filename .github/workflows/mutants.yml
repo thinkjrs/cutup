@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# The property tests draw the same cases for every mutant and in every run. Unseeded, a mutant
+# that only some cases catch was caught in one run and missed in the next: 0.3.12's run missed
+# about 20 in files that hadn't changed since 0.3.11's, which caught them.
+env:
+  PROPTEST_RNG_SEED: 20261126
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
