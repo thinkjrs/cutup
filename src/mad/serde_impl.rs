@@ -3,7 +3,7 @@
 
 use super::MinMad;
 use crate::WeightBounds;
-use crate::serde_support::{finite, is_default};
+use crate::serde_support::{finite, is_default, object};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
@@ -35,7 +35,7 @@ impl Serialize for MinMad {
 
 impl<'de> Deserialize<'de> for MinMad {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(MinMad {
             bounds: wire.bounds,
             target_return: wire.target_return,

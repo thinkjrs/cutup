@@ -2,7 +2,7 @@
 //! `max_clusters` and `covariance`. `{}` is [`Herc::default`].
 
 use super::{HERC_MAX_CLUSTERS, Herc};
-use crate::serde_support::is_default;
+use crate::serde_support::{is_default, object};
 use crate::{CovarianceConfig, Linkage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -42,7 +42,7 @@ impl Serialize for Herc {
 
 impl<'de> Deserialize<'de> for Herc {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(Herc {
             linkage: wire.linkage,
             clusters: wire.clusters,

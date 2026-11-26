@@ -3,8 +3,10 @@
 //! `allow_short`. A setting left out is the default, and an unknown key is an error.
 
 use crate::WeightBounds;
-use serde::de::Error;
+use serde::de::{Error, MapAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser};
+use std::fmt;
+use std::marker::PhantomData;
 
 /// Whether `value` is its type's default, so that it's left out.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -29,6 +31,33 @@ pub(crate) fn finite<E: ser::Error>(settings: &[(&str, Option<f64>)]) -> Result<
         }
     }
     Ok(())
+}
+
+/// A `T` read from an object, and from nothing else.
+///
+/// A derived struct also reads from an array, its fields by position: `[[0, 1]]` was a
+/// method with bounds, and `[]` any method's defaults. Nothing documents that form, and a
+/// field added or moved would change what it means without an error.
+pub(crate) fn object<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    struct Object<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::deserialize(MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(Object(PhantomData))
 }
 
 /// How many entries to reserve for a map that says it has `hint`: what it says, up to 4096.
@@ -78,7 +107,7 @@ macro_rules! no_settings {
 
         impl<'de> Deserialize<'de> for crate::$method {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                NoSettings::deserialize(deserializer).map(|_| crate::$method)
+                object::<NoSettings, D>(deserializer).map(|_| crate::$method)
             }
         }
     };
@@ -386,6 +415,77 @@ mod tests {
             ))
             .unwrap(),
             json!({"lower": [0.0, 0.0], "upper": [0.5, null]})
+        );
+    }
+
+    #[test]
+    fn a_config_written_as_an_array_is_refused() {
+        use crate::{
+            BlackLitterman, CovarianceConfig, FrontierPoint, Herc, Hrp, MaxDiversification,
+            MaxSharpe, MeanVariance, MinCdar, MinCvar, MinMad, MinVariance, RiskParity, View,
+        };
+        use serde::de::DeserializeOwned;
+
+        // A derived struct reads from an array too, its fields by position: `[]` was any
+        // config's defaults, and `[[0, 1]]` a method with bounds.
+        fn refused<T: DeserializeOwned>(what: &str) {
+            for text in ["[]", "[null]", "[[0, 1]]", "[0.5, 0.5]"] {
+                let Err(error) = serde_json::from_str::<T>(text) else {
+                    panic!("{what} read {text}");
+                };
+                let error = error.to_string();
+                assert!(error.contains("expected an object"), "{what}: {error}");
+            }
+        }
+        refused::<EqualWeight>("EqualWeight");
+        refused::<InverseVolatility>("InverseVolatility");
+        refused::<InverseVariance>("InverseVariance");
+        refused::<MinVariance>("MinVariance");
+        refused::<MeanVariance>("MeanVariance");
+        refused::<MaxSharpe>("MaxSharpe");
+        refused::<MaxDiversification>("MaxDiversification");
+        refused::<RiskParity>("RiskParity");
+        refused::<Hrp>("Hrp");
+        refused::<Herc>("Herc");
+        refused::<MinCvar>("MinCvar");
+        refused::<MinCdar>("MinCdar");
+        refused::<MinMad>("MinMad");
+        refused::<WeightBounds>("WeightBounds");
+        refused::<CovarianceConfig>("CovarianceConfig");
+        refused::<BlackLitterman>("BlackLitterman");
+        refused::<View>("View");
+        refused::<FrontierPoint>("FrontierPoint");
+        // Through a reader that isn't text, too.
+        let error = serde_json::from_value::<MinVariance>(json!([[0, 1]])).unwrap_err();
+        assert!(error.to_string().contains("expected an object"), "{error}");
+
+        // An asset's bounds and a group's limits, inside the bounds, are objects as well.
+        for text in [
+            r#"{"assets": [[0, 0.0, 0.5]]}"#,
+            r#"{"groups": [[[0, 1], 0.0, 0.5]]}"#,
+        ] {
+            let error = serde_json::from_str::<WeightBounds>(text).unwrap_err();
+            assert!(error.to_string().contains("expected an object"), "{error}");
+        }
+        let bounds: WeightBounds = serde_json::from_str(
+            r#"{"assets": [{"asset": 0, "lower": 0.0, "upper": 0.5}],
+                "groups": [{"members": [0, 1], "lower": 0.1, "upper": 0.9}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            bounds,
+            WeightBounds::default()
+                .asset(0, 0.0, 0.5)
+                .group([0, 1], 0.1, 0.9)
+        );
+        // And an unknown key in either is still an error that names it.
+        let error = serde_json::from_str::<WeightBounds>(
+            r#"{"assets": [{"asset": 0, "lower": 0.0, "uper": 0.5}]}"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `uper`"),
+            "{error}"
         );
     }
 }

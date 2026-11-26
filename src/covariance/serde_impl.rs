@@ -15,7 +15,7 @@
 
 use super::{CovarianceConfig, Decay, Estimate, Shrinkage};
 use crate::ShrinkageTarget;
-use crate::serde_support::finite;
+use crate::serde_support::{finite, object};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -87,7 +87,7 @@ impl Serialize for CovarianceConfig {
 
 impl<'de> Deserialize<'de> for CovarianceConfig {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         let estimates = [
             wire.matrix.is_some(),
             wire.exponentially_weighted.is_some(),

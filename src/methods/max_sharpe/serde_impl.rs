@@ -2,7 +2,7 @@
 //! `expected_returns`, `covariance` and `allow_short: true`. `{}` is [`MaxSharpe::default`].
 
 use super::MaxSharpe;
-use crate::serde_support::{finite, is_default};
+use crate::serde_support::{finite, is_default, object};
 use crate::{CovarianceConfig, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Not;
@@ -36,7 +36,7 @@ impl Serialize for MaxSharpe {
 
 impl<'de> Deserialize<'de> for MaxSharpe {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(MaxSharpe {
             risk_free_rate: wire.risk_free_rate,
             expected_returns: wire.expected_returns,

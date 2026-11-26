@@ -3,7 +3,7 @@
 
 use super::MaxDiversification;
 use crate::CovarianceConfig;
-use crate::serde_support::is_default;
+use crate::serde_support::{is_default, object};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize)]
@@ -29,7 +29,7 @@ impl Serialize for MaxDiversification {
 
 impl<'de> Deserialize<'de> for MaxDiversification {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(MaxDiversification {
             covariance: wire.covariance,
         })

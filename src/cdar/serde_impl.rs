@@ -3,7 +3,7 @@
 
 use super::MinCdar;
 use crate::WeightBounds;
-use crate::serde_support::{finite, is_default};
+use crate::serde_support::{finite, is_default, object};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// [`MinCdar`]'s default confidence.
@@ -46,7 +46,7 @@ impl Serialize for MinCdar {
 
 impl<'de> Deserialize<'de> for MinCdar {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(MinCdar {
             confidence: wire.confidence,
             bounds: wire.bounds,

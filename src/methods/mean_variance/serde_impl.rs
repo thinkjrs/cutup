@@ -10,7 +10,7 @@
 //! `max_turnover`, `turnover_penalty`, and `transaction_costs` or `transaction_costs_per_asset`.
 
 use super::{FrontierPoint, MeanVariance, Objective};
-use crate::serde_support::{bounds_of, finite, is_default, long_only_fields};
+use crate::serde_support::{bounds_of, finite, is_default, long_only_fields, object};
 use crate::turnover::{Costs, Trading};
 use crate::{CovarianceConfig, PerAsset, WeightBounds, Weights};
 use serde::de::Error as _;
@@ -88,7 +88,7 @@ impl Serialize for MeanVariance {
 
 impl<'de> Deserialize<'de> for MeanVariance {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         let objective = match (
             wire.risk_aversion,
             wire.target_return,
@@ -159,7 +159,7 @@ impl Serialize for FrontierPoint {
 
 impl<'de> Deserialize<'de> for FrontierPoint {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = PointWire::deserialize(deserializer)?;
+        let wire: PointWire = object(deserializer)?;
         Ok(FrontierPoint {
             expected_return: wire.expected_return,
             volatility: wire.volatility,

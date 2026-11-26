@@ -14,7 +14,7 @@
 //! most one of `variance` and `confidence`.
 
 use super::{Assets, BlackLitterman, Uncertainty, View};
-use crate::serde_support::{finite, is_default};
+use crate::serde_support::{finite, is_default, object};
 use crate::{Asset, CovarianceConfig, PerAsset};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -67,7 +67,7 @@ impl Serialize for BlackLitterman {
 
 impl<'de> Deserialize<'de> for BlackLitterman {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(BlackLitterman {
             market_weights: wire.market_weights,
             risk_aversion: wire.risk_aversion,
@@ -127,7 +127,7 @@ impl Serialize for View {
 
 impl<'de> Deserialize<'de> for View {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = ViewWire::deserialize(deserializer)?;
+        let wire: ViewWire = object(deserializer)?;
         let view = match (wire.absolute, wire.relative, wire.portfolio) {
             (Some(asset), None, None) => View::absolute(asset, wire.q),
             (None, Some((long, short)), None) => View::relative(long, short, wire.q),

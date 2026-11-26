@@ -17,7 +17,7 @@
 
 use super::{Limit, WeightBounds};
 use crate::asset::serde_impl::Limit as Value;
-use crate::serde_support::finite;
+use crate::serde_support::{finite, object};
 use crate::{Asset, PerAsset};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -51,9 +51,8 @@ impl<'de> Deserialize<'de> for Side {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
 struct AssetBounds {
     asset: Asset,
     lower: f64,
@@ -61,14 +60,62 @@ struct AssetBounds {
     upper: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
 struct GroupLimits {
     members: Vec<Asset>,
     lower: f64,
     #[cfg_attr(feature = "ts-rs", ts(inline))]
     upper: Value,
+}
+
+// An asset's bounds and a group's limits are read as objects alone, like the bounds they're in.
+// A field attribute that said so would make ts-rs warn on every build, so each has a reader
+// of its own fields.
+impl<'de> Deserialize<'de> for AssetBounds {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            asset: Asset,
+            lower: f64,
+            upper: Value,
+        }
+
+        let Fields {
+            asset,
+            lower,
+            upper,
+        } = object(deserializer)?;
+        Ok(AssetBounds {
+            asset,
+            lower,
+            upper,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupLimits {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            members: Vec<Asset>,
+            lower: f64,
+            upper: Value,
+        }
+
+        let Fields {
+            members,
+            lower,
+            upper,
+        } = object(deserializer)?;
+        Ok(GroupLimits {
+            members,
+            lower,
+            upper,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -149,7 +196,7 @@ impl Serialize for WeightBounds {
 
 impl<'de> Deserialize<'de> for WeightBounds {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(WeightBounds {
             lower: wire.lower.into(),
             upper: wire.upper.into(),

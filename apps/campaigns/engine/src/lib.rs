@@ -97,10 +97,9 @@ impl Method {
     }
 
     /// How many groups the method's bounds have, from the method's own JSON, where its
-    /// `bounds` list them. cutup's bounds don't say, and the request's text wouldn't either:
-    /// serde reads a method's settings from an array as well as from an object. `None` for a
-    /// method that doesn't serialize: it has a setting that isn't finite, which no request's
-    /// JSON carries and `allocate` refuses by itself.
+    /// `bounds` list them: cutup's bounds don't say. `None` for a method that doesn't
+    /// serialize: it has a setting that isn't finite, which no request's JSON carries and
+    /// `allocate` refuses by itself.
     fn groups(&self) -> Option<usize> {
         let method = serde_json::to_value(self).ok()?;
         let groups = method.get("bounds").and_then(|bounds| bounds.get("groups"));

@@ -412,20 +412,19 @@ fn too_many_groups_are_refused_before_any_is_solved() {
     assert!(most.results[0].weights.is_some(), "{most:?}");
     let none = request(json!({"method": {"name": "hrp"}}));
     assert_eq!(none.method.groups(), Some(0));
-    // serde reads a struct from an array of its fields in order too, so bounds spelled
-    // `[lower, upper, assets, groups]` with each group `[members, lower, upper]` have no
-    // `groups` key in the request. They're counted all the same.
+    // Bounds spelled as an array of their fields in order, `[lower, upper, assets, groups]`
+    // with each group `[members, lower, upper]`, would have no `groups` key to count. cutup
+    // reads its settings from objects alone, so such a request isn't one.
     let spelled = vec![json!([["A", "B"], 0.0, 1.0]); MAX_GROUPS + 1];
-    let positional = request(json!({
-        "platforms": ["A", "B"],
-        "method": {"name": "min_variance", "bounds": [0.0, null, [], spelled]}
-    }));
-    assert_eq!(
-        allocate_over(&sample, &positional),
-        Err(EngineError::Groups {
-            groups: MAX_GROUPS + 1
-        })
-    );
+    for bounds in [json!([0.0, null, [], spelled]), json!({"groups": spelled})] {
+        let positional = json!({
+            "platforms": ["A", "B"],
+            "method": {"name": "min_variance", "bounds": bounds}
+        });
+        let reply = respond(&positional.to_string());
+        assert_eq!(reply.status, 400, "{}", reply.body);
+        assert!(reply.body.contains("expected an object"), "{}", reply.body);
+    }
 }
 
 #[test]

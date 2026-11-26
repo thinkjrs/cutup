@@ -2,7 +2,7 @@
 //! `covariance`. `{}` is [`Hrp::default`].
 
 use super::Hrp;
-use crate::serde_support::is_default;
+use crate::serde_support::{is_default, object};
 use crate::{CovarianceConfig, Linkage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -28,7 +28,7 @@ impl Serialize for Hrp {
 
 impl<'de> Deserialize<'de> for Hrp {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let wire: Wire = object(deserializer)?;
         Ok(Hrp {
             linkage: wire.linkage,
             covariance: wire.covariance,
