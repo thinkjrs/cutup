@@ -1411,6 +1411,33 @@ mod tests {
     }
 
     #[test]
+    fn a_cap_within_rounding_of_a_least_turnover_above_one_is_at_it() {
+        // From all in the asset with the lowest return to the highest return there is, which
+        // only all in the third asset has: sell 1 and buy 1. Rounding is a part in 1e12 of that
+        // least turnover of 2, so a cap 2e-12 below it is at it: with the rounding, it's 2 again.
+        let method = |cap: f64| {
+            MeanVariance::target_return(0.003)
+                .expected_returns([0.001, 0.002, 0.003])
+                .current_weights([1.0, 0.0, 0.0])
+                .max_turnover(cap)
+        };
+        let cap = 2.0 - 2e-12;
+        assert_eq!(cap + 2e-12, 2.0);
+        let weights = method(cap).allocate(&allocator()).unwrap();
+        for (w, want) in weights.iter().zip([0.0, 0.0, 1.0]) {
+            assert!((w - want).abs() < 1e-15, "{w}");
+        }
+        // Twice as far below it, it isn't.
+        assert_eq!(
+            method(2.0 - 4e-12).allocate(&allocator()),
+            Err(CutupError::InfeasibleTurnover {
+                minimum: 2.0,
+                cap: 2.0 - 4e-12
+            })
+        );
+    }
+
+    #[test]
     fn a_net_target_up_to_rounding_past_the_highest_is_at_it() {
         // All in the first asset nets the most, 0.00176, with terms 0.0024 + 0.0004·1.6. The
         // sample means, as the method computes them, so the boundary is exactly its own.
