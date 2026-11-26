@@ -43,8 +43,9 @@ jobs:
   # The campaign app under apps/campaigns is a workspace of its own, with its own Cargo.lock,
   # which the job above doesn't read, and it's the one that's deployed: hyper, h2 and tokio
   # answer its requests. Its advisories and sources are checked against the same deny.toml.
-  # Its licenses and duplicate versions aren't, since none of it is published.
-  app:
+  # Its licenses and duplicate versions aren't, since none of it is published. The job isn't
+  # named `app`, which the Campaigns workflow's own job is: two checks would read the same.
+  campaigns:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -59,5 +60,8 @@ jobs:
         with:
           tool: cargo-deny
 
+      # `--config` is cargo-deny's own option, so it goes before `check`. `--workspace` takes
+      # every member as a root: without it only the root package's dependencies are checked,
+      # and the wasm wrapper isn't one of them.
       - name: Check the app's advisories and sources
-        run: cargo deny --all-features --locked check --config ../../deny.toml advisories sources
+        run: cargo deny --all-features --locked --workspace --config ../../deny.toml check advisories sources
