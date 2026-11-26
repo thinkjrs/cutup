@@ -221,6 +221,10 @@ impl Window {
     }
 
     /// The window's weights, or why the method couldn't allocate over it, by value.
+    ///
+    /// # Errors
+    ///
+    /// The error the method returned for this window's returns, if it couldn't allocate them.
     pub fn into_weights(self) -> Result<Weights, CutupError> {
         self.weights
     }

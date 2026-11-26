@@ -53,6 +53,10 @@ pub type PortfolioAllocator = Returns;
 
 impl Returns {
     /// The name of [`Returns::new`] before 0.3.0.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Returns::new`].
     #[deprecated(
         since = "0.3.0",
         note = "use `Returns::new`; `from_returns` is removed in 1.0.0"
