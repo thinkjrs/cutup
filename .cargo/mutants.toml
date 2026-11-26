@@ -7,3 +7,13 @@ all_features = true
 # breaking them can take far longer, and on a busy machine the auto-set timeout of 20 s
 # reports such mutants as timeouts rather than as caught or missed.
 minimum_test_timeout = 60
+
+# Return-value replacements for two functions that return tuples of matrices. cargo-mutants
+# tries every combination of its guesses for each matrix, 1,000 for `lp::scaled` and 100 for
+# `methods::correlation`, and none of them compiles: at 0.3.12 they were over half of the
+# 1,995 mutants that didn't, and filled a shard of the run. The operators inside both
+# functions are still mutated.
+exclude_re = [
+    'src/lp\.rs:\d+:\d+: replace scaled -> ',
+    'src/methods/mod\.rs:\d+:\d+: replace correlation -> ',
+]
