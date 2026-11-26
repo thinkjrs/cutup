@@ -384,6 +384,16 @@ mod tests {
             RiskParity::default().covariance(CovarianceConfig::default().regularization(1e-6));
         let weights = allocator.allocate(&risk_parity).unwrap();
         assert_weights_close(&weights, &Weights::from(vec![0.5, 0.5]), 1e-12);
+
+        // Regularization of 5e-13 of the variance leaves the correlation that far from −1,
+        // and the inverse volatility portfolio the iteration starts from with a variance of
+        // 5e-13 of its size: under the 1e-12 that counts as none.
+        let variance = allocator.cov_matrix[(0, 0)];
+        let risk_parity = RiskParity::default().regularization(5e-13 * variance);
+        assert_eq!(
+            allocator.allocate(&risk_parity),
+            Err(CutupError::SingularCovariance)
+        );
     }
 
     #[test]
