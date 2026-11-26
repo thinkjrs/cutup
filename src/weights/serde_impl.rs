@@ -9,15 +9,24 @@
 use super::Weights;
 use crate::serde_support::reserved;
 use serde::de::{self, MapAccess, Visitor};
-use serde::ser::SerializeMap;
+use serde::ser::{self, SerializeMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 use std::fmt;
 
 impl Serialize for Weights {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A format without NaN or infinities, such as JSON, would write such a weight as
+        // `null`, which doesn't read back as one.
+        let labeled = self.labels.iter().zip(&self.values);
+        if let Some((label, value)) = labeled.clone().find(|(_, value)| !value.is_finite()) {
+            return Err(ser::Error::custom(format!(
+                "the weight of `{label}` is {value}, which can't be written: it wouldn't read \
+                 back"
+            )));
+        }
         let mut map = serializer.serialize_map(Some(self.values.len()))?;
-        for (label, value) in self.labels.iter().zip(&self.values) {
+        for (label, value) in labeled {
             map.serialize_entry(label, value)?;
         }
         map.end()
@@ -83,6 +92,20 @@ mod tests {
             serde_json::to_value(&weights).unwrap(),
             json!({"0": 0.25, "1": 0.75})
         );
+    }
+
+    #[test]
+    fn a_weight_that_isnt_finite_doesnt_serialize() {
+        // JSON would write it as `null`, which fails to read back as a weight.
+        for not in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = serde_json::to_string(&Weights::from(vec![0.5, not])).unwrap_err();
+            let named = format!("the weight of `1` is {not}, which can't be written");
+            assert!(error.to_string().contains(&named), "{error}");
+        }
+        // The largest weights there are still serialize, and read back.
+        let weights = Weights::from(vec![f64::MAX, f64::MIN]);
+        let text = serde_json::to_string(&weights).unwrap();
+        assert_eq!(serde_json::from_str::<Weights>(&text).unwrap(), weights);
     }
 
     #[test]
