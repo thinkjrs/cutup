@@ -147,7 +147,9 @@ All notable changes to this project are documented here. The format follows
   `BlackLitterman`, a view and a frontier point also read from a JSON array, their fields by
   position: `[]` was any method's defaults, and `[[0, 1]]` a method with bounds. Each is
   documented as an object, and a field added or moved would have changed what an array
-  meant. An array is now an error, as it is for an asset's bounds and a group's limits.
+  meant. An array is now an error, as it is for an asset's bounds and a group's limits. A
+  format that writes a struct as an array of its values, as MessagePack does through
+  `rmp_serde::to_vec`, has to write the keys, as `to_vec_named` does.
 - **A frontier point with a return that isn't finite:** `Returns::frontier` could return a
   point whose expected return was infinite or NaN, which JSON writes as `null` and doesn't
   read back.
