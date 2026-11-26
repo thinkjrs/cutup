@@ -32,8 +32,9 @@ the same seed, as CI does:
 PROPTEST_RNG_SEED=20261126 cargo mutants -j 4
 ```
 
-The whole crate has 3,213 mutants and takes about 2 hours at four jobs. A
-mutant that makes a solver loop forever times out, which counts as caught.
+The whole crate has 4,182 mutants and takes about 2 hours on GitHub's eight
+jobs. A mutant that makes a solver loop forever times out, which counts as
+caught.
 Run it on an otherwise idle machine: on a busy one, caught and missed mutants
 alike run past the timeout, and some mutants allocate without bound. On Linux,
 `ulimit -v 8388608` first caps each process at 8 GiB of address space, so that
@@ -54,48 +55,80 @@ GitHub runs scheduled workflows from `main` only.
 
 ## Baseline
 
-At 0.3.2, before and after the tests added with this setup:
+Full runs, on the code as it was at each:
 
-| Outcome | Before | After |
-| --- | --- | --- |
-| Caught | 1,284 | 1,389 |
-| Timed out | 209 | 19 |
-| Missed | 104 | 187 |
-| Unviable: doesn't compile | 561 | 563 |
+| Outcome | 0.3.2 | 0.3.12 | 0.3.13 |
+| --- | --- | --- | --- |
+| Caught | 1,389 | 2,889 | 3,173 |
+| Timed out | 19 | 34 | 37 |
+| Missed | 187 | 142 | 49 |
+| Unviable: doesn't compile | 563 | 1,995 | 923 |
 
-Most of the first run's timeouts weren't loops. With the 20 s timeout
-cargo-mutants sets by default, they were slow tests on a busy machine, and
-given 60 s, most of them turned out to be missed. The 19 left loop forever.
+- **0.3.2** was the first, after the tests added with this setup. Before them
+  it had 104 missed and 209 timed out, most of which were slow tests on a busy
+  machine under cargo-mutants' default timeout of 20 s, and missed at 60 s.
+- **0.3.12** counts the 1,100 mutants that are now left out among its
+  unviable ones, and its property tests weren't seeded: about 20 of its 142
+  were in files that hadn't changed since 0.3.11's run, which caught them.
+- **0.3.13** is seeded. A run before its tests, on the same code, missed 143.
+  Tests for 95 of those brought it to 49, and one of the 49 was caught by a
+  test added after the run, which leaves the 48 below.
 
 ## Known survivors
 
-187 of the 1,595 viable mutants survive, so 88% are caught. 127 of the
-survivors are in the solvers, `qp.rs` and `lp.rs`. They fall into these kinds:
+48 of the 3,259 viable mutants survive, so 98.5% are caught. None of them can
+change a result, and each is one of these kinds:
 
-- **Boundaries of a tolerance.** `<` for `<=`, or `>` for `>=`, where a value
-  is compared with a tolerance or a rounding threshold. The two differ only
-  when the value lands exactly on it.
-- **The size of a tolerance.** `*` for `/` or `+` in the arithmetic that scales
-  a tolerance, such as `1e-9 * scale` or `noise / k_scale`. At the scales the
-  tests use, both versions accept and reject the same steps.
-- **The path, not the result.** Which variables the simplex method starts at
-  an upper bound, when it switches to Bland's rule, how the turnover-cap search
-  picks its next λ, and how the active-set solver counts a step as having
-  moved. Each changes how the solver reaches the optimum, not which optimum.
-- **Caps and sizes.** Iteration caps such as `1000 + 100(m + n)`, which the
-  tests never reach, and buffer sizes such as `2n − 1`, which may grow.
-- **Guards another check covers.** For example, `risk_budgets` and
-  `expected_returns` of the wrong length are rejected before the length check
-  in the method itself, and an exact tie in the gap statistic would need
-  distances that SciPy and riskfolio-lib can't tell apart.
-- **Invariances.** `MaxDiversification` divides the volatilities by the
-  largest before maximizing a ratio that doesn't depend on their scale.
+- **An exact boundary: 21.** `<` for `<=`, or `>` for `>=`, where the two
+  differ only when a value lands exactly on the other side, and it either
+  can't or nothing changes when it does. A sum of bounds of exactly 1 is
+  divided by 1. A change of exactly 0 in the simplex method never counts. A
+  noise threshold in `max_sharpe` is never 0. Risk parity compares a power of
+  two with 1e-10, which isn't one.
+- **The path, not the result: 10.** Which of two valid cuts `MinCdar` adds
+  in a round, and how risk parity scales its start, accepts a step length or
+  gives up on a line search. Each changes how the solver reaches its optimum,
+  or how many rounds that takes, and not the optimum: risk parity's is
+  unique. They move a result only past its documented limit, budgets more
+  than about 1e14 apart, where rounding already decides it.
+- **A value that can't occur, or one nothing reads: 13.** Spare slots in the
+  clustering's buffers, and distances it rewrites for clusters it has
+  retired. A `sign` in the simplex method that's only ever 1 or −1, and its
+  artificial variables, already 0 where one would be set to 0. A multiplier
+  in the active-set solver that's still its initial 0 where it's read.
+- **An invariance: 2.** `max_sharpe` negates `Σ⁺1` and `Σ⁺(μ − r_f)`
+  together, and every use is a ratio of the two, an absolute value, or
+  normalized by its own sum. Risk parity starts from `1/√v` of a correlation
+  matrix's diagonal, which is 1.
+- **A guard another check covers: 2.** `risk_budgets` and `expected_returns`
+  of the wrong length are rejected when they're resolved, before the length
+  check in the method itself.
 
-The tests added with this setup target the mutants that did change results:
-merges checked against SciPy and a gap statistic checked against riskfolio-lib,
-Jacobi rotations on their own, per-asset bounds and the rounding allowance,
-views on nearly riskless portfolios, a single asset under `MinCvar`, and linear
-programs that exercise the simplex method's bounds, its infeasibility
-tolerance and its guard against a long step carrying a variable past a bound.
-Two lines that no mutant could affect were removed: a simplex update the next
-pivot recomputes, and a volatility check that the correlation check covers.
+The kinds that 0.3.2 listed here and that tests now catch: the size of a
+tolerance, which variables the simplex method starts at an upper bound, when
+it switches to Bland's rule, how the active-set solver counts a step as having
+moved, iteration caps, a tie in the gap statistic, and the scale
+`MaxDiversification` divides its volatilities by.
+
+## Lines no test runs
+
+Coverage, from `cargo llvm-cov`, is 98.7% of lines. Outside the test modules
+57 lines aren't run by any test, and each is one of these:
+
+- **A solver that doesn't converge: 12.** The `NotConverged` returns in
+  `lp.rs`, `qp.rs`, `dual.rs`, `cdar.rs`, `turnover.rs` and `risk_parity.rs`,
+  behind iteration caps that no test reaches.
+- **Arithmetic that isn't finite, or a system that's singular: 15.** The
+  `SingularCovariance`, `NonFiniteCovariance` and `DegenerateViews` returns in
+  `qp.rs`, `max_sharpe.rs`, `black_litterman.rs` and `methods/mod.rs`, and
+  the fallbacks in `eigen.rs` for an eigendecomposition that fails or turns
+  up a NaN. They guard inputs at the edge of what `f64` holds.
+- **A guard another check covers: 9.** The two length checks above.
+- **An error that can't be passed on: 7.** A `?` on a call whose errors the
+  caller has already ruled out, in `mean_variance.rs`, `min_variance.rs`,
+  `methods/mod.rs` and `turnover.rs`.
+- **An `unreachable!` arm: 4.** In `cluster.rs`, `mean_variance.rs` and
+  `qp.rs`, for states the code before them rules out.
+- **A branch of a search: 10.** Two steps of the target-volatility search
+  that its tests' frontiers don't take, a return range's fall-through, and
+  the closing lines of two branches that always match.
