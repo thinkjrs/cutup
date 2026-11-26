@@ -859,6 +859,7 @@ The forms:
 - **Defaults:** a setting that's left out is the default, and a setting at its default is left out when writing.
 - **Errors:**
   - An unknown key, such as `"uper"`.
+  - An array where an object is expected: a method, bounds, an asset's bounds, a group's limits, a covariance config, a Black-Litterman model, a view and a frontier point are each an object.
   - Keys that exclude each other, such as `bounds` with `allow_short`, or two objectives.
   - A missing required key, such as mean-variance's objective.
 - **No cap is `null`:** an upper bound of `f64::INFINITY` is written as `null`, which JSON can carry. Only an explicit `null` reads back as infinity, so an asset's or a group's missing `upper` is still an error.
