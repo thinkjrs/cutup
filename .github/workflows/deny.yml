@@ -39,3 +39,25 @@ jobs:
         with:
           arguments: --all-features --locked
           command: check ${{ matrix.checks }}
+
+  # The campaign app under apps/campaigns is a workspace of its own, with its own Cargo.lock,
+  # which the job above doesn't read, and it's the one that's deployed: hyper, h2 and tokio
+  # answer its requests. Its advisories and sources are checked against the same deny.toml.
+  # Its licenses and duplicate versions aren't, since none of it is published.
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/campaigns
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Check the app's advisories and sources
+        run: cargo deny --all-features --locked check --config ../../deny.toml advisories sources
