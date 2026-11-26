@@ -2895,6 +2895,13 @@ mod tests {
             checked(x, &e, &b, &[1.0]),
             Err(CutupError::SingularCovariance)
         );
+        // The largest coefficient is taken in the column's own scale, as the terms are: a
+        // coefficient of 2 scaled by 2 is 1, and a miss of 2e-6 beside 100 is 2e-8 of it.
+        let x = dvector![2e-6, 100.0];
+        assert_eq!(
+            checked(x, &dmatrix![2.0; 0.0], &b, &[2.0]),
+            Err(CutupError::SingularCovariance)
+        );
         // A constraint that weighs every variable alike is measured by its terms, as before.
         let e = dmatrix![1.0; 1.0];
         let b = dvector![1.0];
