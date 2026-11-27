@@ -248,17 +248,17 @@ fn main() -> Result<(), CutupError> {
         [ 0.002, -0.001,  0.004],
         [-0.003,  0.006,  0.001],
     ];
-    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+    let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
 
     let weights = data.allocate(
         &MinVariance::default()
-            // No asset above 60%, and at most 10% in gold.
-            .bounds(WeightBounds::uniform(0.0, 0.6).asset("GLD", 0.0, 0.1))
+            // No asset above 60%, and at most 10% in C.
+            .bounds(WeightBounds::uniform(0.0, 0.6).asset("C", 0.0, 0.1))
             // Current weights left out are 0.
-            .current_weights([("SPY", 0.6), ("TLT", 0.4)])
+            .current_weights([("A", 0.6), ("B", 0.4)])
             .max_turnover(0.2),
     )?;
-    assert!(weights["GLD"] <= 0.1 + 1e-12);
+    assert!(weights["C"] <= 0.1 + 1e-12);
     for (ticker, weight) in weights.labeled() {
         println!("{ticker}: {weight:.4}");
     }
@@ -409,7 +409,7 @@ fn main() -> Result<(), CutupError> {
         [-0.006,  0.011, -0.002],
         [ 0.001,  0.002, -0.004],
     ];
-    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+    let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
 
     // Windows of 4 periods, 2 apart: 0..4, 2..6 and 4..8.
     let method = MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.6));
@@ -559,9 +559,9 @@ fn main() -> Result<(), CutupError> {
         [ 0.002, -0.001,  0.004],
         [-0.006,  0.008, -0.003],
     ];
-    let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
+    let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
     // Market capitalizations, and a risk-free rate of 0.01% a period.
-    let capm = data.capm_returns([("SPY", 600.0), ("TLT", 300.0), ("GLD", 100.0)], 0.0001)?;
+    let capm = data.capm_returns([("A", 600.0), ("B", 300.0), ("C", 100.0)], 0.0001)?;
     let weights = data.allocate(&MaxSharpe::default().risk_free_rate(0.0001).expected_returns(capm))?;
     println!("Max Sharpe, CAPM returns: {:?}", weights.as_slice());
     Ok(())
@@ -829,15 +829,15 @@ let method: MeanVariance = serde_json::from_str(r#"{
     "risk_aversion": 50.0,
     "bounds": {
         "upper": 0.6,
-        "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.7}]
+        "groups": [{"members": ["A", "B"], "lower": 0.0, "upper": 0.7}]
     },
     "covariance": {"shrinkage": 0.1}
 }"#)?;
 // The same as MeanVariance::risk_aversion(50.0)
-//     .bounds(WeightBounds::uniform(0.0, 0.6).group(["SPY", "TLT"], 0.0, 0.7))
+//     .bounds(WeightBounds::uniform(0.0, 0.6).group(["A", "B"], 0.0, 0.7))
 //     .shrinkage(0.1)
 let weights = data.allocate(&method)?;
-let json = serde_json::to_string(&weights)?; // {"SPY":…,"TLT":…,"GLD":…}
+let json = serde_json::to_string(&weights)?; // {"A":…,"B":…,"C":…}
 let back: Weights = serde_json::from_str(&json)?;
 ```
 
@@ -845,13 +845,13 @@ The forms:
 
 | Type | JSON |
 | --- | --- |
-| `Asset` | its column, `2`, or its label, `"SPY"` |
-| `PerAsset` | `[0.6, 0.4]` in column order, `{"SPY": 0.6, "TLT": 0.4}` by label, or `[[0, 0.6], ["TLT", 0.4]]` pairs |
-| `Weights` | `{"SPY": 0.6, "TLT": 0.4}`, in column order |
-| `WeightBounds` | `{"lower": 0.0, "upper": 0.3, "assets": [{"asset": "GLD", "lower": 0.0, "upper": 0.1}], "groups": [{"members": ["SPY", "TLT"], "lower": 0.0, "upper": 0.4}]}` |
+| `Asset` | its column, `2`, or its label, `"A"` |
+| `PerAsset` | `[0.6, 0.4]` in column order, `{"A": 0.6, "B": 0.4}` by label, or `[[0, 0.6], ["B", 0.4]]` pairs |
+| `Weights` | `{"A": 0.6, "B": 0.4}`, in column order |
+| `WeightBounds` | `{"lower": 0.0, "upper": 0.3, "assets": [{"asset": "C", "lower": 0.0, "upper": 0.1}], "groups": [{"members": ["A", "B"], "lower": 0.0, "upper": 0.4}]}` |
 | `CovarianceConfig` | `{"exponentially_weighted": 11.2, "shrinkage": 0.1}`, or `{"matrix": [[1e-4, 0.0], [0.0, 4e-4]]}`, `{"semicovariance": true}`, `{"ledoit_wolf": "constant_correlation"}` |
-| A method | `{"target_return": 0.001, "expected_returns": {"SPY": 0.0012, "TLT": 0.0004}, "allow_short": true}`; `{}` for `EqualWeight` or a method's defaults |
-| `View` | `{"absolute": "SPY", "q": 0.001}`, `{"relative": ["SPY", "TLT"], "q": 0.0005, "confidence": 0.5}` or `{"portfolio": [0.5, -0.5], "q": 0.0002, "variance": 1e-6}` |
+| A method | `{"target_return": 0.001, "expected_returns": {"A": 0.0012, "B": 0.0004}, "allow_short": true}`; `{}` for `EqualWeight` or a method's defaults |
+| `View` | `{"absolute": "A", "q": 0.001}`, `{"relative": ["A", "B"], "q": 0.0005, "confidence": 0.5}` or `{"portfolio": [0.5, -0.5], "q": 0.0002, "variance": 1e-6}` |
 | A rolling window | `{"start": 0, "end": 60, "weights": {…}}`, or `"error"` in place of `"weights"` |
 | `CutupError` | `"no_assets"`, or `{"invalid_config": {"field": "risk_aversion", "value": -1.0}}` |
 
