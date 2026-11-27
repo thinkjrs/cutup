@@ -129,7 +129,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cutup"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "nalgebra",
  "serde",
