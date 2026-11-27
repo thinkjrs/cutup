@@ -1,16 +1,19 @@
 name: Semver
 
-# Checks the public API against the newest release on crates.io, so a breaking
-# change fails the PR that makes it. Releases merge into main without a PR, so
-# this runs on every PR and on pushes to main, develop and release branches. tgrf
-# pushes only after tagging, so a release branch is checked before its tag only
-# if it's pushed first.
+# Checks the public API against the newest release on crates.io, so at minor a
+# breaking change fails the PR that makes it. Releases merge into main without a
+# PR, so this runs on every PR and on pushes to main, develop and release
+# branches. tgrf pushes only after tagging, so a release branch is checked
+# before its tag only if it's pushed first.
 # The release type is the level the next release must meet. The version in
 # Cargo.toml usually still names the last release, so the tool can't infer it.
 # Through 0.3.x it was minor: additions allowed, breaking changes not. develop
 # is now headed for 1.0.0, which removes the names deprecated in 0.3.0, so it's
-# major until 1.0.0 is out, and minor again after, for 1.x.
-# Both feature groups run, so moving an item behind a feature fails too.
+# major until 1.0.0 is out, and minor again after, for 1.x. At major nothing
+# breaking fails, so until then the cargo public-api diff before tagging is the
+# check. A release/0.x branch, or a PR into one, stays at minor, so a 0.3.x cut
+# from develop fails on the removal instead of shipping it.
+# Both feature groups run, so at minor moving an item behind a feature fails too.
 
 on:
   pull_request:
@@ -39,5 +42,5 @@ jobs:
       - name: Check semver against the last release
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          release-type: major
+          release-type: ${{ (startsWith(github.base_ref, 'release/0.') || startsWith(github.head_ref || github.ref_name, 'release/0.')) && 'minor' || 'major' }}
           feature-group: ${{ matrix.feature-group }}
