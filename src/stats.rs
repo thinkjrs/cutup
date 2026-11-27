@@ -345,6 +345,7 @@ impl PortfolioStats {
     /// assert!((stats.max_drawdown() - 0.04).abs() < 1e-15);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
+    #[must_use]
     pub fn max_drawdown(&self) -> f64 {
         let largest = drawdowns(&self.scaled).fold(0.0, f64::max);
         pow2_scaled(largest, self.exponent)
