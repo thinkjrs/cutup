@@ -163,11 +163,11 @@ impl Asset {
 ///      [ 0.007,  0.003, -0.006],
 ///      [ 0.002, -0.001,  0.004],
 /// ])?
-/// .labeled(["SPY", "TLT", "GLD"])?;
+/// .labeled(["A", "B", "C"])?;
 ///
 /// let in_order = MinVariance::default().current_weights([0.6, 0.4, 0.0]);
 /// // Current weights left out are 0.
-/// let by_label = MinVariance::default().current_weights([("TLT", 0.4), ("SPY", 0.6)]);
+/// let by_label = MinVariance::default().current_weights([("B", 0.4), ("A", 0.6)]);
 /// assert_eq!(
 ///     data.allocate(&in_order.max_turnover(0.2))?,
 ///     data.allocate(&by_label.max_turnover(0.2))?,

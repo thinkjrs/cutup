@@ -4,7 +4,7 @@
 //! {
 //!   "lower": 0.0,
 //!   "upper": 0.3,
-//!   "assets": [{"asset": "GLD", "lower": 0.0, "upper": 0.1}],
+//!   "assets": [{"asset": "C", "lower": 0.0, "upper": 0.1}],
 //!   "groups": [{"members": ["search", "shopping"], "lower": 0.0, "upper": 0.4}]
 //! }
 //! ```

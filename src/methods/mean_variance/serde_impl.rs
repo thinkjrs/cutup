@@ -2,7 +2,7 @@
 //! [`FrontierPoint`]:
 //!
 //! ```json
-//! {"target_return": 0.001, "expected_returns": {"SPY": 0.0012, "TLT": 0.0004}}
+//! {"target_return": 0.001, "expected_returns": {"A": 0.0012, "B": 0.0004}}
 //! ```
 //!
 //! Exactly one objective, `risk_aversion`, `target_return` or `target_volatility`. Then

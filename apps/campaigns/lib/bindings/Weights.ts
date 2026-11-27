@@ -26,9 +26,9 @@
  * assert_eq!(weights.get(1), Some(0.5));
  * assert_eq!(weights.iter().sum::<f64>(), 1.0);
  *
- * let labeled = Returns::from_prices(&prices)?.labeled(["SPY", "TLT"])?.allocate(&EqualWeight)?;
- * assert_eq!(labeled.weight("TLT"), Some(0.5));
- * assert_eq!(labeled["SPY"], 0.5);
+ * let labeled = Returns::from_prices(&prices)?.labeled(["A", "B"])?.allocate(&EqualWeight)?;
+ * assert_eq!(labeled.weight("B"), Some(0.5));
+ * assert_eq!(labeled["A"], 0.5);
  * for (label, weight) in labeled.labeled() {
  *     println!("{label}: {weight}");
  * }

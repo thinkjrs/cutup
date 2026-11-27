@@ -2,8 +2,8 @@
 //! and its `weights`, or the `error` the method returned for it.
 //!
 //! ```json
-//! {"start": 1, "end": 6, "weights": {"SPY": 0.6, "TLT": 0.4}}
-//! {"start": 3, "end": 8, "error": {"zero_variance": {"column": 0, "asset": "SPY"}}}
+//! {"start": 1, "end": 6, "weights": {"A": 0.6, "B": 0.4}}
+//! {"start": 3, "end": 8, "error": {"zero_variance": {"column": 0, "asset": "A"}}}
 //! ```
 //!
 //! A window doesn't deserialize, since a [`CutupError`] doesn't.

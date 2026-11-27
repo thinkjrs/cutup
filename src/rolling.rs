@@ -68,14 +68,14 @@ impl Returns {
     ///     [ 0.002, -0.001],
     ///     [-0.003,  0.006],
     /// ];
-    /// let data = Returns::new(&returns)?.labeled(["SPY", "TLT"])?;
+    /// let data = Returns::new(&returns)?.labeled(["A", "B"])?;
     ///
     /// // Three windows of three periods: 0..3, 1..4 and 2..5.
     /// let windows: Vec<_> = data.rolling(3).allocate(&InverseVolatility)?.collect();
     /// assert_eq!(windows.len(), 3);
     /// assert_eq!(windows[2].periods(), 2..5);
     /// let latest = windows[2].weights().as_ref().unwrap();
-    /// assert_eq!(latest.labels(), ["SPY", "TLT"]);
+    /// assert_eq!(latest.labels(), ["A", "B"]);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn rolling(&self, window: usize) -> Rolling<'_> {

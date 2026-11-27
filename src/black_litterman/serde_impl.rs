@@ -2,9 +2,9 @@
 //!
 //! ```json
 //! {
-//!   "market_weights": {"SPY": 0.6, "TLT": 0.4},
+//!   "market_weights": {"A": 0.6, "B": 0.4},
 //!   "risk_aversion": 2.5,
-//!   "views": [{"relative": ["SPY", "TLT"], "q": 0.0005, "confidence": 0.5}]
+//!   "views": [{"relative": ["A", "B"], "q": 0.0005, "confidence": 0.5}]
 //! }
 //! ```
 //!

@@ -118,7 +118,7 @@ impl Returns {
     /// let rows = [[100.0, 200.0, 300.0], [110.0, 210.0, 310.0], [120.0, 220.0, 320.0]];
     /// assert_eq!(data, Returns::from_prices(&rows)?);
     ///
-    /// // Eight values leave the third row two short.
+    /// // Eight values leave the third row one short.
     /// let short = Returns::from_prices_flat(&prices[..8], 3);
     /// assert_eq!(short, Err(CutupError::RaggedRows { row: 2, expected: 3, actual: 2 }));
     /// # Ok::<(), cutup::CutupError>(())
@@ -354,11 +354,11 @@ impl Returns {
     ///    [0.007, 0.003, -0.006],
     /// ];
     ///
-    /// let data = Returns::new(&returns)?.labeled(["SPY", "TLT", "GLD"])?;
-    /// assert_eq!(data.labels(), ["SPY", "TLT", "GLD"]);
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    /// assert_eq!(data.labels(), ["A", "B", "C"]);
     ///
     /// let weights = data.allocate(&InverseVariance)?;
-    /// assert_eq!(weights.weight("TLT"), Some(weights[1]));
+    /// assert_eq!(weights.weight("B"), Some(weights[1]));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn labeled<L: Into<String>>(
@@ -453,12 +453,12 @@ impl Returns {
     /// use cutup::Returns;
     ///
     /// let prices = [[100.0, 50.0], [110.0, 49.0], [99.0, 51.0]];
-    /// let data = Returns::from_prices(&prices)?.labeled(["SPY", "TLT"])?;
+    /// let data = Returns::from_prices(&prices)?.labeled(["A", "B"])?;
     ///
     /// let logs = data.log_returns()?;
-    /// assert_eq!(logs.labels(), ["SPY", "TLT"]);
+    /// assert_eq!(logs.labels(), ["A", "B"]);
     ///
-    /// // Log returns add up: SPY's two sum to ln(99 / 100).
+    /// // Log returns add up: A's two sum to ln(99 / 100).
     /// let weights = cutup::Weights::from(vec![1.0, 0.0]);
     /// let total = 2.0 * logs.stats(&weights)?.expected_return();
     /// assert!((total - (0.99f64).ln()).abs() < 1e-15);
