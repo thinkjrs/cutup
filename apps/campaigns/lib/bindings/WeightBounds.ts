@@ -22,7 +22,7 @@ import type { GroupLimits } from "./GroupLimits";
  * every ad channel on one platform, or every signal from one source.
  *
  * ```
- * use cutup::WeightBounds;
+ * use cutup::{MinVariance, Returns, WeightBounds};
  *
  * // No asset above 30%.
  * let capped = WeightBounds::uniform(0.0, 0.3);
@@ -30,13 +30,27 @@ import type { GroupLimits } from "./GroupLimits";
  * // At least 5% in each of three assets, and at most 50% in the first.
  * let mixed = WeightBounds::per_asset(vec![0.05; 3], vec![0.5, 1.0, 1.0]);
  *
- * // No asset above 40%, except between 10% and 60% in TLT.
- * let labeled = WeightBounds::uniform(0.0, 0.4).asset("TLT", 0.1, 0.6);
+ * // No asset above 40%, except between 10% and 60% in C.
+ * let labeled = WeightBounds::uniform(0.0, 0.4).asset("C", 0.1, 0.6);
  *
  * // No channel above 30%, search at most 40% together, and the last two columns at least 20%.
  * let grouped = WeightBounds::uniform(0.0, 0.3)
  *     .group(["search", "shopping"], 0.0, 0.4)
  *     .group([5, 6], 0.2, 1.0);
+ *
+ * let data = Returns::new(&[
+ *      [ 0.010, -0.020,  0.005],
+ *      [-0.004,  0.015,  0.002],
+ *      [ 0.007,  0.003, -0.006],
+ *      [ 0.002, -0.001,  0.004],
+ *      [-0.003,  0.006,  0.001],
+ * ])?
+ * .labeled(["A", "B", "C"])?;
+ * let weights = data.allocate(&MinVariance::default().bounds(labeled))?;
+ * // Unbounded, A would take 43%.
+ * assert!((weights["A"] - 0.4).abs() < 1e-12);
+ * assert!((0.1..=0.6).contains(&weights["C"]));
+ * # Ok::<(), cutup::CutupError>(())
  * ```
  */
 export type WeightBounds = { lower?: BoundsSide, upper?: BoundsSide, assets?: Array<AssetBounds>, groups?: Array<GroupLimits>, };

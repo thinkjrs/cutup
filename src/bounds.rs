@@ -24,7 +24,7 @@ mod serde_impl;
 /// every ad channel on one platform, or every signal from one source.
 ///
 /// ```
-/// use cutup::WeightBounds;
+/// use cutup::{MinVariance, Returns, WeightBounds};
 ///
 /// // No asset above 30%.
 /// let capped = WeightBounds::uniform(0.0, 0.3);
@@ -32,13 +32,27 @@ mod serde_impl;
 /// // At least 5% in each of three assets, and at most 50% in the first.
 /// let mixed = WeightBounds::per_asset(vec![0.05; 3], vec![0.5, 1.0, 1.0]);
 ///
-/// // No asset above 40%, except between 10% and 60% in TLT.
-/// let labeled = WeightBounds::uniform(0.0, 0.4).asset("TLT", 0.1, 0.6);
+/// // No asset above 40%, except between 10% and 60% in C.
+/// let labeled = WeightBounds::uniform(0.0, 0.4).asset("C", 0.1, 0.6);
 ///
 /// // No channel above 30%, search at most 40% together, and the last two columns at least 20%.
 /// let grouped = WeightBounds::uniform(0.0, 0.3)
 ///     .group(["search", "shopping"], 0.0, 0.4)
 ///     .group([5, 6], 0.2, 1.0);
+///
+/// let data = Returns::new(&[
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
+/// ])?
+/// .labeled(["A", "B", "C"])?;
+/// let weights = data.allocate(&MinVariance::default().bounds(labeled))?;
+/// // Unbounded, A would take 43%.
+/// assert!((weights["A"] - 0.4).abs() < 1e-12);
+/// assert!((0.1..=0.6).contains(&weights["C"]));
+/// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::Wire"))]
@@ -78,6 +92,28 @@ impl Default for WeightBounds {
 
 impl WeightBounds {
     /// The same bounds `lower ≤ wᵢ ≤ upper` for every asset.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let free = data.allocate(&MinVariance::default())?;
+    /// let capped = data.allocate(&MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.4)))?;
+    ///
+    /// // The first asset is above the cap without it, and held to it with it.
+    /// assert!(free[0] > 0.4);
+    /// assert!((capped[0] - 0.4).abs() < 1e-12);
+    /// assert!(capped.iter().all(|&w| w <= 0.4 + 1e-12));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn uniform(lower: f64, upper: f64) -> Self {
         Self {
             lower: Limit::Uniform(lower),
@@ -89,6 +125,31 @@ impl WeightBounds {
 
     /// Bounds `lower[i] ≤ wᵢ ≤ upper[i]` for each asset `i`: [`PerAsset`] values, in column
     /// order or by asset, with a value for every asset.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let in_order = WeightBounds::per_asset(vec![0.05; 3], vec![0.4, 1.0, 1.0]);
+    /// let by_label = WeightBounds::per_asset(
+    ///     [("C", 0.05), ("B", 0.05), ("A", 0.05)],
+    ///     [("C", 1.0), ("B", 1.0), ("A", 0.4)],
+    /// );
+    ///
+    /// let weights = data.allocate(&MinVariance::default().bounds(in_order))?;
+    /// assert_eq!(weights, data.allocate(&MinVariance::default().bounds(by_label))?);
+    /// assert!((weights["A"] - 0.4).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn per_asset(lower: impl Into<PerAsset>, upper: impl Into<PerAsset>) -> Self {
         Self {
             lower: Limit::PerAsset(lower.into()),
@@ -100,6 +161,31 @@ impl WeightBounds {
 
     /// Bounds `lower ≤ w ≤ upper` for `asset`, by label or by column, in place of its other
     /// bounds. Setting the same asset again replaces them.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let min_variance = |bounds| data.allocate(&MinVariance::default().bounds(bounds));
+    ///
+    /// // A's own cap of 50% replaces the 40% for all, so A can go past 40%.
+    /// let loose = min_variance(WeightBounds::uniform(0.0, 0.4).asset("A", 0.0, 0.5))?;
+    /// assert!(loose["A"] > 0.4);
+    ///
+    /// // Setting A again replaces its 50% with 40%.
+    /// let reset = WeightBounds::uniform(0.0, 0.4).asset("A", 0.0, 0.5).asset("A", 0.0, 0.4);
+    /// assert_eq!(min_variance(reset)?, min_variance(WeightBounds::uniform(0.0, 0.4))?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn asset(mut self, asset: impl Into<Asset>, lower: f64, upper: f64) -> Self {
         self.assets.push((asset.into(), lower, upper));
         self
@@ -127,6 +213,34 @@ impl WeightBounds {
     /// * [`CutupError::UnknownAsset`] if a member isn't one of the assets.
     /// * [`CutupError::InfeasibleGroups`] naming the group if no portfolio summing to 1 within
     ///   the bounds meets it, or with no name if each group can be met but not all at once.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinVariance, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let min_variance = |bounds| data.allocate(&MinVariance::default().bounds(bounds));
+    ///
+    /// // Unbounded, A and C would take 78% together.
+    /// let weights = min_variance(WeightBounds::default().group(["A", "C"], 0.0, 0.6))?;
+    /// assert!((weights["A"] + weights["C"] - 0.6).abs() < 1e-12);
+    ///
+    /// // With C at most 60%, A and B hold at least 40%, so they can't stay within 30%.
+    /// let infeasible = WeightBounds::uniform(0.0, 0.6).group(["A", "B"], 0.0, 0.3);
+    /// assert_eq!(
+    ///     min_variance(infeasible),
+    ///     Err(CutupError::InfeasibleGroups { group: Some("A + B".into()) }),
+    /// );
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn group<A: Into<Asset>>(
         mut self,
         members: impl IntoIterator<Item = A>,

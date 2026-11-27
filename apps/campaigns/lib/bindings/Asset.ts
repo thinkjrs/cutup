@@ -8,11 +8,26 @@
  * label is its column, so `"0"` names the first asset too.
  *
  * ```
- * use cutup::{View, WeightBounds};
+ * use cutup::{Asset, MinVariance, Returns, View, WeightBounds};
  *
- * let by_label = View::relative("SPY", "TLT", 0.0005);
+ * let by_label = View::relative("A", "B", 0.0005);
  * let by_column = View::relative(0, 1, 0.0005);
- * let capped = WeightBounds::uniform(0.0, 0.4).asset("GLD", 0.0, 0.1);
+ *
+ * let data = Returns::new(&[
+ *      [ 0.010, -0.020,  0.005],
+ *      [-0.004,  0.015,  0.002],
+ *      [ 0.007,  0.003, -0.006],
+ *      [ 0.002, -0.001,  0.004],
+ *      [-0.003,  0.006,  0.001],
+ * ])?;
+ * let capped = |asset: Asset| {
+ *     MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.6).asset(asset, 0.0, 0.1))
+ * };
+ * // Unlabeled, the third asset's label is "2".
+ * let weights = data.allocate(&capped("2".into()))?;
+ * assert_eq!(weights, data.allocate(&capped(2.into()))?);
+ * assert!(weights[2] <= 0.1 + 1e-12);
+ * # Ok::<(), cutup::CutupError>(())
  * ```
  */
 export type Asset = number | string;

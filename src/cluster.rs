@@ -9,6 +9,27 @@ use nalgebra::DMatrix;
 
 /// How the distance between two clusters is measured when HRP or HERC builds its hierarchy.
 /// See [`Hrp::linkage`](crate::Hrp::linkage) and [`Herc::linkage`](crate::Herc::linkage).
+///
+/// # Example
+///
+/// ```
+/// use cutup::{Hrp, Linkage, Returns};
+///
+/// // Assets 0 and 2 move together, as do 1 and 3.
+/// let data = Returns::new(&[
+///      [ 0.010,  0.020,  0.011,  0.019],
+///      [-0.010,  0.010, -0.012,  0.012],
+///      [ 0.020, -0.020,  0.018, -0.021],
+///      [-0.015, -0.010, -0.014, -0.009],
+/// ])?;
+///
+/// assert_eq!(Linkage::default(), Linkage::Single);
+/// // Pairs this clear come out the same whichever distance joins the clusters.
+/// for linkage in [Linkage::Single, Linkage::Complete, Linkage::Average, Linkage::Ward] {
+///     assert_eq!(Hrp::default().linkage(linkage).cluster_order(&data)?, [1, 3, 0, 2]);
+/// }
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]

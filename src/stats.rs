@@ -71,6 +71,18 @@ pub struct PortfolioStats {
 
 impl PortfolioStats {
     /// The expected return `μᵀw`, with the sample mean of each asset's returns as `μ`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Means of 1% and 2%.
+    /// let data = Returns::new(&[[0.02, 0.00], [0.00, 0.04]])?;
+    /// let stats = data.stats(&Weights::from(vec![0.5, 0.5]))?;
+    /// assert!((stats.expected_return() - 0.015).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn expected_return(&self) -> f64 {
         self.expected_return
@@ -85,6 +97,18 @@ impl PortfolioStats {
     /// trace, and neither do positions that cancel to within rounding. So does a volatility too
     /// small to represent, below about `5e-324`. [`Returns::stats_with`] has a rule of its own,
     /// relative to the positions' volatilities under its covariance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Deviations of -1%, 1% and 0 from a mean of 2%: a sample variance of 2e-4 / 2.
+    /// let data = Returns::new(&[[0.01], [0.03], [0.02]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.volatility() - 0.01).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn volatility(&self) -> f64 {
         self.volatility
@@ -96,6 +120,21 @@ impl PortfolioStats {
     ///
     /// `None` if the [volatility](Self::volatility) is 0, or the rate isn't finite. A ratio
     /// past `f64::MAX` is infinite.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // A mean of 2% and a volatility of 1%.
+    /// let data = Returns::new(&[[0.01], [0.03], [0.02]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    ///
+    /// // (2% − 0.5%) / 1%.
+    /// assert!((stats.sharpe_ratio(0.005).unwrap() - 1.5).abs() < 1e-12);
+    /// assert_eq!(stats.sharpe_ratio(f64::NAN), None);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn sharpe_ratio(&self, risk_free_rate: f64) -> Option<f64> {
         if self.deviation == 0.0 || !risk_free_rate.is_finite() {
@@ -118,6 +157,21 @@ impl PortfolioStats {
     /// least 1, and 1 only when the assets held are perfectly correlated.
     ///
     /// `None` if the [volatility](Self::volatility) is 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Two uncorrelated assets, each with the same volatility σ.
+    /// let returns = [[0.01, 0.01], [-0.01, 0.01], [0.01, -0.01], [-0.01, -0.01]];
+    /// let data = Returns::new(&returns)?;
+    /// let stats = data.stats(&Weights::from(vec![0.5, 0.5]))?;
+    ///
+    /// // σ over σ/√2.
+    /// assert!((stats.diversification_ratio().unwrap() - 2f64.sqrt()).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn diversification_ratio(&self) -> Option<f64> {
         self.diversification_ratio
@@ -128,6 +182,22 @@ impl PortfolioStats {
     /// 1. A short position, or a long one that hedges others, can have a negative share.
     ///
     /// `None` if the [volatility](Self::volatility) is 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Two uncorrelated assets with the same variance.
+    /// let returns = [[0.01, 0.01], [-0.01, 0.01], [0.01, -0.01], [-0.01, -0.01]];
+    /// let data = Returns::new(&returns)?;
+    /// let stats = data.stats(&Weights::from(vec![0.75, 0.25]))?;
+    ///
+    /// // Shares of the squared weights: 0.5625 and 0.0625 of 0.625.
+    /// let shares = stats.risk_contributions().unwrap();
+    /// assert!((shares[0] - 0.9).abs() < 1e-12 && (shares[1] - 0.1).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn risk_contributions(&self) -> Option<&[f64]> {
         self.risk_contributions.as_deref()
@@ -140,6 +210,18 @@ impl PortfolioStats {
     /// # Errors
     ///
     /// [`CutupError::InvalidConfig`] if `beta` isn't in `(0, 1)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // The worst half of four periods: losses of 3% and 1%.
+    /// let data = Returns::new(&[[0.02], [-0.01], [0.03], [-0.03]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.cvar(0.5)? - 0.02).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn cvar(&self, beta: f64) -> Result<f64, CutupError> {
         let cap = tail_weight(beta, self.scaled.len())?;
         let losses = self.scaled.iter().map(|r| -r).collect();
@@ -149,6 +231,18 @@ impl PortfolioStats {
     /// The mean absolute deviation, `(1/T) Σₜ |rₜ − r̄|`, of the portfolio's return in each
     /// period `rₜ` around their mean `r̄`, the same as [`Returns::mad`]. It's historical, so a
     /// covariance given to [`Returns::stats_with`] doesn't change it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // 0 and 4%: each 2% from the mean.
+    /// let data = Returns::new(&[[0.00], [0.04]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.mad() - 0.02).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn mad(&self) -> f64 {
         let total: f64 = self.scaled.iter().map(|r| (r - self.mean).abs()).sum();
@@ -165,6 +259,22 @@ impl PortfolioStats {
     /// # Errors
     ///
     /// [`CutupError::InvalidConfig`] if `threshold` isn't finite.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Short of 1% by 2% and 4% in two of four periods.
+    /// let data = Returns::new(&[[0.02], [-0.01], [0.03], [-0.03]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.downside_mad(0.01)? - 0.015).abs() < 1e-15);
+    ///
+    /// // At the mean, half the MAD.
+    /// let mean = stats.expected_return();
+    /// assert!((stats.downside_mad(mean)? - stats.mad() / 2.0).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn downside_mad(&self, threshold: f64) -> Result<f64, CutupError> {
         if !threshold.is_finite() {
             return Err(CutupError::InvalidConfig {
@@ -197,6 +307,22 @@ impl PortfolioStats {
     /// # Errors
     ///
     /// [`CutupError::InvalidConfig`] if `beta` isn't in `(0, 1)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Up 2%, then down 3% and 1%, then up 4%: drawdowns of 0, 3%, 4% and 0.
+    /// let data = Returns::new(&[[0.02], [-0.03], [-0.01], [0.04]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    ///
+    /// // The worst two: 4% and 3%.
+    /// assert!((stats.cdar(0.5)? - 0.035).abs() < 1e-15);
+    /// // A tail under one period is the maximum drawdown.
+    /// assert_eq!(stats.cdar(0.9)?, stats.max_drawdown());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn cdar(&self, beta: f64) -> Result<f64, CutupError> {
         let cap = tail_weight(beta, self.scaled.len())?;
         Ok(pow2_scaled(
@@ -207,12 +333,36 @@ impl PortfolioStats {
 
     /// The largest drawdown: how far the running sum of the portfolio's returns fell below its
     /// highest before, at worst. See [`cdar`](Self::cdar) for the drawdowns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Up 2%, then down 3% and 1%: 4% below the peak. Then up 4%, back to it.
+    /// let data = Returns::new(&[[0.02], [-0.03], [-0.01], [0.04]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.max_drawdown() - 0.04).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn max_drawdown(&self) -> f64 {
         let largest = drawdowns(&self.scaled).fold(0.0, f64::max);
         pow2_scaled(largest, self.exponent)
     }
 
     /// The average drawdown over every period. See [`cdar`](Self::cdar) for the drawdowns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, Weights};
+    ///
+    /// // Up 2%, then down 3% and 1%, then up 4%: drawdowns of 0, 3%, 4% and 0.
+    /// let data = Returns::new(&[[0.02], [-0.03], [-0.01], [0.04]])?;
+    /// let stats = data.stats(&Weights::from(vec![1.0]))?;
+    /// assert!((stats.average_drawdown() - 0.0175).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn average_drawdown(&self) -> f64 {
         let total: f64 = drawdowns(&self.scaled).sum();

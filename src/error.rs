@@ -10,6 +10,20 @@ use std::fmt;
 /// `{"invalid_config": {"field": "risk_aversion", "value": -1.0}}`. An infinite value, such as
 /// an end of a range with no limit, is `null` in JSON. Errors don't deserialize: their field
 /// names are `&'static str`s.
+///
+/// # Example
+///
+/// ```
+/// use cutup::{CutupError, Returns};
+///
+/// // A gap in the data, read in as NaN.
+/// let returns = [[0.010, -0.020], [f64::NAN, 0.015], [0.007, 0.003]];
+///
+/// match Returns::new(&returns) {
+///     Err(CutupError::NonFiniteValue { row, col }) => assert_eq!((row, col), (1, 0)),
+///     other => panic!("expected NonFiniteValue, got {other:?}"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]

@@ -17,11 +17,26 @@ pub(crate) mod serde_impl;
 /// label is its column, so `"0"` names the first asset too.
 ///
 /// ```
-/// use cutup::{View, WeightBounds};
+/// use cutup::{Asset, MinVariance, Returns, View, WeightBounds};
 ///
-/// let by_label = View::relative("SPY", "TLT", 0.0005);
+/// let by_label = View::relative("A", "B", 0.0005);
 /// let by_column = View::relative(0, 1, 0.0005);
-/// let capped = WeightBounds::uniform(0.0, 0.4).asset("GLD", 0.0, 0.1);
+///
+/// let data = Returns::new(&[
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
+/// ])?;
+/// let capped = |asset: Asset| {
+///     MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.6).asset(asset, 0.0, 0.1))
+/// };
+/// // Unlabeled, the third asset's label is "2".
+/// let weights = data.allocate(&capped("2".into()))?;
+/// assert_eq!(weights, data.allocate(&capped(2.into()))?);
+/// assert!(weights[2] <= 0.1 + 1e-12);
+/// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(type = "number | string"))]
@@ -69,6 +84,16 @@ impl fmt::Display for Asset {
 
 impl Asset {
     /// The asset's label, if it was given by label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Asset;
+    ///
+    /// assert_eq!(Asset::from("A").label(), Some("A"));
+    /// // A column isn't looked up, so it has no label of its own.
+    /// assert_eq!(Asset::from(0).label(), None);
+    /// ```
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         match &self.0 {
@@ -78,6 +103,16 @@ impl Asset {
     }
 
     /// The asset's column, if it was given by column.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Asset;
+    ///
+    /// assert_eq!(Asset::from(2).column(), Some(2));
+    /// // A label isn't parsed, even one that's a number.
+    /// assert_eq!(Asset::from("2").column(), None);
+    /// ```
     #[must_use]
     pub fn column(&self) -> Option<usize> {
         match &self.0 {

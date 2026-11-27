@@ -33,6 +33,10 @@ mod serde_impl;
 ///     .view(View::relative(1, 2, 0.0005));
 /// let mu = model.expected_returns(&data)?;
 ///
+/// // The view pulls asset 0 from the market's implied return toward 0.1%, but not all the way.
+/// let prior = model.prior_returns(&data)?;
+/// assert!(prior[0] < mu[0] && mu[0] < 0.001);
+///
 /// let weights = data.allocate(&MeanVariance::risk_aversion(2.5).expected_returns(mu))?;
 /// # Ok::<(), cutup::CutupError>(())
 /// ```
@@ -69,6 +73,28 @@ impl BlackLitterman {
     /// A model with the market weights `market_weights`, in column order or by asset, and the
     /// market's risk aversion `delta`. Market capitalizations work too: they're divided by
     /// their sum.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let weights = BlackLitterman::new([0.5, 0.3, 0.2], 2.5).prior_returns(&data)?;
+    ///
+    /// let caps = BlackLitterman::new([500.0, 300.0, 200.0], 2.5);
+    /// assert_eq!(caps.prior_returns(&data)?, weights);
+    /// let by_label = BlackLitterman::new([("C", 0.2), ("A", 0.5), ("B", 0.3)], 2.5);
+    /// assert_eq!(by_label.prior_returns(&data)?, weights);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn new(market_weights: impl Into<PerAsset>, delta: f64) -> Self {
         Self {
             market_weights: market_weights.into(),
@@ -81,19 +107,97 @@ impl BlackLitterman {
     }
 
     /// Adds a view.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// // Two certain views, both met.
+    /// let mu = BlackLitterman::new([0.5, 0.3, 0.2], 2.5)
+    ///     .view(View::absolute(0, 0.001).variance(0.0))
+    ///     .view(View::relative(1, 2, 0.0005).variance(0.0))
+    ///     .expected_returns(&data)?;
+    /// assert!((mu[0] - 0.001).abs() < 1e-15);
+    /// assert!((mu[1] - mu[2] - 0.0005).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn view(mut self, view: View) -> Self {
         self.views.push(view);
         self
     }
 
     /// Sets the risk-free rate per period, added to the implied returns. Defaults to 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+    /// let excess = model.prior_returns(&data)?;
+    /// let total = model.risk_free_rate(0.0001).prior_returns(&data)?;
+    ///
+    /// // Each implied return is 0.01% higher.
+    /// assert!(total.iter().zip(&excess).all(|(t, e)| (t - e - 0.0001).abs() < 1e-15));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn risk_free_rate(mut self, risk_free_rate: f64) -> Self {
         self.risk_free_rate = risk_free_rate;
         self
     }
 
     /// Sets `τ`, the uncertainty in the prior relative to the covariance. Defaults to 0.05.
-    /// Larger values move the posterior further toward the views.
+    /// Larger values move the posterior returns further toward views with an explicit
+    /// [variance](View::variance). A view's default variance, and one from a
+    /// [confidence](View::confidence), are `τ` times its portfolio's, so `τ` cancels and the
+    /// posterior returns are the same for any `τ`; the [posterior
+    /// covariance](BlackLitterman::posterior_covariance) still changes with it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// // A view with a variance of its own.
+    /// let model =
+    ///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(View::absolute(0, 0.001).variance(1e-6));
+    /// let near = model.clone().tau(0.5).expected_returns(&data)?;
+    /// let far = model.tau(0.01).expected_returns(&data)?;
+    ///
+    /// assert!((near[0] - 0.001).abs() < (far[0] - 0.001).abs());
+    ///
+    /// // A view with a confidence: τ cancels.
+    /// let model =
+    ///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(View::absolute(0, 0.001).confidence(0.6));
+    /// let one = model.clone().tau(0.5).expected_returns(&data)?;
+    /// let other = model.tau(0.01).expected_returns(&data)?;
+    /// for (a, b) in one.iter().zip(&other) {
+    ///     assert!((a - b).abs() <= 1e-12 * a.abs());
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn tau(mut self, tau: f64) -> Self {
         self.tau = tau;
         self
@@ -120,6 +224,21 @@ impl BlackLitterman {
     ///   [`CutupError::SingularCovariance`] if it's all zeros.
     /// * [`CutupError::NotSupported`] for Ledoit-Wolf shrinkage of an estimate other than
     ///   the sample covariance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns};
+    ///
+    /// // Uncorrelated, each with a mean of 0 and a variance of 4e-4 / 3.
+    /// let returns = [[0.01, 0.01], [-0.01, 0.01], [0.01, -0.01], [-0.01, -0.01]];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // δΣw = 3 · 4e-4/3 · 0.5 for each.
+    /// let prior = BlackLitterman::new([0.5, 0.5], 3.0).prior_returns(&data)?;
+    /// assert!(prior.iter().all(|p| (p - 2e-4).abs() < 1e-15));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn prior_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let cov = data.adjusted_covariance(&self.covariance)?;
         Ok(self.prior(&cov, data.labels())?.as_slice().to_vec())
@@ -144,6 +263,27 @@ impl BlackLitterman {
     ///   certain views that repeat or contradict each other, or a view with the default
     ///   variance or a confidence on a portfolio with no variance, which would make it
     ///   certain. Give such a view an explicit [`View::variance`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+    /// assert_eq!(model.expected_returns(&data)?, model.prior_returns(&data)?);
+    ///
+    /// // A certain view is met exactly.
+    /// let mu = model.view(View::absolute(1, 0.0005).variance(0.0)).expected_returns(&data)?;
+    /// assert!((mu[1] - 0.0005).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn expected_returns(&self, data: &Returns) -> Result<Vec<f64>, CutupError> {
         let solved = self.solve(data)?;
         let Some(views) = &solved.views else {
@@ -417,15 +557,30 @@ fn factor_views(a: DMatrix<f64>) -> Result<Cholesky<f64, Dyn>, CutupError> {
 /// 1999). Set it with [`View::variance`], or as a confidence with [`View::confidence`].
 ///
 /// ```
-/// use cutup::View;
+/// use cutup::{BlackLitterman, Returns, View};
 ///
 /// let absolute = View::absolute(0, 0.001).confidence(0.6);
 /// let relative = View::relative(1, 2, 0.0005).variance(1e-7);
 /// let basket = View::portfolio([0.5, 0.5, -1.0], 0.0002);
 ///
 /// // By label, once the data is labeled.
-/// let labeled = View::relative("SPY", "TLT", 0.0005);
-/// let labeled_basket = View::portfolio([("SPY", 0.5), ("QQQ", 0.5), ("TLT", -1.0)], 0.0002);
+/// let labeled = View::relative("B", "C", 0.0005).variance(1e-7);
+/// let labeled_basket = View::portfolio([("A", 0.5), ("B", 0.5), ("C", -1.0)], 0.0002);
+///
+/// let data = Returns::new(&[
+///      [ 0.010, -0.020,  0.005],
+///      [-0.004,  0.015,  0.002],
+///      [ 0.007,  0.003, -0.006],
+///      [ 0.002, -0.001,  0.004],
+///      [-0.003,  0.006,  0.001],
+/// ])?
+/// .labeled(["A", "B", "C"])?;
+/// let mu = |view: View| {
+///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(view).expected_returns(&data)
+/// };
+/// assert_eq!(mu(relative)?, mu(labeled)?);
+/// assert_eq!(mu(basket)?, mu(labeled_basket)?);
+/// # Ok::<(), cutup::CutupError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::ViewWire"))]
@@ -453,11 +608,59 @@ enum Uncertainty {
 
 impl View {
     /// `asset`, by label or by column, has an expected return of `q`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let mu = |view: View| {
+    ///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(view).expected_returns(&data)
+    /// };
+    ///
+    /// // Certain, A's expected return is 0.1%.
+    /// let by_label = mu(View::absolute("A", 0.001).variance(0.0))?;
+    /// assert!((by_label[0] - 0.001).abs() < 1e-15);
+    /// assert_eq!(by_label, mu(View::absolute(0, 0.001).variance(0.0))?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn absolute(asset: impl Into<Asset>, q: f64) -> Self {
         Self::new(Assets::Absolute(asset.into()), q)
     }
 
     /// `long` has an expected return `q` above `short`'s, each by label or by column.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let mu = |view: View| {
+    ///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(view).expected_returns(&data)
+    /// };
+    ///
+    /// // Certain, B returns 0.05% more than C.
+    /// let by_label = mu(View::relative("B", "C", 0.0005).variance(0.0))?;
+    /// assert!((by_label[1] - by_label[2] - 0.0005).abs() < 1e-15);
+    /// assert_eq!(by_label, mu(View::relative(1, 2, 0.0005).variance(0.0))?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn relative(long: impl Into<Asset>, short: impl Into<Asset>, q: f64) -> Self {
         Self::new(Assets::Relative(long.into(), short.into()), q)
     }
@@ -465,6 +668,33 @@ impl View {
     /// The portfolio with `weights`, in column order or by asset, has an expected return of
     /// `q`. The weights needn't sum to anything: `[0.5, 0.5, -1.0]` says the first two assets
     /// together beat the third by `q`. By asset, the assets left out have a weight of 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?
+    /// .labeled(["A", "B", "C"])?;
+    /// let mu = |view: View| {
+    ///     BlackLitterman::new([0.5, 0.3, 0.2], 2.5).view(view).expected_returns(&data)
+    /// };
+    ///
+    /// // Certain, A and B together beat C by 0.02%.
+    /// let m = mu(View::portfolio([0.5, 0.5, -1.0], 0.0002).variance(0.0))?;
+    /// assert!((0.5 * m[0] + 0.5 * m[1] - m[2] - 0.0002).abs() < 1e-15);
+    ///
+    /// // A, left out, has a weight of 0: B against C.
+    /// let pair = View::portfolio([("B", 1.0), ("C", -1.0)], 0.0005);
+    /// assert_eq!(mu(pair)?, mu(View::relative("B", "C", 0.0005))?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn portfolio(weights: impl Into<PerAsset>, q: f64) -> Self {
         Self::new(Assets::Portfolio(weights.into()), q)
     }
@@ -479,6 +709,29 @@ impl View {
 
     /// Sets the view's variance `ω`. Zero makes the view certain, so the expected returns
     /// meet it exactly. Replaces [`View::confidence`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+    ///
+    /// let certain = View::absolute(0, 0.001).variance(0.0);
+    /// let mu = model.view(certain.clone()).expected_returns(&data)?;
+    /// assert!((mu[0] - 0.001).abs() < 1e-15);
+    ///
+    /// // The variance set last wins over a confidence set before it.
+    /// assert_eq!(View::absolute(0, 0.001).confidence(0.6).variance(0.0), certain);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn variance(mut self, omega: f64) -> Self {
         self.uncertainty = Uncertainty::Variance(omega);
         self
@@ -489,6 +742,28 @@ impl View {
     /// general the variance is `τ(1 − c)/c · pᵀΣp`, the closed form of Walters (2014), as in
     /// PyPortfolioOpt. At 0 the view is dropped, where PyPortfolioOpt gives it a variance of
     /// 1e6, whose effect depends on the units of the returns. Replaces [`View::variance`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{BlackLitterman, Returns, View};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let model = BlackLitterman::new([0.5, 0.3, 0.2], 2.5);
+    /// let view = View::absolute(0, 0.001);
+    /// let mu = |view: View| model.clone().view(view).expected_returns(&data);
+    ///
+    /// assert_eq!(mu(view.clone().confidence(0.0))?, model.prior_returns(&data)?);
+    /// assert_eq!(mu(view.clone().confidence(0.5))?, mu(view.clone())?);
+    /// assert!((mu(view.confidence(1.0))?[0] - 0.001).abs() < 1e-15);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn confidence(mut self, confidence: f64) -> Self {
         self.uncertainty = Uncertainty::Confidence(confidence);
         self
