@@ -5,9 +5,11 @@ name: Semver
 # this runs on every PR and on pushes to main, develop and release branches. tgrf
 # pushes only after tagging, so a release branch is checked before its tag only
 # if it's pushed first.
-# The release type is minor, the level a 0.3.x release must meet under Cargo's
-# rules: additions are allowed, breaking changes aren't. The version in
+# The release type is the level the next release must meet. The version in
 # Cargo.toml usually still names the last release, so the tool can't infer it.
+# Through 0.3.x it was minor: additions allowed, breaking changes not. develop
+# is now headed for 1.0.0, which removes the names deprecated in 0.3.0, so it's
+# major until 1.0.0 is out, and minor again after, for 1.x.
 # Both feature groups run, so moving an item behind a feature fails too.
 
 on:
@@ -37,5 +39,5 @@ jobs:
       - name: Check semver against the last release
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          release-type: minor
+          release-type: major
           feature-group: ${{ matrix.feature-group }}
