@@ -40,7 +40,7 @@ This plans the releases from 0.3.0 to 1.0.0.
 | 0.3.12 | Finishing before the freeze: the campaign app's new methods, `MinCdar`'s warm start, and the docs 1.0 needs | No |
 | 0.3.13 | Security, analysis and refactoring, with no change to the public API | No |
 | Later 0.3.x or 1.x | NCO | No |
-| 1.0.0 | API freeze | No |
+| 1.0.0 | API freeze, and the removal of the names deprecated in 0.3.0 | Yes |
 
 This order is agreed. A release can still split or merge if it grows, as long
 as each keeps one theme.
@@ -979,8 +979,14 @@ to 0.3.9.
 - **Docs:** an asserted doctest on every public item. Done after 0.3.13: 180
   of 182 items, from 39. The other two were the deprecated names below.
 - **Removal:** `src/deprecated.rs`, with the `PortfolioAllocator` alias and
-  `Returns::from_returns`. Done after 0.3.13. The semver check is at major
-  until 1.0.0 is out, and goes back to minor after it.
+  `Returns::from_returns`. Done after 0.3.13.
+- **The semver check,** which allows the removal:
+  - it's at major on develop and main until 1.0.0 is out, and at minor on a
+    `release/0.x` branch, so a 0.3.x cut from develop fails on the removal;
+  - at major it fails nothing, so the next PR checks every PR at minor
+    against its base commit instead, which this one can't: its removal is
+    the break it would catch;
+  - after 1.0.0, pushes go back to minor, as part of the release.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
   tagging.
 
