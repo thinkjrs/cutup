@@ -977,10 +977,10 @@ to 0.3.9.
 - **Moved earlier:** the MSRV policy, the documented size limits and the
   method-selection guide go in 0.3.12.
 - **Docs:** an asserted doctest on every public item. Done after 0.3.13: 180
-  of 182 items, from 39. Left: the two deprecated names, which go in this
-  release.
+  of 182 items, from 39. The other two were the deprecated names below.
 - **Removal:** `src/deprecated.rs`, with the `PortfolioAllocator` alias and
-  `Returns::from_returns`.
+  `Returns::from_returns`. Done after 0.3.13. The semver check is at major
+  until 1.0.0 is out, and goes back to minor after it.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
   tagging.
 
