@@ -981,12 +981,15 @@ to 0.3.9.
 - **Removal:** `src/deprecated.rs`, with the `PortfolioAllocator` alias and
   `Returns::from_returns`. Done after 0.3.13.
 - **The semver check,** which allows the removal:
-  - it's at major on develop and main until 1.0.0 is out, and at minor on a
-    `release/0.x` branch, so a 0.3.x cut from develop fails on the removal;
+  - on main it's at the level of the version in `Cargo.toml`, so a 0.3.x
+    cut from develop fails on the removal when `tgrf` pushes it to main,
+    before `cargo publish`, and 1.0.0 passes at major. A `release/0.x`
+    branch, when one is pushed, is at minor; develop is at major until
+    1.0.0 is out;
   - at major it fails nothing, so every PR is now checked at minor against
     its base commit instead, which the removal's PR couldn't be: its
     removal was the break that check catches;
-  - after 1.0.0, pushes go back to minor, as part of the release.
+  - after 1.0.0, develop's pushes go back to minor, as part of the release.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
   tagging. Run after the removal: against 0.3.13 the only changes are the
   two removed names. It runs again on the release branch.
