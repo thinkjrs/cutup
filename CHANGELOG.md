@@ -23,7 +23,8 @@ All notable changes to this project are documented here. The format follows
 - `PortfolioStats::max_drawdown` is `#[must_use]`, as the other statistics are.
 - CI checks every PR's public API against the commit the PR is based on, so a breaking
   change fails the PR that makes it whatever the last release was. Pushes are still checked
-  against the newest release on crates.io.
+  against the newest release on crates.io, and on main at the level its version says: a
+  0.3.x merged into main fails on anything breaking, where it was checked at major.
 - The crate's `homepage` is gone from its manifest: it was the repository's URL, which
   `repository` already gives, and cargo warned about it on every build.
 
