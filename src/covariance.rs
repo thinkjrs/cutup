@@ -517,6 +517,8 @@ impl CovarianceConfig {
     /// and nonnegative. Unlike shrinkage it's absolute, so choose it relative to the scale of
     /// your returns' variances.
     ///
+    /// <https://en.wikipedia.org/wiki/Tikhonov_regularization>
+    ///
     /// # Example
     ///
     /// ```
@@ -530,8 +532,6 @@ impl CovarianceConfig {
     /// assert!((weights[0] - 5.0 / 7.0).abs() < 1e-12);
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
-    ///
-    /// <https://en.wikipedia.org/wiki/Tikhonov_regularization>
     pub fn regularization(mut self, epsilon: f64) -> Self {
         self.regularization = Some(epsilon);
         self
@@ -542,6 +542,8 @@ impl CovarianceConfig {
     /// the target is on the same scale as `Σ`. Shrinkage reduces the estimation error in a
     /// sample covariance. It replaces [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf),
     /// if that was set.
+    ///
+    /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
     ///
     /// # Example
     ///
@@ -559,8 +561,6 @@ impl CovarianceConfig {
     /// assert_eq!(estimated.shrinkage(0.1), CovarianceConfig::default().shrinkage(0.1));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
-    ///
-    /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
     pub fn shrinkage(mut self, lambda: f64) -> Self {
         self.shrinkage = Some(Shrinkage::Fixed(lambda));
         self
