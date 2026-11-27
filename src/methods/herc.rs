@@ -104,6 +104,33 @@ impl Default for Herc {
 impl Herc {
     /// Sets how the distance between clusters is measured when building the hierarchy.
     /// Defaults to [`Linkage::Single`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Herc, InverseVariance, Linkage, Returns};
+    ///
+    /// // Assets 2 and 3 move together. Asset 1 is closer than 0 to the pair's nearer member,
+    /// // and 0 closer than 1 to its farther one.
+    /// let returns = [
+    ///     [ 0.010, -0.020,  0.005,  0.001],
+    ///     [-0.004,  0.015,  0.002,  0.003],
+    ///     [ 0.007,  0.003, -0.006, -0.004],
+    ///     [ 0.002, -0.001,  0.004,  0.006],
+    ///     [-0.003,  0.006,  0.001, -0.002],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let iv = data.allocate(&InverseVariance)?;
+    /// assert_eq!(Herc::default(), Herc::default().linkage(Linkage::Single));
+    ///
+    /// // Cut into two clusters, single linkage joins 1 to the pair and complete linkage joins
+    /// // 0, and a cluster is shared by inverse variance.
+    /// let single = data.allocate(&Herc::default().clusters(2))?;
+    /// assert!((single[1] / single[2] - iv[1] / iv[2]).abs() < 1e-12);
+    /// let complete = data.allocate(&Herc::default().linkage(Linkage::Complete).clusters(2))?;
+    /// assert!((complete[0] / complete[2] - iv[0] / iv[2]).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -111,6 +138,29 @@ impl Herc {
 
     /// Cuts the hierarchy into `clusters` clusters, from 1 to the number of assets, instead
     /// of choosing the number.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, Herc, InverseVariance, Returns};
+    ///
+    /// let returns = [
+    ///      [ 0.010,  0.020,  0.011,  0.019],
+    ///      [-0.010,  0.010, -0.012,  0.012],
+    ///      [ 0.020, -0.020,  0.018, -0.021],
+    ///      [-0.015, -0.010, -0.014, -0.009],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // One cluster has nothing to split between, so it's shared by inverse variance.
+    /// let one = data.allocate(&Herc::default().clusters(1))?;
+    /// let inverse_variance = data.allocate(&InverseVariance)?;
+    /// assert!(one.iter().zip(inverse_variance.iter()).all(|(a, b)| (a - b).abs() < 1e-12));
+    ///
+    /// let too_many = data.allocate(&Herc::default().clusters(5));
+    /// assert_eq!(too_many, Err(CutupError::InvalidConfig { field: "clusters", value: 5.0 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn clusters(mut self, clusters: usize) -> Self {
         self.clusters = Some(clusters);
         self
@@ -118,6 +168,31 @@ impl Herc {
 
     /// Sets the most clusters the gap statistic may choose, at least 1. Defaults to 10. It
     /// also never chooses more than `√n` for `n` assets.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, Herc, Returns};
+    ///
+    /// // Assets 0 and 2 move together, as do 1 and 3.
+    /// let returns = [
+    ///      [ 0.010,  0.020,  0.011,  0.019],
+    ///      [-0.010,  0.010, -0.012,  0.012],
+    ///      [ 0.020, -0.020,  0.018, -0.021],
+    ///      [-0.015, -0.010, -0.014, -0.009],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // The gap statistic finds the two pairs, and a limit of 1 keeps them together.
+    /// let chosen = data.allocate(&Herc::default())?;
+    /// assert_eq!(chosen, data.allocate(&Herc::default().clusters(2))?);
+    /// let limited = data.allocate(&Herc::default().max_clusters(1))?;
+    /// assert_eq!(limited, data.allocate(&Herc::default().clusters(1))?);
+    ///
+    /// let none = data.allocate(&Herc::default().max_clusters(0));
+    /// assert_eq!(none, Err(CutupError::InvalidConfig { field: "max_clusters", value: 0.0 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn max_clusters(mut self, max_clusters: usize) -> Self {
         self.max_clusters = max_clusters;
         self

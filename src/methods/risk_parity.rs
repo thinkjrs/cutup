@@ -76,6 +76,35 @@ impl RiskParity {
     /// Sets each asset's share of the portfolio's risk, [one per asset](PerAsset) in column
     /// order or by asset. Only the ratios matter, so they needn't sum to 1. Defaults to the same
     /// share for every asset.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Returns, RiskParity};
+    ///
+    /// let returns = [
+    ///     [ 0.010, -0.020,  0.005],
+    ///     [-0.004,  0.015,  0.002],
+    ///     [ 0.007,  0.003, -0.006],
+    ///     [ 0.002, -0.001,  0.004],
+    ///     [-0.003,  0.006,  0.001],
+    /// ];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    ///
+    /// // Each asset's share of the variance is its budget's share of the total.
+    /// let weights = data.allocate(&RiskParity::default().risk_budgets([1.0, 2.0, 3.0]))?;
+    /// let stats = data.stats(&weights)?;
+    /// let shares = stats.risk_contributions().unwrap();
+    /// for (share, budget) in shares.iter().zip([1.0, 2.0, 3.0]) {
+    ///     assert!((share - budget / 6.0).abs() < 1e-12);
+    /// }
+    ///
+    /// // The same, by asset and scaled.
+    /// let by_asset = RiskParity::default().risk_budgets([("C", 30.0), ("A", 10.0), ("B", 20.0)]);
+    /// let scaled = data.allocate(&by_asset)?;
+    /// assert!(scaled.iter().zip(weights.iter()).all(|(a, b)| (a - b).abs() < 1e-12));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn risk_budgets(mut self, risk_budgets: impl Into<PerAsset>) -> Self {
         self.risk_budgets = Some(risk_budgets.into());
         self

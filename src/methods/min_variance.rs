@@ -145,6 +145,32 @@ impl MinVariance {
     /// Adds `κ‖w − w₀‖²` to the variance minimized, pulling the weights toward the
     /// [current weights](MinVariance::current_weights) `w₀`. `κ` is in the units of variance,
     /// so a meaningful value is on the scale of the assets' variances.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns};
+    ///
+    /// // Uncorrelated assets with variances σ² and 4σ², σ² = 0.0004 / 3.
+    /// let returns = [
+    ///      [ 0.01,  0.02],
+    ///      [-0.01, -0.02],
+    ///      [ 0.01, -0.02],
+    ///      [-0.01,  0.02],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let from_half = MinVariance::default().current_weights([0.5, 0.5]);
+    ///
+    /// // Without a penalty, inverse variance: 0.8 and 0.2.
+    /// let unpenalized = data.allocate(&from_half.clone().turnover_penalty(0.0))?;
+    /// assert!((unpenalized[0] - 0.8).abs() < 1e-12);
+    ///
+    /// // From equal current weights, wᵢ ∝ 1 / (σᵢ² + κ). With κ = σ² that's 1/2 : 1/5, or
+    /// // 5 : 2, part of the way back to 0.5.
+    /// let weights = data.allocate(&from_half.turnover_penalty(0.0004 / 3.0))?;
+    /// assert!((weights[0] - 5.0 / 7.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn turnover_penalty(mut self, kappa: f64) -> Self {
         self.trading.penalty = Some(kappa);
         self
@@ -152,6 +178,31 @@ impl MinVariance {
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MinVariance::allow_short`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns, WeightBounds};
+    ///
+    /// // Uncorrelated assets with variances 1 : 4, so inverse variance, 0.8 and 0.2.
+    /// let returns = [
+    ///      [ 0.01,  0.02],
+    ///      [-0.01, -0.02],
+    ///      [ 0.01, -0.02],
+    ///      [-0.01,  0.02],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// assert!((data.allocate(&MinVariance::default())?[0] - 0.8).abs() < 1e-12);
+    ///
+    /// // A cap of 60% binds, and the rest goes to the other asset.
+    /// let capped = MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.6));
+    /// let weights = data.allocate(&capped)?;
+    /// assert!((weights[0] - 0.6).abs() < 1e-12 && (weights[1] - 0.4).abs() < 1e-12);
+    ///
+    /// let bounds = WeightBounds::uniform(0.0, 0.6);
+    /// assert_eq!(MinVariance::default().allow_short().bounds(bounds), capped);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn bounds(mut self, bounds: WeightBounds) -> Self {
         self.bounds = Some(bounds);
         self
@@ -159,6 +210,29 @@ impl MinVariance {
 
     /// Allows short positions, with no bounds on the weights. Replaces
     /// [`MinVariance::bounds`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinVariance, Returns, WeightBounds};
+    ///
+    /// // The second asset moves with the first but twice as far, so it hedges the first.
+    /// let returns = [
+    ///      [ 0.010,  0.021,  0.004],
+    ///      [-0.008, -0.015, -0.002],
+    ///      [ 0.004,  0.009,  0.006],
+    ///      [-0.002, -0.006, -0.003],
+    ///      [ 0.006,  0.011,  0.001],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let short = data.allocate(&MinVariance::default().allow_short())?;
+    /// assert!(short[1] < 0.0 && (short.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// assert_eq!(data.allocate(&MinVariance::default())?[1], 0.0);
+    ///
+    /// let capped = MinVariance::default().bounds(WeightBounds::uniform(0.0, 0.5));
+    /// assert_eq!(capped.allow_short(), MinVariance::default().allow_short());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn allow_short(mut self) -> Self {
         self.bounds = None;
         self

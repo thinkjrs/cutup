@@ -136,6 +136,32 @@ impl Default for MaxSharpe {
 impl MaxSharpe {
     /// Sets the risk-free rate per period, in the same units as the returns (a daily rate for
     /// daily returns). Defaults to 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MaxSharpe, Returns};
+    ///
+    /// // Uncorrelated assets with variances 1 : 4, so the weights are ∝ (μᵢ − r_f) / σᵢ².
+    /// let returns = [
+    ///      [ 0.01,  0.02],
+    ///      [-0.01, -0.02],
+    ///      [ 0.01, -0.02],
+    ///      [-0.01,  0.02],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let method = MaxSharpe::default().expected_returns([0.003, 0.006]);
+    ///
+    /// // Excess returns 3 : 6 at a rate of 0, for weights 2 : 1, and 1 : 4 at 0.002, for 1 : 1.
+    /// assert!((data.allocate(&method)?[0] - 2.0 / 3.0).abs() < 1e-12);
+    /// let weights = data.allocate(&method.clone().risk_free_rate(0.002))?;
+    /// assert!((weights[0] - 0.5).abs() < 1e-12);
+    ///
+    /// // Long-only, nothing beats a rate at the highest expected return.
+    /// let too_high = data.allocate(&method.risk_free_rate(0.006));
+    /// assert!(matches!(too_high, Err(CutupError::NoPositiveExcessReturn { .. })));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn risk_free_rate(mut self, risk_free_rate: f64) -> Self {
         self.risk_free_rate = risk_free_rate;
         self
@@ -143,6 +169,30 @@ impl MaxSharpe {
 
     /// Uses `expected_returns`, [one per asset](PerAsset) in column order or by asset, instead
     /// of the sample mean of the returns. They're in the same units and period as the returns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MaxSharpe, Returns};
+    ///
+    /// // Uncorrelated assets with variances 1 : 4, so the weights are ∝ μᵢ / σᵢ².
+    /// let returns = [
+    ///      [ 0.01,  0.02],
+    ///      [-0.01, -0.02],
+    ///      [ 0.01, -0.02],
+    ///      [-0.01,  0.02],
+    /// ];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B"])?;
+    ///
+    /// // Expected returns 1 : 4 offset the variances, for equal weights.
+    /// let weights = data.allocate(&MaxSharpe::default().expected_returns([0.001, 0.004]))?;
+    /// assert!((weights[0] - 0.5).abs() < 1e-12);
+    ///
+    /// // The same, by asset.
+    /// let by_asset = MaxSharpe::default().expected_returns([("B", 0.004), ("A", 0.001)]);
+    /// assert_eq!(data.allocate(&by_asset)?, weights);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn expected_returns(mut self, expected_returns: impl Into<PerAsset>) -> Self {
         self.expected_returns = Some(expected_returns.into());
         self
@@ -151,6 +201,30 @@ impl MaxSharpe {
     covariance_setters!(MaxSharpe, "MaxSharpe::default()");
 
     /// Allows short positions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MaxSharpe, Returns};
+    ///
+    /// // Uncorrelated assets with variances 1 : 4, so the tangency weights are ∝ μᵢ / σᵢ².
+    /// let returns = [
+    ///      [ 0.01,  0.02],
+    ///      [-0.01, -0.02],
+    ///      [ 0.01, -0.02],
+    ///      [-0.01,  0.02],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let method = MaxSharpe::default().expected_returns([0.002, -0.001]);
+    ///
+    /// // 0.002 : −0.001 / 4 is 8 : −1, so the second asset is shorted.
+    /// let short = data.allocate(&method.clone().allow_short())?;
+    /// assert!((short[0] - 8.0 / 7.0).abs() < 1e-12 && (short[1] + 1.0 / 7.0).abs() < 1e-12);
+    ///
+    /// // Long-only, it's left out instead.
+    /// assert_eq!(data.allocate(&method)?[1], 0.0);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn allow_short(mut self) -> Self {
         self.long_only = false;
         self

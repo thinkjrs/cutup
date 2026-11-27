@@ -78,6 +78,31 @@ pub struct Hrp {
 impl Hrp {
     /// Sets how the distance between clusters is measured when building the hierarchy.
     /// Defaults to [`Linkage::Single`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Hrp, Linkage, Returns};
+    ///
+    /// let returns = [
+    ///      [ 0.015, -0.015, -0.001,  0.000,  0.011],
+    ///      [-0.008, -0.020, -0.015,  0.020,  0.008],
+    ///      [ 0.001,  0.017,  0.018, -0.007, -0.014],
+    ///      [-0.019,  0.001, -0.010, -0.007,  0.014],
+    ///      [ 0.005, -0.017, -0.004, -0.004, -0.004],
+    ///      [ 0.018, -0.016, -0.005, -0.012,  0.011],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let single = Hrp::default();
+    /// assert_eq!(single, Hrp::default().linkage(Linkage::Single));
+    ///
+    /// // Complete linkage builds another hierarchy here, so the bisection splits other halves.
+    /// let complete = Hrp::default().linkage(Linkage::Complete);
+    /// assert_eq!(single.cluster_order(&data)?, [0, 1, 2, 3, 4]);
+    /// assert_eq!(complete.cluster_order(&data)?, [1, 2, 0, 3, 4]);
+    /// assert!(data.allocate(&complete)?[0] > 2.0 * data.allocate(&single)?[0]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
