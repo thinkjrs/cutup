@@ -6,7 +6,6 @@ authors = ["Jason R. Stevens, CFA <jason@thinkjrs.dev>"]
 license = "MIT"
 description = "Portfolio allocation in Rust: minimum variance, mean-variance, max Sharpe, max diversification, risk parity, HRP, HERC and minimum CVaR, with Black-Litterman expected returns and equal-weight, inverse-volatility and inverse-variance baselines."
 repository = "https://github.com/thinkjrs/cutup"
-homepage = "https://github.com/thinkjrs/cutup"
 documentation = "https://docs.rs/cutup"
 readme = "README.md"
 keywords = ["portfolio", "allocation", "optimization", "finance", "quant"]
