@@ -21,6 +21,11 @@ All notable changes to this project are documented here. The format follows
 - The examples, in the docs and the README, label assets `"A"`, `"B"` and `"C"`, not as
   tickers: cutup is for any time series.
 - `PortfolioStats::max_drawdown` is `#[must_use]`, as the other statistics are.
+- CI checks every PR's public API against the commit the PR is based on, so a breaking
+  change fails the PR that makes it whatever the last release was. Pushes are still checked
+  against the newest release on crates.io.
+- The crate's `homepage` is gone from its manifest: it was the repository's URL, which
+  `repository` already gives, and cargo warned about it on every build.
 
 ### Fixed
 
