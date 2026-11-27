@@ -72,6 +72,26 @@ pub struct MinMad {
 
 impl MinMad {
     /// Keeps each weight within `bounds`. Defaults to long-only with no caps.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinMad, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let free = data.allocate(&MinMad::default())?;
+    /// let weights = data.allocate(&MinMad::default().bounds(WeightBounds::uniform(0.0, 0.4)))?;
+    /// // Uncapped, one asset holds more than 40%; capped, none does.
+    /// assert!(free.iter().any(|&w| w > 0.4));
+    /// assert!(weights.iter().all(|&w| w <= 0.4 + 1e-12));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn bounds(mut self, bounds: WeightBounds) -> Self {
         self.bounds = bounds;
         self
@@ -79,6 +99,27 @@ impl MinMad {
 
     /// Requires an expected portfolio return, by the sample mean of the returns, of
     /// `target`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinMad, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let weights = data.allocate(&MinMad::default().target_return(0.002))?;
+    /// assert!((data.stats(&weights)?.expected_return() - 0.002).abs() < 1e-12);
+    ///
+    /// // No long-only portfolio earns more than its best asset.
+    /// let err = data.allocate(&MinMad::default().target_return(0.01));
+    /// assert!(matches!(err, Err(CutupError::TargetReturnOutOfRange { .. })));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn target_return(mut self, target: f64) -> Self {
         self.target_return = Some(target);
         self
@@ -90,6 +131,28 @@ impl MinMad {
     ///
     /// The threshold is fixed. Below the portfolio's own mean, the shortfalls add up to the
     /// excesses above it, so they'd be half the MAD and the weights the same as without this.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinMad, Returns, Weights};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let weights = data.allocate(&MinMad::default().downside(0.0))?;
+    /// // It minimizes the shortfall below 0: no more than equal weights'.
+    /// let equal = Weights::from(vec![1.0 / 3.0; 3]);
+    /// assert!(data.downside_mad(&weights, 0.0)? <= data.downside_mad(&equal, 0.0)?);
+    ///
+    /// let err = data.allocate(&MinMad::default().downside(f64::NAN));
+    /// assert!(matches!(err, Err(CutupError::InvalidConfig { field: "threshold", .. })));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn downside(mut self, threshold: f64) -> Self {
         self.downside = Some(threshold);
         self

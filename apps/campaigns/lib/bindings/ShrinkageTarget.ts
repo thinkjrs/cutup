@@ -3,5 +3,30 @@
 /**
  * What [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf) shrinks the sample covariance
  * toward.
+ *
+ * # Example
+ *
+ * ```
+ * use cutup::{MinVariance, Returns, ShrinkageTarget};
+ *
+ * let data = Returns::new(&[
+ *      [ 0.010, -0.020],
+ *      [-0.004,  0.015],
+ *      [ 0.007,  0.003],
+ *      [ 0.002, -0.001],
+ * ])?;
+ * let sample = data.allocate(&MinVariance::default())?;
+ *
+ * // With two assets the constant-correlation target is the sample covariance itself.
+ * let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+ * let shrunk = data.allocate(&method)?;
+ * assert!((shrunk[0] - sample[0]).abs() < 1e-12);
+ *
+ * // Toward the average variance, the weights move toward equal.
+ * let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantVariance);
+ * let shrunk = data.allocate(&method)?;
+ * assert!((shrunk[0] - 0.5).abs() < (sample[0] - 0.5).abs());
+ * # Ok::<(), cutup::CutupError>(())
+ * ```
  */
 export type ShrinkageTarget = "constant_variance" | "constant_correlation";

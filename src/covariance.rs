@@ -52,6 +52,31 @@ pub struct CovarianceConfig {
 
 /// What [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf) shrinks the sample covariance
 /// toward.
+///
+/// # Example
+///
+/// ```
+/// use cutup::{MinVariance, Returns, ShrinkageTarget};
+///
+/// let data = Returns::new(&[
+///      [ 0.010, -0.020],
+///      [-0.004,  0.015],
+///      [ 0.007,  0.003],
+///      [ 0.002, -0.001],
+/// ])?;
+/// let sample = data.allocate(&MinVariance::default())?;
+///
+/// // With two assets the constant-correlation target is the sample covariance itself.
+/// let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantCorrelation);
+/// let shrunk = data.allocate(&method)?;
+/// assert!((shrunk[0] - sample[0]).abs() < 1e-12);
+///
+/// // Toward the average variance, the weights move toward equal.
+/// let method = MinVariance::default().ledoit_wolf(ShrinkageTarget::ConstantVariance);
+/// let shrunk = data.allocate(&method)?;
+/// assert!((shrunk[0] - 0.5).abs() < (sample[0] - 0.5).abs());
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -193,6 +218,21 @@ impl CovarianceConfig {
     /// As for [`CovarianceConfig::matrix`], with [`CutupError::NoAssets`] for 0 assets,
     /// [`CutupError::RaggedRows`] if the number of values isn't a multiple of `assets`, and
     /// [`CutupError::DimensionMismatch`] if they don't make `assets` rows.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, CutupError};
+    ///
+    /// let flat = CovarianceConfig::matrix_flat(&[1e-4, 0.0, 0.0, 4e-4], 2)?;
+    /// assert_eq!(flat, CovarianceConfig::matrix(&[[1e-4, 0.0], [0.0, 4e-4]])?);
+    ///
+    /// // Four values in rows of four are one row, not four.
+    /// let err = CovarianceConfig::matrix_flat(&[1e-4, 0.0, 0.0, 4e-4], 4);
+    /// let short = CutupError::DimensionMismatch { field: "covariance", expected: 4, actual: 1 };
+    /// assert_eq!(err, Err(short));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn matrix_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
         let matrix = Returns::flat_matrix(values, assets)?;
         // The caller named the assets, so it's the rows that are short or over: as rows, the
@@ -214,6 +254,20 @@ impl CovarianceConfig {
     ///
     /// As for [`CovarianceConfig::matrix`], except [`CutupError::RaggedRows`], which a matrix
     /// can't have.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::CovarianceConfig;
+    /// use nalgebra::dmatrix;
+    ///
+    /// let given = CovarianceConfig::from_matrix(dmatrix![1e-4, 2e-5; 2e-5, 4e-4])?;
+    /// assert_eq!(given, CovarianceConfig::matrix(&[[1e-4, 2e-5], [2e-5, 4e-4]])?);
+    ///
+    /// // A correlation above 1 would give some portfolio a negative variance.
+    /// assert!(CovarianceConfig::from_matrix(dmatrix![1e-4, 2e-4; 2e-4, 1e-4]).is_err());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[cfg(feature = "nalgebra")]
     #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_matrix(matrix: DMatrix<f64>) -> Result<Self, CutupError> {
@@ -286,6 +340,31 @@ impl CovarianceConfig {
     /// As for [`CovarianceConfig::exponentially_weighted`], with
     /// [`CutupError::InvalidConfig`] if `λ` isn't in `(0, 1)`, or is below `e^−708`, about
     /// 3.3e-308.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, CutupError, MinVariance, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// // A decay of 0.5 is a half-life of 1.
+    /// let decay = CovarianceConfig::exponentially_weighted_decay(0.5);
+    /// let half_life = CovarianceConfig::exponentially_weighted(1.0);
+    /// let a = data.allocate(&MinVariance::default().covariance(decay))?;
+    /// let b = data.allocate(&MinVariance::default().covariance(half_life))?;
+    /// assert!(a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 1e-12));
+    ///
+    /// let flat = CovarianceConfig::exponentially_weighted_decay(1.0);
+    /// let err = data.allocate(&MinVariance::default().covariance(flat));
+    /// assert_eq!(err, Err(CutupError::InvalidConfig { field: "decay", value: 1.0 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn exponentially_weighted_decay(lambda: f64) -> Self {
         CovarianceConfig {
             estimate: Estimate::ExponentiallyWeighted(Decay::Lambda(lambda)),
@@ -349,6 +428,24 @@ impl CovarianceConfig {
     /// As for [`CovarianceConfig::semicovariance`], with [`CutupError::InvalidConfig`] if
     /// `threshold` isn't finite, and [`CutupError::ZeroVariance`] for an asset that's never
     /// below it, to rounding, which has no downside to measure.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, CutupError, MinVariance, Returns, Weights};
+    ///
+    /// // Shortfalls below 0 of 2% and 4% over four periods: (0.02² + 0.04²) / 4 = 0.0005.
+    /// let data = Returns::new(&[[0.02], [-0.02], [-0.04], [0.01]])?;
+    /// let below_zero = CovarianceConfig::semicovariance_below(0.0);
+    /// let stats = data.stats_with(&Weights::from(vec![1.0]), &below_zero)?;
+    /// assert!((stats.volatility() - 0.0005f64.sqrt()).abs() < 1e-15);
+    ///
+    /// // An asset that never falls below the threshold has no downside to measure.
+    /// let gains = Returns::new(&[[0.01, 0.02], [-0.02, 0.01], [0.03, 0.03]])?;
+    /// let err = gains.allocate(&MinVariance::default().covariance(below_zero));
+    /// assert_eq!(err, Err(CutupError::ZeroVariance { column: 1, asset: "1".into() }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn semicovariance_below(threshold: f64) -> Self {
         CovarianceConfig {
             estimate: Estimate::Semi(Some(threshold)),
@@ -420,6 +517,20 @@ impl CovarianceConfig {
     /// and nonnegative. Unlike shrinkage it's absolute, so choose it relative to the scale of
     /// your returns' variances.
     ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MinVariance, Returns};
+    ///
+    /// let data = Returns::new(&[[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003]])?;
+    /// // Variances of 1e-4 and 4e-4, each raised by 1e-4: weights in the ratio 5 to 2.
+    /// let config = CovarianceConfig::matrix(&[[1e-4, 0.0], [0.0, 4e-4]])?.regularization(1e-4);
+    /// assert_eq!(config.epsilon(), Some(1e-4));
+    /// let weights = data.allocate(&MinVariance::default().covariance(config))?;
+    /// assert!((weights[0] - 5.0 / 7.0).abs() < 1e-12);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
+    ///
     /// <https://en.wikipedia.org/wiki/Tikhonov_regularization>
     pub fn regularization(mut self, epsilon: f64) -> Self {
         self.regularization = Some(epsilon);
@@ -431,6 +542,23 @@ impl CovarianceConfig {
     /// the target is on the same scale as `Σ`. Shrinkage reduces the estimation error in a
     /// sample covariance. It replaces [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf),
     /// if that was set.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, Returns, ShrinkageTarget, Weights};
+    ///
+    /// let data = Returns::new(&[[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003]])?;
+    /// // Halfway from variances of 1e-4 and 9e-4 to their average, 5e-4: 3e-4 and 7e-4.
+    /// let config = CovarianceConfig::matrix(&[[1e-4, 0.0], [0.0, 9e-4]])?.shrinkage(0.5);
+    /// let first = data.stats_with(&Weights::from(vec![1.0, 0.0]), &config)?;
+    /// assert!((first.volatility() - 3e-4f64.sqrt()).abs() < 1e-15);
+    ///
+    /// // It replaces Ledoit-Wolf shrinkage.
+    /// let estimated = CovarianceConfig::default().ledoit_wolf(ShrinkageTarget::ConstantVariance);
+    /// assert_eq!(estimated.shrinkage(0.1), CovarianceConfig::default().shrinkage(0.1));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     ///
     /// <https://en.wikipedia.org/wiki/Shrinkage_estimator>
     pub fn shrinkage(mut self, lambda: f64) -> Self {
@@ -495,6 +623,19 @@ impl CovarianceConfig {
     /// The fixed shrinkage intensity `λ` set with [`CovarianceConfig::shrinkage`], or `None`,
     /// including under [Ledoit-Wolf shrinkage](CovarianceConfig::ledoit_wolf), whose intensity
     /// depends on the returns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, ShrinkageTarget};
+    ///
+    /// assert_eq!(CovarianceConfig::default().shrinkage(0.2).lambda(), Some(0.2));
+    /// assert_eq!(CovarianceConfig::default().lambda(), None);
+    ///
+    /// // Ledoit-Wolf set last replaces the fixed intensity.
+    /// let fixed = CovarianceConfig::default().shrinkage(0.2);
+    /// assert_eq!(fixed.ledoit_wolf(ShrinkageTarget::ConstantVariance).lambda(), None);
+    /// ```
     #[must_use]
     pub fn lambda(&self) -> Option<f64> {
         match self.shrinkage {
@@ -504,6 +645,15 @@ impl CovarianceConfig {
     }
 
     /// The regularization `ε` set with [`CovarianceConfig::regularization`], or `None`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::CovarianceConfig;
+    ///
+    /// assert_eq!(CovarianceConfig::default().regularization(1e-6).epsilon(), Some(1e-6));
+    /// assert_eq!(CovarianceConfig::default().shrinkage(0.1).epsilon(), None);
+    /// ```
     #[must_use]
     pub fn epsilon(&self) -> Option<f64> {
         self.regularization

@@ -85,12 +85,55 @@ impl Default for MinCvar {
 impl MinCvar {
     /// Sets the confidence `β`, in `(0, 1)`: CVaR averages the worst `1 − β` of the
     /// scenarios. Defaults to 0.95.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinCvar, Returns, Weights};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let weights = data.allocate(&MinCvar::default().confidence(0.6))?;
+    /// // It minimizes CVaR at this confidence: no more than equal weights'.
+    /// let equal = Weights::from(vec![1.0 / 3.0; 3]);
+    /// assert!(data.cvar(&weights, 0.6)? <= data.cvar(&equal, 0.6)?);
+    ///
+    /// let err = data.allocate(&MinCvar::default().confidence(1.0));
+    /// assert_eq!(err, Err(CutupError::InvalidConfig { field: "confidence", value: 1.0 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn confidence(mut self, beta: f64) -> Self {
         self.confidence = beta;
         self
     }
 
     /// Keeps each weight within `bounds`. Defaults to long-only with no caps.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MinCvar, Returns, WeightBounds};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let free = data.allocate(&MinCvar::default().confidence(0.6))?;
+    /// let capped = MinCvar::default().confidence(0.6).bounds(WeightBounds::uniform(0.0, 0.4));
+    /// let weights = data.allocate(&capped)?;
+    /// // Uncapped, one asset holds more than 40%; capped, none does.
+    /// assert!(free.iter().any(|&w| w > 0.4));
+    /// assert!(weights.iter().all(|&w| w <= 0.4 + 1e-12));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn bounds(mut self, bounds: WeightBounds) -> Self {
         self.bounds = bounds;
         self
@@ -98,6 +141,27 @@ impl MinCvar {
 
     /// Requires an expected portfolio return, by the sample mean of the returns, of
     /// `target`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinCvar, Returns};
+    ///
+    /// let data = Returns::new(&[
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ])?;
+    /// let weights = data.allocate(&MinCvar::default().target_return(0.002))?;
+    /// assert!((data.stats(&weights)?.expected_return() - 0.002).abs() < 1e-12);
+    ///
+    /// // No long-only portfolio earns more than its best asset.
+    /// let err = data.allocate(&MinCvar::default().target_return(0.01));
+    /// assert!(matches!(err, Err(CutupError::TargetReturnOutOfRange { .. })));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn target_return(mut self, target: f64) -> Self {
         self.target_return = Some(target);
         self

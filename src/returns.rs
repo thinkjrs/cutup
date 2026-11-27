@@ -13,6 +13,23 @@ use std::sync::Arc;
 /// returns you have already computed with [`Returns::new`].
 ///
 /// Before 0.3.0 this was `PortfolioAllocator`, which stays as a deprecated alias until 1.0.0.
+///
+/// # Example
+///
+/// ```
+/// use cutup::{InverseVariance, Returns};
+///
+/// // Prices whose simple returns are exact: 0.5 and -0.25, then -0.5 and 0.25.
+/// let prices = [[100.0, 200.0], [150.0, 150.0], [75.0, 187.5]];
+/// let returns = [[0.5, -0.25], [-0.5, 0.25]];
+/// let data = Returns::from_prices(&prices)?;
+/// assert_eq!(data, Returns::new(&returns)?);
+///
+/// // The second asset's returns vary half as much, so it gets four times the weight.
+/// let weights = data.allocate(&InverseVariance)?;
+/// assert!((weights[0] - 0.2).abs() < 1e-12 && (weights[1] - 0.8).abs() < 1e-12);
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct Returns {
     pub(crate) returns: DMatrix<f64>,
@@ -52,7 +69,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::Returns;
+    /// use cutup::{CutupError, Returns, Weights};
     ///
     /// let prices = [
     ///    [100.0, 200.0, 300.0],
@@ -61,6 +78,14 @@ impl Returns {
     /// ];
     ///
     /// let data = Returns::from_prices(&prices)?;
+    /// // Three rows of prices are two of returns: the first asset's are 10% and 10/110.
+    /// assert_eq!(data.period_count(), 2);
+    /// let first = data.stats(&Weights::from(vec![1.0, 0.0, 0.0]))?.expected_return();
+    /// assert!((first - (0.1 + 10.0 / 110.0) / 2.0).abs() < 1e-15);
+    ///
+    /// let zero = [[100.0, 200.0], [0.0, 210.0], [120.0, 220.0]];
+    /// let err = Returns::from_prices(&zero);
+    /// assert_eq!(err, Err(CutupError::NonPositivePrice { row: 1, col: 0 }));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn from_prices<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, CutupError> {
@@ -81,7 +106,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::Returns;
+    /// use cutup::{CutupError, Returns};
     ///
     /// let prices = [
     ///     100.0, 200.0, 300.0,
@@ -90,6 +115,12 @@ impl Returns {
     /// ];
     ///
     /// let data = Returns::from_prices_flat(&prices, 3)?;
+    /// let rows = [[100.0, 200.0, 300.0], [110.0, 210.0, 310.0], [120.0, 220.0, 320.0]];
+    /// assert_eq!(data, Returns::from_prices(&rows)?);
+    ///
+    /// // Eight values leave the third row two short.
+    /// let short = Returns::from_prices_flat(&prices[..8], 3);
+    /// assert_eq!(short, Err(CutupError::RaggedRows { row: 2, expected: 3, actual: 2 }));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn from_prices_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
@@ -107,6 +138,22 @@ impl Returns {
     ///
     /// As for [`Returns::from_prices`], except [`CutupError::RaggedRows`], which a
     /// matrix can't have.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, Returns};
+    /// use nalgebra::dmatrix;
+    ///
+    /// let prices = dmatrix![100.0, 200.0; 110.0, 210.0; 120.0, 220.0];
+    /// let rows = [[100.0, 200.0], [110.0, 210.0], [120.0, 220.0]];
+    /// assert_eq!(Returns::from_prices_matrix(prices)?, Returns::from_prices(&rows)?);
+    ///
+    /// let negative = dmatrix![100.0, 200.0; 110.0, -1.0; 120.0, 220.0];
+    /// let err = Returns::from_prices_matrix(negative);
+    /// assert_eq!(err, Err(CutupError::NonPositivePrice { row: 1, col: 1 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[cfg(feature = "nalgebra")]
     #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_prices_matrix(prices: DMatrix<f64>) -> Result<Self, CutupError> {
@@ -136,7 +183,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::Returns;
+    /// use cutup::{CutupError, Returns};
     ///
     /// let returns = [
     ///    [0.010, -0.020, 0.005],
@@ -145,10 +192,16 @@ impl Returns {
     /// ];
     ///
     /// let data = Returns::new(&returns)?;
+    /// assert_eq!(data.period_count(), 3);
     ///
     /// // Rows built at runtime work the same way.
     /// let rows: Vec<Vec<f64>> = returns.iter().map(|row| row.to_vec()).collect();
     /// let from_vecs = Returns::new(&rows)?;
+    /// assert_eq!(from_vecs, data);
+    ///
+    /// let ragged = [vec![0.010, -0.020], vec![-0.004]];
+    /// let err = Returns::new(&ragged);
+    /// assert_eq!(err, Err(CutupError::RaggedRows { row: 1, expected: 2, actual: 1 }));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn new<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, CutupError> {
@@ -169,7 +222,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::Returns;
+    /// use cutup::{CutupError, Returns};
     ///
     /// let returns = [
     ///     0.010, -0.020, 0.005,
@@ -178,6 +231,13 @@ impl Returns {
     /// ];
     ///
     /// let data = Returns::new_flat(&returns, 3)?;
+    /// let rows = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006]];
+    /// assert_eq!(data, Returns::new(&rows)?);
+    ///
+    /// assert_eq!(Returns::new_flat(&returns, 0), Err(CutupError::NoAssets));
+    /// // Nine values don't make rows of four.
+    /// let err = Returns::new_flat(&returns, 4);
+    /// assert_eq!(err, Err(CutupError::RaggedRows { row: 2, expected: 4, actual: 1 }));
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
     pub fn new_flat(values: &[f64], assets: usize) -> Result<Self, CutupError> {
@@ -195,6 +255,22 @@ impl Returns {
     ///
     /// As for [`Returns::new`], except [`CutupError::RaggedRows`], which a
     /// matrix can't have.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, Returns};
+    /// use nalgebra::dmatrix;
+    ///
+    /// let returns = dmatrix![0.010, -0.020; -0.004, 0.015; 0.007, 0.003];
+    /// let rows = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003]];
+    /// assert_eq!(Returns::from_matrix(returns)?, Returns::new(&rows)?);
+    ///
+    /// // One period has no sample covariance.
+    /// let err = Returns::from_matrix(dmatrix![0.010, -0.020]);
+    /// assert_eq!(err, Err(CutupError::InsufficientData { required: 2, actual: 1 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[cfg(feature = "nalgebra")]
     #[cfg_attr(docsrs, doc(cfg(feature = "nalgebra")))]
     pub fn from_matrix(returns: DMatrix<f64>) -> Result<Self, CutupError> {
@@ -315,6 +391,17 @@ impl Returns {
 
     /// Returns the assets' labels, in column order: those set with [`Returns::labeled`], or
     /// each asset's column.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Returns;
+    ///
+    /// let data = Returns::new(&[[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002]])?;
+    /// assert_eq!(data.labels(), ["0", "1", "2"]);
+    /// assert_eq!(data.labeled(["x", "y", "z"])?.labels(), ["x", "y", "z"]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn labels(&self) -> &[String] {
         &self.labels

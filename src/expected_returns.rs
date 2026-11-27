@@ -64,6 +64,25 @@ impl Returns {
     ///
     /// [`CutupError::InvalidConfig`] with field `"decay"` if `λ` isn't in `(0, 1)`, or is
     /// below `e^−708`, about 3.3e-308.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, Returns};
+    ///
+    /// // The first period weighs half the second: (0.5 · 0.01 + 0.04) / 1.5 = 0.03.
+    /// let data = Returns::new(&[[0.01, 0.02], [0.04, 0.02]])?;
+    /// let mean = data.exponentially_weighted_mean_decay(0.5)?;
+    /// assert!((mean[0] - 0.03).abs() < 1e-15);
+    /// assert!((mean[1] - 0.02).abs() < 1e-15);
+    ///
+    /// // A decay of 0.5 is a half-life of 1.
+    /// assert_eq!(mean, data.exponentially_weighted_mean(1.0)?);
+    ///
+    /// let err = data.exponentially_weighted_mean_decay(1.0);
+    /// assert_eq!(err, Err(CutupError::InvalidConfig { field: "decay", value: 1.0 }));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn exponentially_weighted_mean_decay(&self, lambda: f64) -> Result<Vec<f64>, CutupError> {
         self.weighted_mean(Decay::Lambda(lambda))
     }
@@ -203,7 +222,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::{MaxSharpe, Returns};
+    /// use cutup::{MaxSharpe, Returns, Weights};
     ///
     /// let data = Returns::new(&[
     ///     [ 0.010, -0.020,  0.005,  0.003],
@@ -213,6 +232,11 @@ impl Returns {
     ///     [-0.006,  0.008, -0.003,  0.002],
     /// ])?;
     /// let shrunk = data.james_stein_mean()?;
+    ///
+    /// // The average of the means stays where it was.
+    /// let average = data.stats(&Weights::from(vec![0.25; 4]))?.expected_return();
+    /// assert!((shrunk.iter().sum::<f64>() / 4.0 - average).abs() < 1e-15);
+    ///
     /// let weights = data.allocate(&MaxSharpe::default().expected_returns(shrunk))?;
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
@@ -261,7 +285,7 @@ impl Returns {
     /// # Example
     ///
     /// ```
-    /// use cutup::{MeanVariance, Returns};
+    /// use cutup::{MeanVariance, MinVariance, Returns};
     ///
     /// let data = Returns::new(&[
     ///     [ 0.010, -0.020,  0.005],
@@ -271,6 +295,13 @@ impl Returns {
     ///     [-0.006,  0.008, -0.003],
     /// ])?;
     /// let shrunk = data.bayes_stein_mean()?;
+    ///
+    /// // The minimum variance portfolio's expected return stays where it was.
+    /// let min_variance = data.allocate(&MinVariance::default().allow_short())?;
+    /// let before = data.stats(&min_variance)?.expected_return();
+    /// let after: f64 = min_variance.iter().zip(&shrunk).map(|(w, m)| w * m).sum();
+    /// assert!((after - before).abs() < 1e-15);
+    ///
     /// let weights = data.allocate(&MeanVariance::risk_aversion(3.0).expected_returns(shrunk))?;
     /// # Ok::<(), cutup::CutupError>(())
     /// ```
