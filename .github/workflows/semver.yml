@@ -44,8 +44,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # The PR's base commit has to be in the clone to be built as the baseline.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # A PR's base commit has to be in the clone to be built as the baseline. The whole
+          # history is small, so every run fetches it.
+          fetch-depth: 0
 
       - name: Check semver against the PR's base commit
         if: github.event_name == 'pull_request'
