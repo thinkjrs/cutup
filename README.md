@@ -868,6 +868,15 @@ The forms:
 - **Checks:** a given covariance matrix is checked as `CovarianceConfig::matrix` checks it. Everything else is checked when a method uses it, as for the builders.
 - **Formats:** values per asset take several forms and limits can be `null`, so this needs a self-describing format such as JSON, not one like bincode. It also needs one that writes an object's keys: MessagePack through `rmp_serde::to_vec` writes an object as an array of its values, which is an error to read, and `rmp_serde::to_vec_named` writes the keys. serde_json's `arbitrary_precision` feature, turned on anywhere in a build, hands numbers over in a form these don't read: a bound or a value per asset written as a decimal then fails to parse.
 
+### Upgrading from 0.3
+
+1.0.0 removes the two names that 0.3.0 deprecated. Everything else in 0.3.x is unchanged, and no weights change.
+
+| Removed | Replacement |
+| --- | --- |
+| `PortfolioAllocator` | `Returns` |
+| `Returns::from_returns(&rows)` | `Returns::new(&rows)` |
+
 ### Upgrading from 0.2
 
 0.3.0 removed the `PortfolioAllocator` methods, `run_portfolio_allocation` and the config structs that were deprecated in 0.2.8. Their [0.2.8 docs](https://docs.rs/cutup/0.2.8/cutup/) still have the deprecation notes. In 0.2.8, each one returned exactly what `allocate` returns for its replacement, so switching changes no weights. The old min variance, mean-variance and max Sharpe methods are long-short unless their name starts with `long_only_`, while `MinVariance`, `MeanVariance` and `MaxSharpe` are long-only unless you call `.allow_short()`. The other methods were always long-only.
