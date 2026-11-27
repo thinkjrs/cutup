@@ -162,11 +162,12 @@ impl BlackLitterman {
     }
 
     /// Sets `τ`, the uncertainty in the prior relative to the covariance. Defaults to 0.05.
-    /// Larger values move the posterior returns further toward views with an explicit
-    /// [variance](View::variance). A view's default variance, and one from a
-    /// [confidence](View::confidence), are `τ` times its portfolio's, so `τ` cancels and the
-    /// posterior returns are the same for any `τ`; the [posterior
-    /// covariance](BlackLitterman::posterior_covariance) still changes with it.
+    /// Larger values move the posterior returns further toward views with an explicit nonzero
+    /// [variance](View::variance); a certain view is met whatever `τ` is. A view's default
+    /// variance, and one from a [confidence](View::confidence), are `τ` times its portfolio's,
+    /// so when every view's variance is one of those, `τ` cancels and the posterior returns are
+    /// the same for any `τ`. The [posterior covariance](BlackLitterman::posterior_covariance)
+    /// still changes with it.
     ///
     /// # Example
     ///
