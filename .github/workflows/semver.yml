@@ -10,15 +10,17 @@ name: Semver
 # that's the point: it's agreed in the roadmap first.
 #
 # A push is checked against the newest release on crates.io, since releases
-# merge into main without a PR. tgrf pushes only after tagging, so a release
-# branch is checked before its tag only if it's pushed first. The release type
-# is set rather than derived, since the version in Cargo.toml usually still
-# names the last release:
-# - on a release/0.x branch, minor, so a 0.3.x cut from develop fails on the
-#   removal instead of shipping it;
-# - elsewhere, major until 1.0.0 is out, since develop and main carry the
-#   removal; after 1.0.0, minor, for 1.x. The roadmap has that as a step of
-#   the release.
+# merge into main without a PR. The release type depends on the branch:
+# - main: from the version in Cargo.toml, which on main is always a release's.
+#   tgrf pushes develop, main and the tag, never the release branch, so main is
+#   where a release is checked: merged as 0.3.14 it's checked at minor, and
+#   fails on anything breaking, such as the removal develop carries; merged as
+#   1.0.0, at major. It's checked once pushed, after its tag, so a failure
+#   there comes before cargo publish, not before tgrf.
+# - a release/0.x branch: minor, for the times one is pushed before tgrf.
+# - develop and anything else: major until 1.0.0 is out, since develop
+#   carries the removal while its version still names 0.3.13; after 1.0.0,
+#   minor, for 1.x. The roadmap has that as a step of the release.
 
 on:
   pull_request:
@@ -60,5 +62,8 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          release-type: ${{ startsWith(github.ref_name, 'release/0.') && 'minor' || 'major' }}
+          # An empty release type leaves it unset, so the tool reads it from the version.
+          # The empty string is written last: in these expressions it's false, so
+          # `cond && '' || x` would always give x.
+          release-type: ${{ startsWith(github.ref_name, 'release/0.') && 'minor' || (github.ref_name != 'main' && 'major' || '') }}
           feature-group: ${{ matrix.feature-group }}
