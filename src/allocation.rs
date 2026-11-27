@@ -54,9 +54,39 @@ use crate::{CutupError, Returns, Weights};
 pub trait Allocation {
     /// Computes the weights for the returns in `data`.
     ///
+    /// [`Returns::allocate`] calls it, then checks the weights and labels them, so call that
+    /// rather than this.
+    ///
     /// # Errors
     ///
     /// Whatever the method can't compute weights for. See each method's type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{Allocation, CutupError, Returns, Weights};
+    ///
+    /// /// Everything in one asset, by column.
+    /// struct AllIn(usize);
+    ///
+    /// impl Allocation for AllIn {
+    ///     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError> {
+    ///         let n = data.labels().len();
+    ///         if self.0 >= n {
+    ///             return Err(CutupError::InvalidConfig { field: "column", value: self.0 as f64 });
+    ///         }
+    ///         Ok(Weights::from((0..n).map(|i| f64::from(u8::from(i == self.0))).collect::<Vec<_>>()))
+    ///     }
+    /// }
+    ///
+    /// let data = Returns::new(&[[0.01, 0.03], [0.02, 0.01]])?.labeled(["A", "B"])?;
+    /// // Called through `Returns::allocate`, the weights carry the data's labels.
+    /// let weights = data.allocate(&AllIn(1))?;
+    /// assert_eq!(weights.as_slice(), &[0.0, 1.0]);
+    /// assert_eq!(weights.labels(), ["A", "B"]);
+    /// assert!(data.allocate(&AllIn(2)).is_err());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     fn allocate(&self, data: &Returns) -> Result<Weights, CutupError>;
 }
 
