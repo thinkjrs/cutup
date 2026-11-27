@@ -1,6 +1,6 @@
 # cutup release plan: 0.3.x to 1.0.0
 
-Status: draft · Last updated: 2026-11-23 · Current release: 0.3.12
+Status: draft · Last updated: 2026-11-27 · Current release: 0.3.13
 
 This plans the releases from 0.3.0 to 1.0.0.
 
@@ -924,11 +924,44 @@ the internals. Its scope is settled when it starts.
     labels, as documented, without comparing any they carry.
 - **From the methods' audit,** for the analysis PR: with transaction costs
   within about `1e-3` of half the spread of the expected returns, a
-  long-short net-return target fails in 865 of 400,000 forced cases of its
+  long-short net-return target failed in 865 of 400,000 forced cases of its
   property test, as it did on 0.3.12. A trade from the lowest return to the
   highest then nets almost nothing, and the weights that reach the target
-  are leveraged by thousands. Find which error it is, and whether that's
-  the right one to report.
+  are leveraged by thousands. Checked at the release, after the solvers'
+  audits: 20,000 forced cases returned either the weights, netting the
+  target to rounding, or `TargetReturnOutOfRange`, which is the right error
+  from half the spread up, where no trade nets a gain. No other error came
+  back. The rest of the property, that a lower target never has more
+  variance, wasn't forced.
+
+### As built
+
+- **The solvers (#93) and the methods (#94):** the audits of `lp.rs`,
+  `qp.rs` and `dual.rs` and of every method, with the three items from
+  0.3.12's reviews and the same errors, in the same order, across the
+  methods.
+- **Data and estimation (#95):** the audit of the constructors, the
+  covariance estimators and the statistics. What it left is listed above.
+- **The solver's tolerances (#96):** a group capped at 0 failed with
+  `SingularCovariance` on 395 of 1,200 ordinary problems, and assets of very
+  different scales could get wrong weights: of 6,400 such problems, 514 wrong
+  answers became none.
+- **The API and its JSON (#97):** a setting or a bound that isn't finite no
+  longer vanishes in a JSON round trip, bounds and values per asset read
+  back from formats that spell out `Some`, and reading weights can't be made
+  to reserve gigabytes.
+- **Security (#98):** limits on what one request to the campaign app can ask
+  for, read-only tokens in CI, nalgebra's macros out of a build without
+  features, and `SECURITY.md`.
+- **Analysis (#99):** three more bugs fixed, a long-short target refused as
+  `SingularCovariance`, a frontier point with a return that isn't finite,
+  and configs that also read from an array. Tests for 95 mutants that
+  nothing caught, a fourth fuzz target and three of clippy's pedantic lints.
+- **The release's checks:**
+  - mutation: 49 missed of 3,259 viable, against 142 at 0.3.12, and 48 of
+    them can't change a result;
+  - fuzzing: four targets for 30 minutes each, 50 million inputs between
+    them, and no crash. It was the `json` target's first run.
 
 ## Later 0.3.x or 1.x
 
