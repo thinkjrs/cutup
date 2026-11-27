@@ -15,9 +15,9 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Every public item has an example in its docs that asserts what the item does: 180 items,
-  where 39 had one. The doctests run
-  on every PR, so an example that stops being true fails CI. The settings that every
-  covariance-based method shares, such as `shrinkage`, have an example for each method.
+  where 39 had one. The doctests run on every PR, so an example that stops being true fails
+  CI. The settings that every covariance-based method shares, such as `shrinkage`, have an
+  example for each method.
 - The examples, in the docs and the README, label assets `"A"`, `"B"` and `"C"`, not as
   tickers: cutup is for any time series.
 - `PortfolioStats::max_drawdown` is `#[must_use]`, as the other statistics are.
