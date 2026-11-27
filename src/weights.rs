@@ -63,35 +63,113 @@ impl Weights {
     }
 
     /// Returns the weight of the asset in column `asset`, or `None` if out of range.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Weights;
+    ///
+    /// let weights = Weights::from(vec![0.6, 0.3, 0.1]);
+    /// assert_eq!(weights.get(1), Some(0.3));
+    /// // Out of range, where indexing would panic.
+    /// assert_eq!(weights.get(3), None);
+    /// ```
     #[must_use]
     pub fn get(&self, asset: usize) -> Option<f64> {
         self.values.get(asset).copied()
     }
 
     /// Returns the weight of the asset labeled `label`, or `None` if no asset has that label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{InverseVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    /// let weights = data.allocate(&InverseVariance)?;
+    ///
+    /// assert_eq!(weights.weight("B"), Some(weights[1]));
+    /// assert_eq!(weights.weight("D"), None);
+    /// // Without labels, each asset's label is its column.
+    /// let unlabeled = Returns::new(&returns)?.allocate(&InverseVariance)?;
+    /// assert_eq!(unlabeled.weight("1"), Some(weights[1]));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn weight(&self, label: &str) -> Option<f64> {
         self.position(label).map(|i| self.values[i])
     }
 
     /// Returns the number of assets.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let weights = data.allocate(&EqualWeight)?;
+    ///
+    /// // One weight per asset, a column of the returns.
+    /// assert_eq!(weights.len(), data.labels().len());
+    /// assert_eq!(weights.len(), 3);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns `true` if there are no weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Weights;
+    ///
+    /// assert!(Weights::from(Vec::new()).is_empty());
+    /// assert!(!Weights::from(vec![1.0]).is_empty());
+    /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
     /// Iterates over the weights in column order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Weights;
+    ///
+    /// let weights = Weights::from(vec![0.6, 0.3, 0.1]);
+    /// let doubled: Vec<f64> = weights.iter().map(|w| 2.0 * w).collect();
+    /// assert_eq!(doubled, [1.2, 0.6, 0.2]);
+    /// assert_eq!(weights.iter().copied().fold(f64::MIN, f64::max), 0.6);
+    /// ```
     pub fn iter(&self) -> std::slice::Iter<'_, f64> {
         self.values.iter()
     }
 
     /// Iterates over each asset's label and weight, in column order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{InverseVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?.labeled(["x", "y", "z"])?;
+    /// let weights = data.allocate(&InverseVariance)?;
+    ///
+    /// let pairs: Vec<(&str, f64)> = weights.labeled().collect();
+    /// assert_eq!(pairs, [("x", weights[0]), ("y", weights[1]), ("z", weights[2])]);
+    /// assert_eq!(weights.labeled().next_back(), Some(("z", weights["z"])));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn labeled(&self) -> impl DoubleEndedIterator<Item = (&str, f64)> + ExactSizeIterator {
         self.labels
             .iter()
@@ -100,18 +178,55 @@ impl Weights {
     }
 
     /// Returns the assets' labels, in column order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// // Each asset's column, until the data is labeled.
+    /// assert_eq!(data.allocate(&EqualWeight)?.labels(), ["0", "1", "2"]);
+    ///
+    /// let labeled = data.labeled(["A", "B", "C"])?;
+    /// assert_eq!(labeled.allocate(&EqualWeight)?.labels(), labeled.labels());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
 
     /// Returns the weights as a slice, in column order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::Weights;
+    ///
+    /// let weights = Weights::from(vec![0.6, 0.3, 0.1]);
+    /// assert_eq!(weights.as_slice(), [0.6, 0.3, 0.1]);
+    /// assert_eq!(weights.as_slice()[1..], [0.3, 0.1]);
+    /// ```
     #[must_use]
     pub fn as_slice(&self) -> &[f64] {
         &self.values
     }
 
     /// Consumes the weights and returns them as a `Vec`, in column order.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003]];
+    /// let weights = Returns::new(&returns)?.labeled(["x", "y"])?.allocate(&EqualWeight)?;
+    /// // The values alone, without the labels.
+    /// assert_eq!(weights.into_vec(), vec![0.5, 0.5]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn into_vec(self) -> Vec<f64> {
         self.values

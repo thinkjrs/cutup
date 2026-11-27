@@ -17,6 +17,33 @@ mod serde_impl;
 /// This is pure computation, not a backtest: each window is allocated on its own, from its own
 /// covariance and expected returns, and none feeds its weights into the next. A method's settings,
 /// such as its current weights, are the same for every window.
+///
+/// # Example
+///
+/// ```
+/// use cutup::{InverseVolatility, Returns};
+///
+/// let returns = [
+///     [ 0.010, -0.020],
+///     [-0.004,  0.015],
+///     [ 0.007,  0.003],
+///     [ 0.002, -0.001],
+///     [-0.003,  0.006],
+/// ];
+/// let data = Returns::new(&returns)?;
+///
+/// // Windows of 2, 2 apart, end at the last period, so it's period 0 that's left out.
+/// let windows: Vec<_> = data.rolling(2).step(2).allocate(&InverseVolatility)?.collect();
+/// assert_eq!(windows[0].periods(), 1..3);
+/// assert_eq!(windows[1].periods(), 3..5);
+///
+/// // Each is the method on its own periods alone.
+/// for window in windows {
+///     let alone = Returns::new(&returns[window.periods()])?;
+///     assert_eq!(window.into_weights(), alone.allocate(&InverseVolatility));
+/// }
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct Rolling<'a> {
@@ -70,6 +97,24 @@ impl Returns {
 
 impl<'a> Rolling<'a> {
     /// Moves each window forward `step` periods from the one before. Defaults to 1.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, -0.001], [-0.003, 0.006]];
+    /// let data = Returns::new(&returns)?;
+    /// let periods = |step| -> Result<Vec<_>, cutup::CutupError> {
+    ///     Ok(data.rolling(3).step(step).allocate(EqualWeight)?.map(|w| w.periods()).collect())
+    /// };
+    ///
+    /// assert_eq!(periods(1)?, [0..3, 1..4, 2..5]);
+    /// assert_eq!(periods(2)?, [0..3, 2..5]);
+    /// // With no room for a second window, the one there is ends at the last period.
+    /// assert_eq!(periods(3)?, [2..5]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn step(mut self, step: usize) -> Self {
         self.step = step;
         self
@@ -86,6 +131,39 @@ impl<'a> Rolling<'a> {
     ///
     /// [`CutupError::InvalidConfig`] if the window is under 2 periods or longer than the data, or
     /// the step is 0.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinVariance, Returns};
+    ///
+    /// // The first asset's returns don't vary over the first 3 periods.
+    /// let returns = [
+    ///     [ 0.001, -0.020],
+    ///     [ 0.001,  0.015],
+    ///     [ 0.001,  0.003],
+    ///     [ 0.002, -0.001],
+    ///     [-0.003,  0.006],
+    /// ];
+    /// let data = Returns::new(&returns)?;
+    /// let method = MinVariance::default();
+    ///
+    /// // Only the first window fails; the others still allocate.
+    /// let windows: Vec<_> = data.rolling(3).allocate(&method)?.collect();
+    /// assert!(matches!(windows[0].weights(), Err(CutupError::ZeroVariance { column: 0, .. })));
+    /// assert!(windows[1].weights().is_ok() && windows[2].weights().is_ok());
+    ///
+    /// // Collected into a `Result`, the first failure is the result.
+    /// let windows = data.rolling(3).allocate(&method)?;
+    /// let all: Result<Vec<_>, _> = windows.map(|w| w.into_weights()).collect();
+    /// assert!(matches!(all, Err(CutupError::ZeroVariance { .. })));
+    ///
+    /// // A window must have 2 periods and fit in the data, and the step must move.
+    /// assert!(data.rolling(1).allocate(&method).is_err());
+    /// assert!(data.rolling(6).allocate(&method).is_err());
+    /// assert!(data.rolling(3).step(0).allocate(&method).is_err());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn allocate<A: Allocation>(
         self,
         method: A,
@@ -119,6 +197,25 @@ impl<'a> Rolling<'a> {
 }
 
 /// The weights over each rolling window, oldest first, from [`Rolling::allocate`].
+///
+/// # Example
+///
+/// ```
+/// use cutup::{EqualWeight, Returns};
+///
+/// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, -0.001], [-0.003, 0.006]];
+/// let data = Returns::new(&returns)?;
+///
+/// // The number of windows is known before any is allocated.
+/// let mut windows = data.rolling(2).allocate(EqualWeight)?;
+/// assert_eq!(windows.len(), 4);
+///
+/// // Newest first, from the back.
+/// assert_eq!(windows.next_back().map(|w| w.periods()), Some(3..5));
+/// assert_eq!(windows.next().map(|w| w.periods()), Some(0..2));
+/// assert_eq!(windows.len(), 2);
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 pub struct RollingAllocation<'a, A> {
     data: &'a Returns,
     method: A,
@@ -196,6 +293,22 @@ impl<A> std::fmt::Debug for RollingAllocation<'_, A> {
 }
 
 /// One window's weights, from [`Rolling::allocate`].
+///
+/// # Example
+///
+/// ```
+/// use cutup::{InverseVariance, Returns};
+///
+/// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, -0.001], [-0.003, 0.006]];
+/// let data = Returns::new(&returns)?.labeled(["x", "y"])?;
+///
+/// // The most recent window: the last 3 periods, and its weights over them.
+/// let latest = data.rolling(3).allocate(InverseVariance)?.last().unwrap();
+/// assert_eq!(latest.periods(), 2..5);
+/// let recent = Returns::new(&returns[2..])?.labeled(["x", "y"])?;
+/// assert_eq!(latest.into_weights()?, recent.allocate(&InverseVariance)?);
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(
     feature = "ts-rs",
@@ -210,12 +323,46 @@ pub struct Window {
 
 impl Window {
     /// The periods the window covers, as rows of the returns: the last is the most recent.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, -0.001], [-0.003, 0.006]];
+    /// let data = Returns::new(&returns)?;
+    /// let windows: Vec<_> = data.rolling(4).allocate(EqualWeight)?.collect();
+    ///
+    /// assert_eq!(windows[0].periods(), 0..4);
+    /// // The newest window ends at the last period.
+    /// assert_eq!(windows[1].periods(), 1..5);
+    /// assert_eq!(windows[1].periods().end, data.period_count());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn periods(&self) -> Range<usize> {
         self.periods.clone()
     }
 
     /// The window's weights, or why the method couldn't allocate over it.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{InverseVolatility, Returns};
+    ///
+    /// // The second asset's returns don't vary over the last 2 periods.
+    /// let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, 0.003]];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// for window in data.rolling(2).allocate(&InverseVolatility)? {
+    ///     let alone = Returns::new(&returns[window.periods()])?.allocate(&InverseVolatility);
+    ///     assert_eq!(window.weights(), &alone);
+    ///     // Only the last window can't be allocated.
+    ///     assert_eq!(window.weights().is_err(), window.periods() == (2..4));
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     // With a reason: clippy before 1.93 takes a bare attribute on a function that returns a
     // reference to a `Result` as said twice, and clippy since asks for one.
     #[must_use = "reading a window's weights does nothing by itself"]
@@ -228,6 +375,25 @@ impl Window {
     /// # Errors
     ///
     /// The error the method returned for this window's returns, if it couldn't allocate them.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MinVariance, Returns, Weights};
+    ///
+    /// # let returns = [[0.010, -0.020], [-0.004, 0.015], [0.007, 0.003], [0.002, -0.001], [-0.003, 0.006]];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // Every window's weights, or the first error.
+    /// let history: Vec<Weights> = data
+    ///     .rolling(3)
+    ///     .allocate(MinVariance::default())?
+    ///     .map(|w| w.into_weights())
+    ///     .collect::<Result<_, CutupError>>()?;
+    /// assert_eq!(history.len(), 3);
+    /// assert_eq!(history[2], Returns::new(&returns[2..])?.allocate(&MinVariance::default())?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn into_weights(self) -> Result<Weights, CutupError> {
         self.weights
     }

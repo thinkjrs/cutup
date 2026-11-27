@@ -184,6 +184,32 @@ pub struct MeanVariance {
 impl MeanVariance {
     /// Maximizes `μᵀw − (γ/2) wᵀΣw` with risk aversion `gamma`. Larger values favor lower
     /// variance; as `γ → ∞` the result approaches the minimum variance portfolio.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{EqualWeight, MeanVariance, MinVariance, Returns, Weights};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let minimum = data.allocate(&MinVariance::default())?;
+    ///
+    /// // μᵀw − (γ/2) wᵀΣw, under the sample mean and covariance it uses by default.
+    /// let utility = |gamma: f64, w: &Weights| -> Result<f64, cutup::CutupError> {
+    ///     let stats = data.stats(w)?;
+    ///     Ok(stats.expected_return() - gamma / 2.0 * stats.volatility().powi(2))
+    /// };
+    /// let weights = data.allocate(&MeanVariance::risk_aversion(100.0))?;
+    /// assert!(utility(100.0, &weights)? > utility(100.0, &data.allocate(&EqualWeight)?)?);
+    /// assert!(utility(100.0, &weights)? > utility(100.0, &minimum)?);
+    ///
+    /// // More aversion, less volatility, down toward the minimum variance portfolio's.
+    /// let averse = data.allocate(&MeanVariance::risk_aversion(1000.0))?;
+    /// let volatility = |w: &Weights| data.stats(w).map(|s| s.volatility());
+    /// assert!(volatility(&averse)? < volatility(&weights)?);
+    /// assert!(volatility(&minimum)? < volatility(&averse)?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn risk_aversion(gamma: f64) -> Self {
         Self::new(Objective::RiskAversion(gamma))
     }
@@ -191,6 +217,36 @@ impl MeanVariance {
     /// Minimizes variance subject to an expected portfolio return of `target`. With
     /// [transaction costs](MeanVariance::transaction_costs), `target` is a floor on the return
     /// net of them; see [Rebalancing](MeanVariance#rebalancing).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MeanVariance, Returns, Weights};
+    ///
+    /// let returns = [
+    ///      [ 0.010, -0.020,  0.005],
+    ///      [-0.004,  0.015,  0.002],
+    ///      [ 0.007,  0.003, -0.006],
+    ///      [ 0.002, -0.001,  0.004],
+    ///      [-0.003,  0.006,  0.001],
+    /// ];
+    /// // The sample means, its expected returns by default, are 0.0024, 0.0006 and 0.0012.
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// let weights = data.allocate(&MeanVariance::target_return(0.0018))?;
+    /// let stats = data.stats(&weights)?;
+    /// assert!((stats.expected_return() - 0.0018).abs() < 1e-12);
+    ///
+    /// // Half in the first asset and half in the last returns 0.0018 too, with more risk.
+    /// let halves = data.stats(&Weights::from(vec![0.5, 0.0, 0.5]))?;
+    /// assert!(stats.volatility() < halves.volatility());
+    ///
+    /// // Long-only, nothing returns more than the best asset.
+    /// let error = data.allocate(&MeanVariance::target_return(0.003)).unwrap_err();
+    /// assert!(matches!(error, CutupError::TargetReturnOutOfRange { highest, .. }
+    ///     if (highest - 0.0024).abs() < 1e-12));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn target_return(target: f64) -> Self {
         Self::new(Objective::TargetReturn(target))
     }
@@ -217,6 +273,35 @@ impl MeanVariance {
     ///
     /// Rebalancing settings aren't supported with a target volatility yet, and return
     /// [`CutupError::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MeanVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // Between the minimum variance portfolio's volatility and the best asset's, it binds.
+    /// let weights = data.allocate(&MeanVariance::target_volatility(0.002))?;
+    /// let stats = data.stats(&weights)?;
+    /// assert!((stats.volatility() - 0.002).abs() < 1e-12);
+    ///
+    /// // A portfolio with less risk returns less.
+    /// let safer = data.stats(&data.allocate(&MeanVariance::target_return(0.0018))?)?;
+    /// assert!(safer.volatility() < 0.002 && safer.expected_return() < stats.expected_return());
+    ///
+    /// // Above the best asset's volatility it doesn't bind: all in the best asset.
+    /// let loose = data.allocate(&MeanVariance::target_volatility(0.01))?;
+    /// assert_eq!(loose.as_slice(), [1.0, 0.0, 0.0]);
+    ///
+    /// // Below the minimum variance portfolio's, about 0.00073, nothing reaches it.
+    /// assert!(matches!(
+    ///     data.allocate(&MeanVariance::target_volatility(0.0005)),
+    ///     Err(CutupError::TargetVolatilityOutOfRange { .. })
+    /// ));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn target_volatility(sigma: f64) -> Self {
         Self::new(Objective::TargetVolatility(sigma))
     }
@@ -233,6 +318,29 @@ impl MeanVariance {
 
     /// Uses `expected_returns`, [one per asset](PerAsset) in column order or by asset, instead
     /// of the sample mean of the returns. They're in the same units and period as the returns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, MinVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    ///
+    /// // With the same expected return for every asset, only the variance is left to minimize.
+    /// let flat = MeanVariance::risk_aversion(10.0).expected_returns([0.001, 0.001, 0.001]);
+    /// let minimum = data.allocate(&MinVariance::default())?;
+    /// for (w, m) in data.allocate(&flat)?.iter().zip(&minimum) {
+    ///     assert!((w - m).abs() < 1e-12);
+    /// }
+    ///
+    /// // By asset, in any order, they're the same as in column order.
+    /// let by_column = MeanVariance::risk_aversion(10.0).expected_returns([0.004, 0.006, 0.002]);
+    /// let by_asset = MeanVariance::risk_aversion(10.0)
+    ///     .expected_returns([("B", 0.006), ("A", 0.004), ("C", 0.002)]);
+    /// assert_eq!(data.allocate(&by_asset)?, data.allocate(&by_column)?);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn expected_returns(mut self, expected_returns: impl Into<PerAsset>) -> Self {
         self.expected_returns = Some(expected_returns.into());
         self
@@ -245,6 +353,29 @@ impl MeanVariance {
     /// [current weights](MeanVariance::current_weights) `w₀`. `κ` is in the units of the
     /// returns. With a target return, `κ‖w − w₀‖²` is added to the variance instead, so `κ`
     /// is in the units of the variance there.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns, Weights};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let current = [0.2, 0.3, 0.5];
+    /// let turnover = |w: &Weights| -> f64 {
+    ///     w.iter().zip(current).map(|(w, c)| (w - c).abs()).sum()
+    /// };
+    /// let rebalance = MeanVariance::risk_aversion(10.0).current_weights(current);
+    ///
+    /// // Without a penalty it trades everything into the first asset; the larger the
+    /// // penalty, the closer it stays to the current weights.
+    /// let free = data.allocate(&rebalance)?;
+    /// let some = data.allocate(&rebalance.clone().turnover_penalty(0.01))?;
+    /// let more = data.allocate(&rebalance.turnover_penalty(0.1))?;
+    /// assert!((turnover(&free) - 1.6).abs() < 1e-12);
+    /// assert!(turnover(&more) < turnover(&some) && turnover(&some) < turnover(&free));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn turnover_penalty(mut self, kappa: f64) -> Self {
         self.trading.penalty = Some(kappa);
         self
@@ -253,6 +384,32 @@ impl MeanVariance {
     /// Charges `cost` per unit of weight traded, `Σ cost·|wᵢ − w₀ᵢ|`, against the expected
     /// return: 0.001 is 10 basis points. Needs [current weights](MeanVariance::current_weights).
     /// With a target return, the target is on the return net of them.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CutupError, MeanVariance, Returns, Weights};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let current = [0.2, 0.3, 0.5];
+    /// let turnover = |w: &Weights| -> f64 {
+    ///     w.iter().zip(current).map(|(w, c)| (w - c).abs()).sum()
+    /// };
+    /// let rebalance = MeanVariance::risk_aversion(10.0).current_weights(current);
+    ///
+    /// // Free, it trades everything into the first asset; at 10 basis points, far less.
+    /// assert!((turnover(&data.allocate(&rebalance)?) - 1.6).abs() < 1e-12);
+    /// assert!(turnover(&data.allocate(&rebalance.clone().transaction_costs(0.001))?) < 0.2);
+    ///
+    /// // At 50 basis points no trade pays for itself.
+    /// assert!(turnover(&data.allocate(&rebalance.transaction_costs(0.005))?) < 1e-12);
+    ///
+    /// // Without current weights there's nothing to trade from.
+    /// let alone = MeanVariance::risk_aversion(10.0).transaction_costs(0.001);
+    /// assert_eq!(data.allocate(&alone), Err(CutupError::MissingCurrentWeights));
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn transaction_costs(mut self, cost: f64) -> Self {
         self.trading.costs = Some(Costs::Uniform(cost));
         self
@@ -260,6 +417,31 @@ impl MeanVariance {
 
     /// Charges `costs[i]` per unit of asset `i`'s weight traded, [one per asset](PerAsset) in
     /// column order or by asset. See [`MeanVariance::transaction_costs`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    /// let rebalance = MeanVariance::risk_aversion(10.0).current_weights([0.2, 0.3, 0.5]);
+    ///
+    /// // Free, it trades everything into A. Trading A is costly here, so it stays put, and
+    /// // only B and C, free to trade, move.
+    /// let costly_a = [("A", 1.0), ("B", 0.0), ("C", 0.0)];
+    /// let weights = data.allocate(&rebalance.clone().transaction_costs_per_asset(costly_a))?;
+    /// assert_eq!(data.allocate(&rebalance.clone())?.as_slice(), [1.0, 0.0, 0.0]);
+    /// assert!((weights["A"] - 0.2).abs() < 1e-12);
+    /// assert!((weights["C"] - 0.5).abs() > 0.1);
+    ///
+    /// // The same cost for every asset is `transaction_costs`.
+    /// assert_eq!(
+    ///     data.allocate(&rebalance.clone().transaction_costs_per_asset([0.001; 3]))?,
+    ///     data.allocate(&rebalance.transaction_costs(0.001))?,
+    /// );
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn transaction_costs_per_asset(mut self, costs: impl Into<PerAsset>) -> Self {
         self.trading.costs = Some(Costs::PerAsset(costs.into()));
         self
@@ -267,6 +449,26 @@ impl MeanVariance {
 
     /// Keeps each weight within `bounds`, and the portfolio long-only. Replaces
     /// [`MeanVariance::allow_short`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns, WeightBounds};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    ///
+    /// // Unbounded it's all in the first asset; between 10% and 50% that one is capped,
+    /// // and the second is held at its floor.
+    /// let bounds = WeightBounds::uniform(0.1, 0.5);
+    /// let method = MeanVariance::risk_aversion(10.0).bounds(bounds.clone());
+    /// let weights = data.allocate(&method)?;
+    /// assert!((weights[0] - 0.5).abs() < 1e-12 && (weights[1] - 0.1).abs() < 1e-12);
+    ///
+    /// // It replaces `allow_short`.
+    /// assert_eq!(MeanVariance::risk_aversion(10.0).allow_short().bounds(bounds), method);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn bounds(mut self, bounds: WeightBounds) -> Self {
         self.bounds = Some(bounds);
         self
@@ -274,6 +476,27 @@ impl MeanVariance {
 
     /// Allows short positions, with no bounds on the weights. Replaces
     /// [`MeanVariance::bounds`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns, WeightBounds};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let method = MeanVariance::risk_aversion(10.0);
+    ///
+    /// // Long-only it's all in the first asset; long-short it shorts the last to hold more.
+    /// assert_eq!(data.allocate(&method)?.as_slice(), [1.0, 0.0, 0.0]);
+    /// let weights = data.allocate(&method.clone().allow_short())?;
+    /// assert!(weights[2] < 0.0 && weights[0] > 1.0);
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    ///
+    /// // It replaces `bounds`.
+    /// let bounded = method.clone().bounds(WeightBounds::uniform(0.1, 0.5));
+    /// assert_eq!(bounded.allow_short(), method.allow_short());
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     pub fn allow_short(mut self) -> Self {
         self.bounds = None;
         self
@@ -607,6 +830,24 @@ fn portfolio_return(mu: &DVector<f64>, w: &DVector<f64>) -> f64 {
 
 /// A portfolio on the efficient frontier. The weights, expected return and volatility of one
 /// from [`Returns::frontier`] are finite.
+///
+/// # Example
+///
+/// ```
+/// use cutup::{MeanVariance, Returns};
+///
+/// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+/// let data = Returns::new(&returns)?;
+///
+/// // Under the sample mean and covariance a method uses by default, a point's numbers are
+/// // its weights' statistics.
+/// for point in data.frontier(&MeanVariance::risk_aversion(1.0), 3)? {
+///     let stats = data.stats(point.weights())?;
+///     assert!((point.expected_return() - stats.expected_return()).abs() < 1e-12);
+///     assert!((point.volatility() - stats.volatility()).abs() < 1e-12);
+/// }
+/// # Ok::<(), cutup::CutupError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ts-rs", derive(ts_rs::TS), ts(as = "serde_impl::PointWire"))]
 #[non_exhaustive]
@@ -618,18 +859,75 @@ pub struct FrontierPoint {
 
 impl FrontierPoint {
     /// The portfolio's expected return, `μᵀw`, under the method's expected returns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let expected = [0.004, 0.006, 0.002];
+    /// let method = MeanVariance::risk_aversion(1.0).expected_returns(expected);
+    ///
+    /// for point in data.frontier(&method, 3)? {
+    ///     let mu_w: f64 = point.weights().iter().zip(expected).map(|(w, m)| w * m).sum();
+    ///     assert!((point.expected_return() - mu_w).abs() < 1e-12);
+    ///     // Not the sample mean's, which `Returns::stats` uses.
+    ///     assert!(point.expected_return() > data.stats(point.weights())?.expected_return());
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn expected_return(&self) -> f64 {
         self.expected_return
     }
 
     /// The portfolio's volatility, `sqrt(wᵀΣw)`, under the method's adjusted covariance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{CovarianceConfig, MeanVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?;
+    /// let shrunk = CovarianceConfig::default().shrinkage(0.5);
+    /// let method = MeanVariance::risk_aversion(1.0).covariance(shrunk.clone());
+    ///
+    /// for point in data.frontier(&method, 3)? {
+    ///     // The volatility under the shrunk covariance, not the sample one.
+    ///     let volatility = data.stats_with(point.weights(), &shrunk)?.volatility();
+    ///     assert!((point.volatility() - volatility).abs() < 1e-12);
+    ///     assert_ne!(point.volatility(), data.stats(point.weights())?.volatility());
+    /// }
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn volatility(&self) -> f64 {
         self.volatility
     }
 
     /// The portfolio's weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cutup::{MeanVariance, Returns};
+    ///
+    /// # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+    /// let data = Returns::new(&returns)?.labeled(["A", "B", "C"])?;
+    /// let frontier = data.frontier(&MeanVariance::risk_aversion(1.0), 3)?;
+    ///
+    /// // Labeled as the data is, and fully invested.
+    /// let weights = frontier[1].weights();
+    /// assert_eq!(weights.labels(), ["A", "B", "C"]);
+    /// assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    ///
+    /// // The last point, at the highest return, is all in the asset with the highest mean.
+    /// assert_eq!(frontier[2].weights().as_slice(), [1.0, 0.0, 0.0]);
+    /// # Ok::<(), cutup::CutupError>(())
+    /// ```
     #[must_use]
     pub fn weights(&self) -> &Weights {
         &self.weights

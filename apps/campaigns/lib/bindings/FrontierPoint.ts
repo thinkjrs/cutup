@@ -4,5 +4,23 @@ import type { Weights } from "./Weights";
 /**
  * A portfolio on the efficient frontier. The weights, expected return and volatility of one
  * from [`Returns::frontier`] are finite.
+ *
+ * # Example
+ *
+ * ```
+ * use cutup::{MeanVariance, Returns};
+ *
+ * # let returns = [[0.010, -0.020, 0.005], [-0.004, 0.015, 0.002], [0.007, 0.003, -0.006], [0.002, -0.001, 0.004], [-0.003, 0.006, 0.001]];
+ * let data = Returns::new(&returns)?;
+ *
+ * // Under the sample mean and covariance a method uses by default, a point's numbers are
+ * // its weights' statistics.
+ * for point in data.frontier(&MeanVariance::risk_aversion(1.0), 3)? {
+ *     let stats = data.stats(point.weights())?;
+ *     assert!((point.expected_return() - stats.expected_return()).abs() < 1e-12);
+ *     assert!((point.volatility() - stats.volatility()).abs() < 1e-12);
+ * }
+ * # Ok::<(), cutup::CutupError>(())
+ * ```
  */
 export type FrontierPoint = { expected_return: number, volatility: number, weights: Weights, };
