@@ -6,10 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- `PortfolioAllocator`, the name `Returns` had before 0.3.0, and `Returns::from_returns`,
+  the name `Returns::new` had. Both were deprecated in 0.3.0, with a note naming the
+  replacement, and kept through 0.3.x. Use `Returns` and `Returns::new`.
+
 ### Changed
 
-- Every public item but the two deprecated names, which 1.0.0 removes, has an example in its
-  docs that asserts what the item does: 180 of 182 items, where 39 had one. The doctests run
+- Every public item has an example in its docs that asserts what the item does: 180 items,
+  where 39 had one. The doctests run
   on every PR, so an example that stops being true fails CI. The settings that every
   covariance-based method shares, such as `shrinkage`, have an example for each method.
 - The examples, in the docs and the README, label assets `"A"`, `"B"` and `"C"`, not as
