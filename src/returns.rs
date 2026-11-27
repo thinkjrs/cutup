@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// Build one from prices with [`Returns::from_prices`], which converts them to returns, or from
 /// returns you have already computed with [`Returns::new`].
 ///
-/// Before 0.3.0 this was `PortfolioAllocator`, which stays as a deprecated alias until 1.0.0.
+/// Before 0.3.0 this was `PortfolioAllocator`.
 ///
 /// # Example
 ///
@@ -778,17 +778,6 @@ mod tests {
             assert_eq!(allocator.returns, expected.returns);
             assert_eq!(allocator.cov_matrix, expected.cov_matrix);
         }
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_old_names_are_the_new_ones() {
-        let rows = [[0.01, -0.02], [-0.004, 0.015], [0.007, 0.003]];
-        let old: crate::PortfolioAllocator =
-            crate::PortfolioAllocator::from_returns(&rows).unwrap();
-        let new = Returns::new(&rows).unwrap();
-        assert_eq!(old.returns, new.returns);
-        assert_eq!(old.cov_matrix, new.cov_matrix);
     }
 
     #[test]

@@ -169,7 +169,6 @@ mod cdar;
 mod cluster;
 mod covariance;
 mod cvar;
-mod deprecated;
 mod dual;
 mod eigen;
 mod error;
@@ -198,8 +197,6 @@ pub use cdar::MinCdar;
 pub use cluster::Linkage;
 pub use covariance::{CovarianceConfig, ShrinkageTarget};
 pub use cvar::MinCvar;
-#[allow(deprecated)]
-pub use deprecated::PortfolioAllocator;
 pub use error::CutupError;
 pub use mad::MinMad;
 pub use methods::{

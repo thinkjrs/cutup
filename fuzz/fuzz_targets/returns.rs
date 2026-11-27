@@ -18,7 +18,6 @@ enum Constructor {
     FromPricesFlat,
     FromMatrix,
     FromPricesMatrix,
-    FromReturns,
 }
 
 #[derive(Arbitrary, Debug)]
@@ -42,7 +41,6 @@ fuzz_target!(|input: Input| {
         let rows = input.values.len() / columns;
         DMatrix::from_row_slice(rows, columns, &input.values[..rows * columns])
     };
-    #[allow(deprecated)]
     let data = match input.constructor {
         Constructor::New => Returns::new(&input.rows),
         Constructor::NewFlat => Returns::new_flat(&input.values, assets),
@@ -50,7 +48,6 @@ fuzz_target!(|input: Input| {
         Constructor::FromPricesFlat => Returns::from_prices_flat(&input.values, assets),
         Constructor::FromMatrix => Returns::from_matrix(matrix()),
         Constructor::FromPricesMatrix => Returns::from_prices_matrix(matrix()),
-        Constructor::FromReturns => Returns::from_returns(&input.rows),
     };
     let Ok(mut data) = data else { return };
 
