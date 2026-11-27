@@ -123,7 +123,7 @@ impl Herc {
         self
     }
 
-    covariance_setters!();
+    covariance_setters!(Herc, "Herc::default()");
 }
 
 impl Allocation for Herc {

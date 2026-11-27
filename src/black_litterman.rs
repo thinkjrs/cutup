@@ -99,7 +99,7 @@ impl BlackLitterman {
         self
     }
 
-    covariance_setters!();
+    covariance_setters!(BlackLitterman, "BlackLitterman::new([0.5, 0.3, 0.2], 2.5)");
 
     /// The market-implied returns `π = δΣw_mkt + r_f`, before any views.
     ///

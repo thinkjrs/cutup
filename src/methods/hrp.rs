@@ -83,7 +83,7 @@ impl Hrp {
         self
     }
 
-    covariance_setters!();
+    covariance_setters!(Hrp, "Hrp::default()");
 
     /// Returns the order HRP puts the assets in: the leaves of the clustering hierarchy, left
     /// to right, so that correlated assets sit next to each other.

@@ -81,7 +81,7 @@ impl RiskParity {
         self
     }
 
-    covariance_setters!();
+    covariance_setters!(RiskParity, "RiskParity::default()");
 }
 
 impl Allocation for RiskParity {

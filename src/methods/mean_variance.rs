@@ -238,8 +238,8 @@ impl MeanVariance {
         self
     }
 
-    covariance_setters!();
-    turnover_setters!();
+    covariance_setters!(MeanVariance, "MeanVariance::risk_aversion(1.0)");
+    turnover_setters!(MeanVariance, "MeanVariance::risk_aversion(1.0)");
 
     /// Subtracts `κ‖w − w₀‖²` from the objective, pulling the weights toward the
     /// [current weights](MeanVariance::current_weights) `w₀`. `κ` is in the units of the

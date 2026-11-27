@@ -139,8 +139,8 @@ impl Default for MinVariance {
 }
 
 impl MinVariance {
-    covariance_setters!();
-    turnover_setters!();
+    covariance_setters!(MinVariance, "MinVariance::default()");
+    turnover_setters!(MinVariance, "MinVariance::default()");
 
     /// Adds `κ‖w − w₀‖²` to the variance minimized, pulling the weights toward the
     /// [current weights](MinVariance::current_weights) `w₀`. `κ` is in the units of variance,

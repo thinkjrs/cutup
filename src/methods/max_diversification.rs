@@ -75,7 +75,7 @@ pub struct MaxDiversification {
 }
 
 impl MaxDiversification {
-    covariance_setters!();
+    covariance_setters!(MaxDiversification, "MaxDiversification::default()");
 }
 
 impl Allocation for MaxDiversification {

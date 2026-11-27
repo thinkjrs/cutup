@@ -148,7 +148,7 @@ impl MaxSharpe {
         self
     }
 
-    covariance_setters!();
+    covariance_setters!(MaxSharpe, "MaxSharpe::default()");
 
     /// Allows short positions.
     pub fn allow_short(mut self) -> Self {
