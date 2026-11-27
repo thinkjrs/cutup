@@ -983,12 +983,13 @@ to 0.3.9.
 - **The semver check,** which allows the removal:
   - it's at major on develop and main until 1.0.0 is out, and at minor on a
     `release/0.x` branch, so a 0.3.x cut from develop fails on the removal;
-  - at major it fails nothing, so the next PR checks every PR at minor
-    against its base commit instead, which this one can't: its removal is
-    the break it would catch;
+  - at major it fails nothing, so every PR is now checked at minor against
+    its base commit instead, which the removal's PR couldn't be: its
+    removal was the break that check catches;
   - after 1.0.0, pushes go back to minor, as part of the release.
 - **Audit:** `cargo public-api` diffed against the last 0.3.x before
-  tagging.
+  tagging. Run after the removal: against 0.3.13 the only changes are the
+  two removed names. It runs again on the release branch.
 
 ## After 1.0.0
 
